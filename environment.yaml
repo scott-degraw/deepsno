@@ -1,0 +1,13 @@
+name: deepsno
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9.18
+  - scipy
+  - numpy
+  - matplotlib
+  - pandas
+  - python-htcondor
+  - hdf5
+  - h5py
+  - highfive
