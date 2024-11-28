@@ -1,8 +1,12 @@
 name: deepsno
 channels:
   - conda-forge
+  - pytorch
+  - nvidia
 dependencies:
-  - python=3.9.18
+  - python=3.13
+  - pytorch
+  - pytorch-cuda=12.4
   - scipy
   - numpy
   - matplotlib
