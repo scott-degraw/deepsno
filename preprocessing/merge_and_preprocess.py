@@ -3,7 +3,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-block_size = 100_000
+block_size = 1_000_000
 
 train_output_path = Path("/data/snoplus3/degraw/train_dset.h5")
 test_output_path = Path("/data/snoplus3/degraw/test_dset.h5")
@@ -54,18 +54,16 @@ def find_norms(dataset: h5py.Dataset, block_size: int, masks: h5py.Dataset):
     dataset.attrs["root_mean_square_deviation"] = root_mean_square_deviation
 
 
-def create_virtual_h5(
-    input_paths: Path, output_path: Path, dataset_identifiers: list[str], pmt_info_identifiers: list[str]
-):
-    with h5py.File(output_path, "w", libver="latest") as virtual_h5:
+def merge_h5(input_paths: Path, output_path: Path, dataset_identifiers: list[str], pmt_info_identifiers: list[str]):
+    with h5py.File(output_path, "w", libver="latest") as merged_h5:
         for dataset_identifier in dataset_identifiers:
             dataset_dims = []
 
             with h5py.File(next(iter(input_paths))) as h5_file:
                 dataset_dtype = h5_file[dataset_identifier].dtype
 
-            for input_file in input_paths:
-                with h5py.File(input_file) as h5_file:
+            for input_path in input_paths:
+                with h5py.File(input_path) as h5_file:
                     dataset_dims.append(h5_file[dataset_identifier].shape)
 
             dataset_dims = np.array(dataset_dims)
@@ -74,15 +72,17 @@ def create_virtual_h5(
 
             n_events = dataset_dims[:, 0].sum()
             other_dims = dataset_dims[0, 1:]
-            virt_layout = h5py.VirtualLayout(shape=(n_events, *other_dims), dtype=dataset_dtype)
+
+            merged_dataset = merged_h5.create_dataset(
+                dataset_identifier, shape=(n_events, *other_dims), dtype=dataset_dtype
+            )
 
             start_row_i: int = 0
-            for input_file, dataset_shape in zip(input_paths, dataset_dims):
-                vsource = h5py.VirtualSource(input_file, dataset_identifier, shape=dataset_shape)
-                virt_layout[start_row_i : start_row_i + dataset_shape[0]] = vsource
-                start_row_i += dataset_shape[0]
-
-            virtual_h5.create_virtual_dataset(dataset_identifier, virt_layout)
+            for input_path in input_paths:
+                with h5py.File(input_path) as input_h5:
+                    dataset = input_h5[dataset_identifier]
+                    merged_dataset[start_row_i : start_row_i + dataset.shape[0]] = dataset[:]
+                start_row_i += dataset.shape[0]
 
         # Checking if all the pmt info is the same across the datasets
         for pmt_info_ident in pmt_info_identifiers:
@@ -91,14 +91,14 @@ def create_virtual_h5(
                 pmt_info_array = pmt_info_item[:]
                 base_fname = h5_file.filename
 
-                for input_file in input_paths:
-                    with h5py.File(input_file) as test_h5_file:
+                for input_path in input_paths:
+                    with h5py.File(input_path) as test_h5_file:
                         if np.all(pmt_info_array != test_h5_file[pmt_info_ident][:]):
                             raise ValueError(
                                 f"{pmt_info_ident} in {test_h5_file.filename} does not match corresponding entry in {base_fname}"
                             )
 
-                virtual_h5.create_dataset_like(pmt_info_ident, pmt_info_item)
+                merged_h5.create_dataset_like(pmt_info_ident, pmt_info_item)
 
 
 if __name__ == "__main__":
@@ -115,14 +115,14 @@ if __name__ == "__main__":
     if len(test_input_paths) == 0:
         raise RuntimeError(f"Not enough files. No test dataset for {train_test_split:.3g} train-test split.")
 
-    create_virtual_h5(
+    merge_h5(
         input_paths=train_input_paths,
         output_path=train_output_path,
         dataset_identifiers=dataset_identifiers,
         pmt_info_identifiers=pmt_info_identifiers,
     )
 
-    create_virtual_h5(
+    merge_h5(
         input_paths=test_input_paths,
         output_path=test_output_path,
         dataset_identifiers=dataset_identifiers,
