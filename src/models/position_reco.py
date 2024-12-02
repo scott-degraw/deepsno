@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -38,7 +40,25 @@ class PositionReco(nn.Module):
         )
         self.position_predictor = nn.Linear(d_model, 3)
 
+        self.input_norm: bool = False
+        self.output_unnorm: bool = False
+
+    def add_input_norm(self, hit_time_mean: float, hit_time_rmsd: float, input_norm: bool = True):
+        self.hit_time_mean: float = hit_time_mean
+        self.hit_time_rmsd: float = hit_time_rmsd
+
+        self.input_norm = input_norm
+
+    def add_output_unnorm(self, position_means: Any, position_rmsds: Any, output_unnorm: bool = True):
+        self.position_means: float = position_means
+        self.position_rmsds: float = position_rmsds
+
+        self.output_unnorm = output_unnorm
+
     def forward(self, hit_times, pmt_ids):
+        if self.input_norm:
+            hit_times = (hit_times - self.hit_time_mean) / self.hit_time_rmsd
+
         pmt_masks = pmt_ids == -1  # -1 indicates the PMT is padded
         not_padding_masks = ~pmt_masks
 
@@ -59,5 +79,8 @@ class PositionReco(nn.Module):
         )
 
         x = self.position_predictor(x)
+
+        if self.output_unnorm:
+            x = x * self.position_rmsds + self.position_means
 
         return x

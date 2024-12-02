@@ -57,10 +57,18 @@ def train(
 
     model = model.to(device)
 
+    position_means = dataset.position_means
+    position_rmsds = dataset.position_rmsds
+    model.add_input_norm(hit_time_mean=dataset.hit_time_mean, hit_time_rmsd=dataset.hit_time_rmsd)
+    model.add_output_unnorm(position_means=position_means, position_rmsds=position_rmsds, output_unnorm=False)
+
     optimizer = optimizer_class(model.parameters(), **optimizer_kwargs)
     optimizer.zero_grad()
 
     writer = SummaryWriter()
+
+    position_means = torch.from_numpy(position_means).to(device)
+    position_rmsds = torch.from_numpy(position_rmsds).to(device)
 
     it_num = 0
     for epoch_num in range(num_epochs):
@@ -68,9 +76,10 @@ def train(
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)
 
+            truth = (truth - position_means) / position_rmsds
+
             predict = model(**inputs)
 
-            truth = truth / 1e3
             loss = loss_fn(predict, truth)
             writer.add_scalar("Loss/train", loss.item(), it_num)
 
