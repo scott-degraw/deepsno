@@ -1,9 +1,12 @@
 from pathlib import Path
+from typing import Optional
 
 import h5py
 import numpy as np
 
-block_size = 1_000_000
+np.random.seed(478374891)
+
+block_size = 100_000
 
 train_output_path = Path("/data/snoplus3/degraw/train_dset.h5")
 test_output_path = Path("/data/snoplus3/degraw/test_dset.h5")
@@ -12,43 +15,50 @@ input_paths = list(Path("/data/snoplus3/degraw/extraction_test").glob("*.h5"))
 
 train_test_split = 0.8
 
-dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/masks"]
+dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids"]
 dataset_identifiers += [f"mc_truth/position/{c}" for c in ["x", "y", "z"]]
 
-pmt_info_identifiers = ["pmt_info/inward_pmt_ids" "pmt_info/pmt_id_2_index"]
 pmt_info_identifiers = [f"pmt_info/position/{c}" for c in ["x", "y", "z"]]
 
 
-def find_norms(dataset: h5py.Dataset, block_size: int, masks: h5py.Dataset):
+def find_norms(dataset: h5py.Dataset, block_size: int, mask_dataset: Optional[h5py.Dataset] = None):
+    # This function counts on masked values having a value of 0
     n_events = dataset.shape[0]
 
     n_blocks = (n_events - 1) // block_size + 1
 
     data_sum = 0
 
-    n_hits: int = 0
+    n_values: int = 0
     start_row: int = 0
 
     for _ in range(n_blocks):
         block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
         data_block = dataset[block_slice]
-        mask_block = masks[block_slice]
+        if mask_dataset is not None:
+            mask_block = mask_dataset[block_slice] < 0
+            data_block = data_block[~mask_block]
+            n_values += mask_block.size - mask_block.sum()
+        else:
+            n_values += data_block.size
         data_sum += data_block.sum()
-        n_hits += mask_block.size - mask_block.sum()
         start_row += block_size
 
-    mean = data_sum / n_hits
+    mean = data_sum / n_values
 
     residual_sum = 0
 
     start_row = 0
     for _ in range(n_blocks):
-        data_block = dataset[start_row : min(start_row + block_size, n_events - 1)]
+        block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
+        data_block = dataset[block_slice]
+        if mask_dataset is not None:
+            mask_block = mask_dataset[block_slice] < 0
+            data_block = data_block[~mask_block]
         residual_sum += np.sum(np.square(data_block - mean))
         start_row += block_size
 
-    # Root mean square deviation
-    root_mean_square_deviation = np.sqrt(residual_sum / n_hits)
+    root_mean_square_deviation = np.sqrt(residual_sum / n_values)
 
     dataset.attrs["mean"] = mean
     dataset.attrs["root_mean_square_deviation"] = root_mean_square_deviation
@@ -95,7 +105,10 @@ def merge_h5(input_paths: Path, output_path: Path, dataset_identifiers: list[str
                     with h5py.File(input_path) as test_h5_file:
                         if np.all(pmt_info_array != test_h5_file[pmt_info_ident][:]):
                             raise ValueError(
-                                f"{pmt_info_ident} in {test_h5_file.filename} does not match corresponding entry in {base_fname}"
+                                (
+                                    f"{pmt_info_ident} in {test_h5_file.filename}"
+                                    f" does not match corresponding entry in {base_fname}"
+                                )
                             )
 
                 merged_h5.create_dataset_like(pmt_info_ident, pmt_info_item)
@@ -132,4 +145,8 @@ if __name__ == "__main__":
     # Add in the mean and root mean square deviation normalization
 
     with h5py.File(train_output_path, "r+") as train_h5:
-        find_norms(train_h5["cal_pmt_events/hit_times"], block_size=block_size, masks=train_h5["cal_pmt_events/masks"])
+        find_norms(
+            train_h5["cal_pmt_events/hit_times"], block_size=block_size, mask_dataset=train_h5["cal_pmt_events/ids"]
+        )
+        for c in ["x", "y", "z"]:
+            find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
