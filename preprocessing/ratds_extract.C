@@ -56,9 +56,10 @@ void test_vector() {
     std::cout << x << "\n";
 }
 
-void ratds_extract(std::string input_filename, std::string output_filename, float min_hit_time, float max_hit_time) {
+void ratds_extract(std::string input_filename, std::string output_filename, Float_t min_hit_time, Float_t max_hit_time,
+                   std::size_t context_window) {
     std::cout << "Extracting data from " << input_filename << " into " << output_filename << "\n";
-    std::size_t max_triggers = 1; // Make this into an argument
+    std::size_t max_triggers = 1; // TODO: Make this into an argument
 
     fs::path path(input_filename);
 
@@ -83,46 +84,23 @@ void ratds_extract(std::string input_filename, std::string output_filename, floa
     const RAT::DU::PMTInfo &pmt_info = RAT::DU::Utility::Get()->GetPMTInfo();
     std::size_t n_pmts_all_types = pmt_info.GetCount();
 
-    // TODO: Maybe make this a map
-    std::vector<unsigned> pmt_id_2_index(n_pmts_all_types, 0);
-
-    std::vector<unsigned> inward_pmt_ids;
-
-    unsigned pmt_index = 0;
-    for (unsigned pmt_id = 0; pmt_id < n_pmts_all_types; pmt_id++) {
-        RAT::DU::PMTInfo::EPMTType pmt_type = pmt_info.GetType(pmt_id);
-        // Check if the pmt is an inward PMT
-        if (pmt_type == RAT::DU::PMTInfo::EPMTType::NORMAL || pmt_type == RAT::DU::PMTInfo::EPMTType::HQE) {
-            inward_pmt_ids.push_back(pmt_id);
-            pmt_id_2_index.at(pmt_id) = pmt_index;
-            pmt_index++;
-        }
-    }
-    unsigned n_inward_pmts = pmt_index;
-
-    pmt_info_group.createAttribute<unsigned>("n_inward_pmts", n_inward_pmts);
-
-    auto pmt_id_2_index_dataset = pmt_info_group.createDataSet("pmt_id_2_index", pmt_id_2_index);
-    auto inward_pmt_ids_dataset = pmt_info_group.createDataSet("inward_pmt_ids", inward_pmt_ids);
-
     auto pmt_pos_group = pmt_info_group.createGroup("position");
 
     // TODO: add in coordinate system
-    std::vector<float> pmt_x_pos(n_inward_pmts, 0);
-    std::vector<float> pmt_y_pos(n_inward_pmts, 0);
-    std::vector<float> pmt_z_pos(n_inward_pmts, 0);
+    std::vector<Float_t> pmt_x_pos(n_pmts_all_types, 0);
+    std::vector<Float_t> pmt_y_pos(n_pmts_all_types, 0);
+    std::vector<Float_t> pmt_z_pos(n_pmts_all_types, 0);
 
-    for (unsigned pmt_index = 0; pmt_index < n_inward_pmts; pmt_index++) {
-        unsigned pmt_id = inward_pmt_ids[pmt_index];
+    for (UInt_t pmt_id = 0; pmt_id < n_pmts_all_types; pmt_id++) {
         const TVector3 pos = pmt_info.GetPosition(pmt_id);
-        pmt_x_pos.at(pmt_index) = pos.X();
-        pmt_y_pos.at(pmt_index) = pos.Y();
-        pmt_z_pos.at(pmt_index) = pos.Z();
+        pmt_x_pos.at(pmt_id) = pos.X();
+        pmt_y_pos.at(pmt_id) = pos.Y();
+        pmt_z_pos.at(pmt_id) = pos.Z();
     }
 
-    auto x_pos_dset = pmt_pos_group.createDataSet("x", pmt_x_pos);
-    auto y_pos_dset = pmt_pos_group.createDataSet("y", pmt_y_pos);
-    auto z_pos_dset = pmt_pos_group.createDataSet("z", pmt_z_pos);
+    pmt_pos_group.createDataSet("x", pmt_x_pos);
+    pmt_pos_group.createDataSet("y", pmt_y_pos);
+    pmt_pos_group.createDataSet("z", pmt_z_pos);
 
     std::size_t n_entries = dsreader.GetEntryCount();
 
@@ -135,9 +113,9 @@ void ratds_extract(std::string input_filename, std::string output_filename, floa
 
     h5_file.createAttribute<std::size_t>("number_of_events", all_evs);
 
-    std::vector<float> mc_event_pos_x;
-    std::vector<float> mc_event_pos_y;
-    std::vector<float> mc_event_pos_z;
+    std::vector<Float_t> mc_event_pos_x;
+    std::vector<Float_t> mc_event_pos_y;
+    std::vector<Float_t> mc_event_pos_z;
 
     if (is_mc) {
         mc_event_pos_x.resize(all_evs, 0);
@@ -147,9 +125,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, floa
 
     auto cal_pmt_events_group = h5_file.createGroup("cal_pmt_events");
 
-    Vector2D<float> cal_pmt_times(all_evs, n_inward_pmts, 0);
-    // true indicates that there the PMT was not hit during that event
-    Vector2D<bool> cal_pmt_masks(cal_pmt_times.size_0(), cal_pmt_times.size_1(), true);
+    Vector2D<Int_t> cal_pmt_ids(all_evs, context_window, -1);
+    Vector2D<Float_t> cal_pmt_times(all_evs, context_window, 0);
 
     std::size_t evs_counter = 0;
     for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
@@ -167,15 +144,14 @@ void ratds_extract(std::string input_filename, std::string output_filename, floa
 
             const RAT::DS::EV &ev = entry.GetEV(i_evs);
             const RAT::DS::CalPMTs &cal_pmts = ev.GetCalPMTs();
-            std::size_t n_cal_pmts = cal_pmts.GetCount();
+            std::size_t n_cal_pmts = std::min(cal_pmts.GetCount(), context_window);
             for (std::size_t i_pmt = 0; i_pmt < n_cal_pmts; i_pmt++) {
                 const RAT::DS::PMTCal &cal_pmt = cal_pmts.GetPMT(i_pmt);
-                unsigned pmt_id = cal_pmt.GetID();
-                unsigned pmt_index = pmt_id_2_index.at(pmt_id);
-                cal_pmt_masks(evs_counter, pmt_index) = false;
-                float pmt_time = static_cast<float>(cal_pmt.GetTime());
+                UInt_t pmt_id = cal_pmt.GetID();
+                cal_pmt_ids(evs_counter, i_pmt) = cal_pmt.GetID();
+                Float_t pmt_time = static_cast<Float_t>(cal_pmt.GetTime());
                 pmt_time = std::clamp(pmt_time, min_hit_time, max_hit_time);
-                cal_pmt_times(evs_counter, pmt_index) = pmt_time;
+                cal_pmt_times(evs_counter, i_pmt) = pmt_time;
             }
             evs_counter++;
         }
@@ -192,8 +168,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, floa
 
     HF::DataSpace cal_pmt_dataspace(cal_pmt_times.size_0(), cal_pmt_times.size_1());
 
-    auto cal_pmt_times_dset = cal_pmt_events_group.createDataSet<float>("hit_times", cal_pmt_dataspace);
+    auto cal_pmt_times_dset = cal_pmt_events_group.createDataSet<Float_t>("hit_times", cal_pmt_dataspace);
     cal_pmt_times_dset.write_raw(cal_pmt_times.data());
-    auto cal_pmt_masks_dset = cal_pmt_events_group.createDataSet<bool>("masks", cal_pmt_dataspace);
-    cal_pmt_masks_dset.write_raw(cal_pmt_masks.data());
+    auto cal_pmt_ids_dset = cal_pmt_events_group.createDataSet<Int_t>("ids", cal_pmt_dataspace);
+    cal_pmt_ids_dset.write_raw(cal_pmt_ids.data());
 }

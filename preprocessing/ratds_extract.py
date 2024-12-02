@@ -16,8 +16,11 @@ parser.add_argument(
 parser.add_argument(
     "--max_hit_time",
     type=float,
-    help="maximum allowed hit time. Values smaller than this will be clipped",
+    help="Maximum allowed hit time. Values smaller than this will be clipped",
     required=True,
+)
+parser.add_argument(
+    "--context_window", type=int, help="Maximum number of calibrated hit PMTs to be extracted.", required=True
 )
 
 args = parser.parse_args()
@@ -39,4 +42,6 @@ RAT.DU.Utility.Get().LoadDBAndBeginRun()  # Database will not be loaded unless t
 
 ROOT.gROOT.LoadMacro("ratds_extract.C")
 
-ROOT.ratds_extract(str(input_path.resolve()), str(output_path.resolve()), args.min_hit_time, args.max_hit_time)
+ROOT.ratds_extract(
+    str(input_path.resolve()), str(output_path.resolve()), args.min_hit_time, args.max_hit_time, args.context_window
+)

@@ -5,14 +5,16 @@ import htcondor
 
 min_hit_time = 0.0
 max_hit_time = 800.0
+context_window = 1024
 
-input_paths = list(
-    Path("/data/snoplus3/SNOplusData/production/miniProd_RAT-7-0-14_ASCI_RATHS_newRecoordination").glob("*.root")
-)
+# input_paths = list(
+#     Path("/data/snoplus3/SNOplusData/production/miniProd_RAT-7-0-14_ASCI_RATHS_newRecoordination").glob("*.root")
+# )
+input_paths = list(Path("/data/snoplus2/hewittc/lemon-type/pt-net-ratds").glob("*.root"))
 
 python_executable = str(Path("ratds_extract.py").resolve())
 
-output_dir = Path("/data/snoplus3/degraw/extraction_test/")
+output_dir = Path("/data/snoplus3/degraw/pt-net-preproc/")
 output_dir.mkdir(parents=True, exist_ok=True)
 
 output_paths: list[Path] = []
@@ -44,7 +46,7 @@ for input_path, output_path in zip(input_paths, output_paths):
     )
 
 arguments = f"{python_executable} -i $(input_file) -o $(output_file)"
-arguments += f" --min_hit_time {min_hit_time} --max_hit_time {max_hit_time}"
+arguments += f" --min_hit_time {min_hit_time} --max_hit_time {max_hit_time} --context_window {context_window}"
 
 job = htcondor.Submit(
     {
