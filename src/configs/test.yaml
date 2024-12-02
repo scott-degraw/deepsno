@@ -1,0 +1,34 @@
+# TODO: Need to put in context window size somewhere. Maybe in h5 files.
+train:
+    device: &device cuda 
+    dataset: 
+        class_path: src.data.datasets.PositionRecoDataset
+        init_args: 
+            path: /nvme1/staging_scott/position_reco_test/train_dset.h5
+
+    batch_size: 64
+    val_batch_size: 128
+    shuffle: true
+    num_epochs: 20
+    train_val_split: 0.8
+
+    model: 
+        class_path: src.models.position_reco.PositionReco
+        init_args:
+            n_pmts: 9728 
+            d_model: 64
+            nhead: 4
+            dim_feedforward: 128
+            num_layers: 6
+            dropout: 0.1
+            hit_time_embedding_dim: 512
+    optimizer_class: torch.optim.Adam
+    optimizer_kwargs:
+        lr: 1e-5
+        # betas: [0.9, 0.98]
+        # eps: 1e-9
+    loss_fn:
+        class_path: torch.nn.MSELoss
+
+test:
+    test_file: "hello world"

@@ -1,4 +1,10 @@
 .vscode
+*.code-workspace
+
 *.ipynb
+__pycache__
+
+runs/
 
 condor_ratds_extract
+
