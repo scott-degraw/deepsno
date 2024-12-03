@@ -1,0 +1,55 @@
+import shutil
+from pathlib import Path
+
+import htcondor
+import yaml
+
+python_executable = str(Path("merge_and_preprocess.py").resolve())
+
+input_paths = Path("/data/snoplus3/degraw/uniform_electron_energy/pt-net-h5").glob("*.h5")
+input_paths = [str(path) for path in input_paths]
+
+config = {
+    "input_paths": input_paths,
+    "train_output_path": "/data/snoplus3/degraw/uniform_electron_energy/train_dset.h5",
+    "test_output_path": "/data/snoplus3/degraw/uniform_electron_energy/test_dset.h5",
+    "train_test_split": 0.8,
+    "block_size": 100_000_000,
+    "seed": 47381,
+}
+
+condor_root_dir = Path("condor_logs/merge").resolve()
+condor_log_dir = (condor_root_dir / "logs").resolve()
+stdout_dir = (condor_root_dir / "stdout").resolve()
+err_dir = (condor_root_dir / "err").resolve()
+
+condor_log_dir.mkdir(parents=True, exist_ok=True)
+stdout_dir.mkdir(parents=True, exist_ok=True)
+err_dir.mkdir(parents=True, exist_ok=True)
+
+config_path = condor_root_dir / "config.yaml"
+
+with open(config_path, "w") as yaml_file:
+    yaml.dump(config, yaml_file)
+
+job = htcondor.Submit(
+    {
+        "nice_user": "True",
+        "batch_name": "merge",
+        "getenv": "true",
+        "executable": shutil.which("python3"),
+        "arguments": f"-u {python_executable} --config {config_path}",
+        "output": str(stdout_dir / "out.log"),
+        "error": str(err_dir / "err.log"),
+        "log": str(condor_log_dir / "log.log"),
+        "max_materialize": "1",
+        "request_cpus": "16",
+        "request_memory": "16GB",
+    }
+)
+
+schedd = htcondor.Schedd()
+
+submit_result = schedd.submit(job)
+
+print(submit_result)

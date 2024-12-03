@@ -1,27 +1,11 @@
-from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import h5py
 import numpy as np
-
-np.random.seed(478374891)
-
-block_size = 100_000
-
-train_output_path = Path("/data/snoplus3/degraw/train_dset.h5")
-test_output_path = Path("/data/snoplus3/degraw/test_dset.h5")
-
-input_paths = list(Path("/data/snoplus3/degraw/extraction_test").glob("*.h5"))
-
-train_test_split = 0.8
-
-dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids"]
-dataset_identifiers += [f"mc_truth/position/{c}" for c in ["x", "y", "z"]]
-
-pmt_info_identifiers = [f"pmt_info/position/{c}" for c in ["x", "y", "z"]]
+from jsonargparse import CLI
 
 
-def find_norms(dataset: h5py.Dataset, block_size: int, mask_dataset: Optional[h5py.Dataset] = None):
+def find_norms(dataset: h5py.Dataset, block_size: int, mask_dataset: Optional[h5py.Dataset] = None) -> None:
     # This function counts on masked values having a value of 0
     n_events = dataset.shape[0]
 
@@ -64,7 +48,9 @@ def find_norms(dataset: h5py.Dataset, block_size: int, mask_dataset: Optional[h5
     dataset.attrs["root_mean_square_deviation"] = root_mean_square_deviation
 
 
-def merge_h5(input_paths: Path, output_path: Path, dataset_identifiers: list[str], pmt_info_identifiers: list[str]):
+def merge_h5(
+    input_paths: List[str], output_path: str, dataset_identifiers: List[str], pmt_info_identifiers: List[str]
+) -> None:
     with h5py.File(output_path, "w", libver="latest") as merged_h5:
         for dataset_identifier in dataset_identifiers:
             dataset_dims = []
@@ -114,8 +100,22 @@ def merge_h5(input_paths: Path, output_path: Path, dataset_identifiers: list[str
                 merged_h5.create_dataset_like(pmt_info_ident, pmt_info_item)
 
 
-if __name__ == "__main__":
-    input_path_indices = np.random.choice(np.arange(len(input_paths)), size=len(input_paths), replace=False)
+def merge_and_norm(
+    input_paths: List[str],
+    train_output_path: str,
+    test_output_path: str,
+    train_test_split: float,
+    positions: List[str] = ["x", "y", "z"],
+    block_size: int = 100_000_000,
+    seed: int = 487391,
+) -> None:
+    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids"]
+    dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
+
+    pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
+
+    generator = np.random.default_rng(seed)
+    input_path_indices = generator.choice(np.arange(len(input_paths)), size=len(input_paths), replace=False)
 
     split_index = np.floor(train_test_split * len(input_path_indices)).astype(np.int64)
 
@@ -148,5 +148,9 @@ if __name__ == "__main__":
         find_norms(
             train_h5["cal_pmt_events/hit_times"], block_size=block_size, mask_dataset=train_h5["cal_pmt_events/ids"]
         )
-        for c in ["x", "y", "z"]:
+        for c in positions:
             find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
+
+
+if __name__ == "__main__":
+    CLI(merge_and_norm, as_positional=False)
