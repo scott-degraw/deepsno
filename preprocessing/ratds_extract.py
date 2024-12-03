@@ -37,6 +37,8 @@ def check_file(path: Path):
 
 
 check_file(input_path)
+if not output_path.parent.is_dir():
+    raise FileNotFoundError(f"Output_file '{str(output_path)}' does not have parent directory that exists.")
 
 RAT.DU.Utility.Get().LoadDBAndBeginRun()  # Database will not be loaded unless this is run
 
