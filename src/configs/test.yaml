@@ -4,13 +4,13 @@ train:
     dataset: 
         class_path: src.data.datasets.PositionRecoDataset
         init_args: 
-            path: /nvme1/staging_scott/position_reco_test/train_dset.h5
+            path: /nvme1/staging_scott/uniform_electron_energy/train_dset.h5
 
     batch_size: 64
-    val_batch_size: 128
+    val_batch_size: 64
     shuffle: true
-    num_epochs: 20
-    train_val_split: 0.8
+    num_epochs: 5
+    train_val_split: 0.99
 
     model: 
         class_path: src.models.position_reco.PositionReco
@@ -25,10 +25,13 @@ train:
     optimizer_class: torch.optim.Adam
     optimizer_kwargs:
         lr: 1e-5
-        # betas: [0.9, 0.98]
-        # eps: 1e-9
+        betas: [0.9, 0.98]
+        eps: 1e-9
     loss_fn:
         class_path: torch.nn.MSELoss
+    val_metric_fn:
+        class_path: src.metrics.position_reco.ResolutionLoss
+
 
 test:
     test_file: "hello world"
