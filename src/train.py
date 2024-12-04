@@ -36,15 +36,6 @@ def validate(
         return val_metric.item()
 
 
-class VaswamiLRSchedule:
-    def __init__(self, d_model: int, n_warmup_steps: int):
-        self.d_model = d_model
-        self.n_warmup_steps = n_warmup_steps
-
-    def __call__(self, step_num: int) -> float:
-        return (1 / torch.sqrt(self.d_model)) * min(1 / torch.sqrt(step_num), step_num * self.n_warmup_steps ** (-1.5))
-
-
 def train(
     model: nn.Module,
     device: str | torch.device,
@@ -56,8 +47,12 @@ def train(
     optimizer_class: Type[torch.optim.Optimizer],
     optimizer_kwargs: dict,
     loss_fn: nn.Module,
+    scheduler_class: Type[torch.optim.lr_scheduler.LRScheduler],
+    scheduler_kwargs: dict,
     val_metric_fn: nn.Module,
-    val_batch_size: int | None = None,
+    val_batch_size: int,
+    val_num_steps: int,
+    max_grad_norm: float = 0.0,
 ):
     if val_batch_size is None:
         val_batch_size = batch_size
@@ -81,6 +76,8 @@ def train(
     optimizer = optimizer_class(model.parameters(), **optimizer_kwargs)
     optimizer.zero_grad()
 
+    scheduler = scheduler_class(optimizer, **scheduler_kwargs)
+
     writer = SummaryWriter()
 
     writer.add_scalar("Number of training events", len(train_set))
@@ -91,8 +88,9 @@ def train(
     position_rmsds = torch.from_numpy(position_rmsds).to(device)
 
     it_num = 0
-    for epoch_num in range(num_epochs):
+    for _ in range(num_epochs):
         for inputs, truth in train_dataloader:
+            optimizer.zero_grad()
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)
 
@@ -101,20 +99,22 @@ def train(
             predict = model(**inputs)
 
             loss = loss_fn(predict, truth)
-            writer.add_scalar("Loss/train", loss.item(), it_num)
+            writer.add_scalar("Loss/train", loss.item(), it_num, new_style=True)
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
-            optimizer.zero_grad()
+            scheduler.step()
+            writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], it_num, new_style=True)
 
             it_num += 1
 
-            if it_num % 500 == 0:
+            if it_num % val_num_steps == 0:
                 val_metric = validate(val_dataloader, device=device, model=model, metric_fn=val_metric_fn)
                 model.output_unnorm = False
                 model.train()
 
-                writer.add_scalar("Loss/val", val_metric, it_num)
+                writer.add_scalar("Loss/val", val_metric, it_num, new_style=True)
 
     writer.flush()
     writer.close()

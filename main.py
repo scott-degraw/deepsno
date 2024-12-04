@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import jsonargparse
 
 from src.test import test
