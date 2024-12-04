@@ -44,14 +44,14 @@ class PositionReco(nn.Module):
         self.output_unnorm: bool = False
 
     def add_input_norm(self, hit_time_mean: float, hit_time_rmsd: float, input_norm: bool = True):
-        self.hit_time_mean: float = hit_time_mean
-        self.hit_time_rmsd: float = hit_time_rmsd
+        self.register_buffer("hit_time_mean", torch.tensor(hit_time_mean))
+        self.register_buffer("hit_time_rmsd", torch.tensor(hit_time_rmsd))
 
         self.input_norm = input_norm
 
     def add_output_unnorm(self, position_means: Any, position_rmsds: Any, output_unnorm: bool = True):
-        self.position_means: float = position_means
-        self.position_rmsds: float = position_rmsds
+        self.register_buffer("position_means", position_means)
+        self.register_buffer("position_rmsds", position_rmsds)
 
         self.output_unnorm = output_unnorm
 
