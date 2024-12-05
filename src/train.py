@@ -1,5 +1,3 @@
-from typing import Type
-
 import torch
 from torch import nn
 from torch.utils import _pytree as pytree
@@ -18,8 +16,8 @@ def validate(
     model.output_unnorm = True
 
     with torch.no_grad():
-        val_metric_sum = 0
-        n_data_points = 0
+        val_metric_sum: float = 0
+        n_data_points: int = 0
         for inputs, truth in dataloader:
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)
@@ -29,60 +27,31 @@ def validate(
 
             predict = model(**inputs)
 
-            metric = batch_size * metric_fn(predict, truth)
+            metric = batch_size * metric_fn(predict, truth).item()
             val_metric_sum += metric
 
         val_metric = val_metric_sum / n_data_points
-        return val_metric.item()
+        return val_metric
 
 
 def train(
+    writer: SummaryWriter,
     model: nn.Module,
     device: str | torch.device,
-    dataset: data.Dataset,
-    train_val_split: float,
-    batch_size: int,
-    shuffle: bool,
+    train_dataloader: data.DataLoader,
+    val_dataloader: data.DataLoader,
     num_epochs: int,
-    optimizer_class: Type[torch.optim.Optimizer],
-    optimizer_kwargs: dict,
+    optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
-    scheduler_class: Type[torch.optim.lr_scheduler.LRScheduler],
-    scheduler_kwargs: dict,
     val_metric_fn: nn.Module,
-    val_batch_size: int,
     val_num_steps: int,
+    position_means: torch.Tensor,
+    position_rmsds: torch.Tensor,
+    scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
 ):
-    if val_batch_size is None:
-        val_batch_size = batch_size
-
-    train_set, val_set = data.random_split(dataset, [train_val_split, 1 - train_val_split])
-
-    train_dataloader = data.DataLoader(train_set, batch_size=batch_size, shuffle=shuffle)
-    val_dataloader = data.DataLoader(val_set, batch_size=val_batch_size, shuffle=False)
-
-    position_means = dataset.position_means
-    position_rmsds = dataset.position_rmsds
-    model.add_input_norm(hit_time_mean=dataset.hit_time_mean, hit_time_rmsd=dataset.hit_time_rmsd)
-    model.add_output_unnorm(
-        position_means=torch.from_numpy(position_means),
-        position_rmsds=torch.from_numpy(position_rmsds),
-        output_unnorm=False,
-    )
-
     model = model.to(device)
-
-    optimizer = optimizer_class(model.parameters(), **optimizer_kwargs)
-    optimizer.zero_grad()
-
-    scheduler = scheduler_class(optimizer, **scheduler_kwargs)
-
-    writer = SummaryWriter()
-
-    writer.add_scalar("Number of training events", len(train_set))
-    writer.add_scalar("Number of validation events", len(val_set))
-    writer.add_scalar("Number of training batches", len(train_dataloader))
+    model.train()
 
     position_means = torch.from_numpy(position_means).to(device)
     position_rmsds = torch.from_numpy(position_rmsds).to(device)
@@ -104,8 +73,9 @@ def train(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
-            scheduler.step()
-            writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], it_num, new_style=True)
+            if scheduler is not None:
+                scheduler.step()
+                writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], it_num, new_style=True)
 
             it_num += 1
 
@@ -115,6 +85,3 @@ def train(
                 model.train()
 
                 writer.add_scalar("Loss/val", val_metric, it_num, new_style=True)
-
-    writer.flush()
-    writer.close()

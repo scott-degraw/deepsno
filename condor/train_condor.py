@@ -28,10 +28,9 @@ job = htcondor.Submit(
         "output": str(stdout_dir / "out.log"),
         "error": str(err_dir / "err.log"),
         "log": str(condor_log_dir / "log.log"),
-        "max_materialize": "1",
         "request_gpus": "1",
-        "request_cpus": "1",
-        "request_memory": "4G",
+        "request_cpus": "33",
+        "request_memory": "64G",
     }
 )
 
