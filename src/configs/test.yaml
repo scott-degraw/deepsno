@@ -39,8 +39,9 @@ train:
             total_steps: 60000
             # total_steps: 3000 # this did well
 
-    val_metric_fn:
+    val_loss_fn:
         class_path: src.metrics.position_reco.ResolutionLoss
+    val_loss_is_inverted: true
     
     val_num_steps: 200
 

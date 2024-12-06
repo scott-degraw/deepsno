@@ -1,7 +1,9 @@
 import shutil
+import subprocess
 from pathlib import Path
 
 import htcondor
+import yaml
 
 python_executable = str(Path("main.py").resolve())
 conda_env_name = "deepsno"
@@ -37,5 +39,10 @@ job = htcondor.Submit(
 schedd = htcondor.Schedd()
 
 submit_result = schedd.submit(job)
+
+with open(config_path) as yaml_file:
+    cfg = yaml.safe_load(yaml_file)
+
+tensorboard_process = subprocess.Popen(["conda", "run", "--name", conda_env_name, "--no-capture-output", "tensorboard", "--logdir", cfg["train"]["checkpoint_dir"], "--load_fast", "auto",])
 
 print(submit_result)

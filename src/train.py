@@ -1,3 +1,6 @@
+from copy import deepcopy
+from pathlib import Path
+
 import torch
 from torch import nn
 from torch.utils import _pytree as pytree
@@ -9,7 +12,7 @@ def validate(
     dataloader: data.DataLoader,
     device: str | torch.device,
     model: nn.Module,
-    metric_fn: nn.Module,
+    loss_fn: nn.Module,
 ) -> float:
     model = model.to(device)
     model = model.eval()
@@ -27,7 +30,7 @@ def validate(
 
             predict = model(**inputs)
 
-            metric = batch_size * metric_fn(predict, truth).item()
+            metric = batch_size * loss_fn(predict, truth).item()
             val_metric_sum += metric
 
         val_metric = val_metric_sum / n_data_points
@@ -35,6 +38,7 @@ def validate(
 
 
 def train(
+    checkpoint_dir: str | Path,
     writer: SummaryWriter,
     model: nn.Module,
     device: str | torch.device,
@@ -43,20 +47,25 @@ def train(
     num_epochs: int,
     optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
-    val_metric_fn: nn.Module,
+    val_loss_fn: nn.Module,
+    val_loss_is_inverted: bool,
     val_num_steps: int,
     position_means: torch.Tensor,
     position_rmsds: torch.Tensor,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
 ):
-    model = model.to(device)
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(exist_ok=True, parents=True)
+
+    model.to(device)
     model.train()
 
     position_means = torch.from_numpy(position_means).to(device)
     position_rmsds = torch.from_numpy(position_rmsds).to(device)
 
     it_num = 0
+    sub_epoch = 0
     for _ in range(num_epochs):
         for inputs, truth in train_dataloader:
             optimizer.zero_grad()
@@ -80,8 +89,27 @@ def train(
             it_num += 1
 
             if it_num % val_num_steps == 0:
-                val_metric = validate(val_dataloader, device=device, model=model, metric_fn=val_metric_fn)
+                val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
                 model.output_unnorm = False
                 model.train()
 
-                writer.add_scalar("Loss/val", val_metric, it_num, new_style=True)
+                writer.add_scalar("Loss/val", val_loss, it_num, new_style=True)
+
+                if val_loss_is_inverted:
+                    val_loss = -val_loss
+
+                state_dict = {
+                    "sub_epoch": sub_epoch,
+                    "model": deepcopy(model.state_dict()),
+                    "optimizer": deepcopy(optimizer.state_dict()),
+                }
+
+                if scheduler is not None:
+                    state_dict["scheduler"] = deepcopy(scheduler.state_dict())
+                state_dict["scheduler"] = None
+
+                filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
+
+                torch.save(state_dict, checkpoint_dir / filename)
+
+                sub_epoch += 1

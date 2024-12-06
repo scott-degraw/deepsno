@@ -50,8 +50,9 @@ if __name__ == "__main__":
     train_parser.add_argument("--scheduler", type=dict, required=False)
     train_parser.add_argument("--max_grad_norm", type=float, default=0.0)
 
-    train_parser.add_argument("--val_metric_fn", type=nn.Module, required=True)
+    train_parser.add_argument("--val_loss_fn", type=nn.Module, required=True)
     train_parser.add_argument("--val_num_steps", type=int, required=False)
+    train_parser.add_argument("--val_loss_is_inverted", type=bool, default=False)
 
     test_parser = ArgumentParser()
 
@@ -68,16 +69,16 @@ if __name__ == "__main__":
         save_cfg = cfg
         cfg = parser.instantiate_classes(cfg)
         cfg = cfg.train
-        checkpoint_dir: Path = Path(cfg.checkpoint_dir)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        model_save_dir: Path = Path(cfg.checkpoint_dir)
+        model_save_dir.mkdir(parents=True, exist_ok=True)
 
         datetime_string = datetime.now().strftime(r"%Y-%m-%d_%H-%M-%S")
 
-        checkpoint_dir = checkpoint_dir / datetime_string
+        model_save_dir = model_save_dir / datetime_string
 
-        checkpoint_dir.mkdir()
+        model_save_dir.mkdir()
 
-        parser.save(save_cfg, checkpoint_dir / "config.yaml")
+        parser.save(save_cfg, model_save_dir / "config.yaml")
 
         # Instantiate the optimizer
         check_instantiate_keys(cfg.optimizer, "optimizer")
@@ -118,13 +119,14 @@ if __name__ == "__main__":
         if cfg.val_num_steps is None:
             cfg.val_num_steps = len(train_dataloader)
 
-        writer = SummaryWriter()
+        writer = SummaryWriter(log_dir=model_save_dir)
 
         writer.add_scalar("Number of training events", len(train_set))
         writer.add_scalar("Number of validation events", len(val_set))
         writer.add_scalar("Number of training batches", len(train_dataloader))
 
         train(
+            checkpoint_dir=model_save_dir / "ckpt",
             writer=writer,
             model=cfg.model,
             device=cfg.device,
@@ -134,7 +136,8 @@ if __name__ == "__main__":
             optimizer=optimizer,
             loss_fn=cfg.loss_fn,
             scheduler=scheduler,
-            val_metric_fn=cfg.val_metric_fn,
+            val_loss_fn=cfg.val_loss_fn,
+            val_loss_is_inverted=cfg.val_loss_is_inverted,
             val_num_steps=cfg.val_num_steps,
             position_means=position_means,
             position_rmsds=position_rmsds,
