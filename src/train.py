@@ -1,11 +1,45 @@
 from copy import deepcopy
 from pathlib import Path
 
+import h5py
 import torch
 from torch import nn
 from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
+
+
+def test(
+    model: nn.Module,
+    dataloader: data.DataLoader,
+    h5_group: h5py.File | h5py.Group,
+    dataset_length: int,
+    device: str | torch.device,
+):
+    model.to(device)
+    model.eval()
+
+    _, truth = next(iter(dataloader))
+    truth = truth.numpy()
+    dataset_shape = (dataset_length, truth.shape[1])
+    dataset_dtype = truth.dtype
+
+    position_group = h5_group.create_group("position")
+    truth_dset = position_group.create_dataset("truth", shape=dataset_shape, dtype=dataset_dtype)
+    predict_dset = position_group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
+
+    start_row = 0
+    with torch.no_grad():
+        for inputs, truth in dataloader:
+            inputs = pytree.tree_map(lambda x: x.to(device), inputs)
+            predicts = model(**inputs)
+
+            batch_size = truth.shape[0]
+            batch_slice = slice(start_row, start_row + batch_size)
+            truth_dset[batch_slice] = truth.numpy()
+            predict_dset[batch_slice] = predicts.cpu().numpy()
+
+            start_row += batch_size
 
 
 def validate(

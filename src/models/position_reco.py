@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -6,6 +6,18 @@ from torch import nn
 
 
 class PositionReco(nn.Module):
+    def add_input_norm(self, hit_time_mean: float | torch.FloatTensor, hit_time_rmsd: float | torch.FloatTensor, input_norm: bool = True):
+        self.register_buffer("hit_time_mean", torch.tensor(hit_time_mean))
+        self.register_buffer("hit_time_rmsd", torch.tensor(hit_time_rmsd))
+
+        self.input_norm = input_norm
+
+    def add_output_unnorm(self, position_means: Tuple, position_rmsds: Tuple, output_unnorm: bool = True):
+        self.register_buffer("position_means", torch.tensor(position_means))
+        self.register_buffer("position_rmsds", torch.tensor(position_rmsds))
+
+        self.output_unnorm = output_unnorm
+
     def __init__(
         self,
         n_pmts: int,
@@ -15,6 +27,7 @@ class PositionReco(nn.Module):
         num_layers: int,
         dropout: float,
         hit_time_embedding_dim: int,
+        norm_dict: Dict | None = None,
     ):
         super().__init__()
         self.n_pmts = n_pmts
@@ -40,20 +53,11 @@ class PositionReco(nn.Module):
         )
         self.position_predictor = nn.Linear(d_model, 3)
 
-        self.input_norm: bool = False
-        self.output_unnorm: bool = False
-
-    def add_input_norm(self, hit_time_mean: float, hit_time_rmsd: float, input_norm: bool = True):
-        self.register_buffer("hit_time_mean", torch.tensor(hit_time_mean))
-        self.register_buffer("hit_time_rmsd", torch.tensor(hit_time_rmsd))
-
-        self.input_norm = input_norm
-
-    def add_output_unnorm(self, position_means: Any, position_rmsds: Any, output_unnorm: bool = True):
-        self.register_buffer("position_means", position_means)
-        self.register_buffer("position_rmsds", position_rmsds)
-
-        self.output_unnorm = output_unnorm
+        if norm_dict is not None:
+            if "input_norms" in norm_dict:
+                self.add_input_norm(**norm_dict["input_norms"])
+            if "output_norms" in norm_dict:
+                self.add_output_unnorm(**norm_dict["output_norms"])
 
     def forward(self, hit_times, pmt_ids):
         if self.input_norm:
