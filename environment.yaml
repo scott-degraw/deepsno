@@ -5,15 +5,13 @@ channels:
   - nvidia
 dependencies:
   - python=3.12
-  - pytorch
+  - pytorch=2.5
   - pytorch-cuda=12.4
-  - scipy
-  - numpy
-  - matplotlib
-  - pandas
-  - python-htcondor
-  - hdf5
-  - h5py
+  - scipy=1.14
+  - numpy=2.1
+  - python-htcondor=24.1
+  - hdf5=1.14
+  - h5py=3.12
   - highfive
-  - jsonargparse
-  - tensorboard
+  - jsonargparse=4.33
+  - tensorboard=2.18
