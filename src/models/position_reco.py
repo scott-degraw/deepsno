@@ -1,20 +1,27 @@
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+from src.utils.utils import copy_if_tensor
+
 
 class PositionReco(nn.Module):
-    def add_input_norm(self, hit_time_mean: float | torch.FloatTensor, hit_time_rmsd: float | torch.FloatTensor, input_norm: bool = True):
-        self.register_buffer("hit_time_mean", torch.tensor(hit_time_mean))
-        self.register_buffer("hit_time_rmsd", torch.tensor(hit_time_rmsd))
+    def add_input_norm(
+        self,
+        hit_time_mean: float | torch.FloatTensor,
+        hit_time_rmsd: float | torch.FloatTensor,
+        input_norm: bool = True,
+    ):
+        self.register_buffer("hit_time_mean", copy_if_tensor(hit_time_mean))
+        self.register_buffer("hit_time_rmsd", copy_if_tensor(hit_time_rmsd))
 
         self.input_norm = input_norm
 
     def add_output_unnorm(self, position_means: Tuple, position_rmsds: Tuple, output_unnorm: bool = True):
-        self.register_buffer("position_means", torch.tensor(position_means))
-        self.register_buffer("position_rmsds", torch.tensor(position_rmsds))
+        self.register_buffer("position_means", copy_if_tensor(position_means))
+        self.register_buffer("position_rmsds", copy_if_tensor(position_rmsds))
 
         self.output_unnorm = output_unnorm
 

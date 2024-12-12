@@ -1,9 +1,26 @@
 import math
 import re
 from pathlib import Path
+from typing import Any
 
 import h5py
 import jsonargparse
+import torch
+from torch import cuda
+
+
+def copy_if_tensor(x: Any | torch.Tensor) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return x.detach().clone()
+    return torch.tensor(x)
+
+
+def get_gpu_memory_usage(device: str | torch.device) -> tuple[int, int]:
+    free_bytes, total_bytes = cuda.mem_get_info(device)
+
+    MiB: int = 1024**2
+
+    return free_bytes / MiB, total_bytes / MiB
 
 
 def get_best_ckpt(checkpoint_dir: str | Path) -> Path:

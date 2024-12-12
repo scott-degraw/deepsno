@@ -155,7 +155,7 @@ if __name__ == "__main__":
             checkpoint_dir=model_save_dir / "ckpt",
             writer=writer,
             model=model,
-            device=cfg.device,
+            device=torch.device(cfg.device),
             train_dataloader=train_dataloader,
             val_dataloader=val_dataloader,
             num_epochs=cfg.num_epochs,

@@ -8,6 +8,8 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
+from src.utils.utils import get_gpu_memory_usage
+
 
 def test(
     model: nn.Module,
@@ -89,6 +91,7 @@ def train(
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
 ):
+    device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(exist_ok=True, parents=True)
 
@@ -98,10 +101,15 @@ def train(
     position_means = torch.from_numpy(position_means).to(device)
     position_rmsds = torch.from_numpy(position_rmsds).to(device)
 
+    if "cuda" in device.type:
+        writer.add_scalar("GPU/total_memory-MiB", str(get_gpu_memory_usage(device)[1]), new_style=True)
+
     it_num = 0
     sub_epoch = 0
     for _ in range(num_epochs):
         for inputs, truth in train_dataloader:
+            if "cuda" in device.type:
+                writer.add_scalar("GPU/memory_usage-MiB", get_gpu_memory_usage(device)[0], it_num, new_style=True)
             optimizer.zero_grad()
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)

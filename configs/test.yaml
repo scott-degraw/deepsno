@@ -48,9 +48,9 @@ train:
     max_grad_norm: 1
 
 predict:
-    ckpt: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-10_23-36-17/ckpt
-    ckpt_config: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-10_23-36-17/config.yaml
-    output_file: /data/snoplus3/degraw/uniform_electron_energy/test_results.h5
+    ckpt: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-11_03-24-40/ckpt
+    ckpt_config: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-11_03-24-40/config.yaml
+    output_file: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-11_03-24-40/test_results.h5
     device: *device
     dataset: 
         class_path: *dataset_class_path

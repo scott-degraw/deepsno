@@ -11,7 +11,7 @@ config_path = "configs/test.yaml"
 condor_root_dir = Path("condor_logs/predict").resolve()
 condor_root_dir.mkdir(parents=True, exist_ok=True)
 
-arguments = f"run --name {conda_env_name} --no-capture-output {python_executable} --config {config_path} predict"
+arguments = f"run --name {conda_env_name} --no-capture-output {python_executable} --config {config_path} predict "
 
 job = htcondor.Submit(
     {
