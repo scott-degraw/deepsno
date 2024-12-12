@@ -38,6 +38,7 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
 
     train_parser = ArgumentParser(prog="app")
+    train_parser.add_argument("--seed", type=int, default=0)
     train_parser.add_argument("--checkpoint_dir", type=ptyping.Path_dc, required=True)
     train_parser.add_argument("--device", type=str, required=True)
     train_parser.add_argument("--dataset", type=torch.utils.data.Dataset)
@@ -76,6 +77,8 @@ if __name__ == "__main__":
     cfg = parser.parse_args()
 
     if cfg.subcommand == "train":
+        torch.manual_seed(cfg.train.seed)
+
         cfg = jsonargparse.namespace_to_dict(cfg)
         cfg: dict = {"model": cfg["model"], "train": cfg["train"]}
 

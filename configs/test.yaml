@@ -11,6 +11,7 @@ model:
         hit_time_embedding_dim: 512
 
 train:
+    seed: 783
     checkpoint_dir: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/
     device: &device cuda 
     dataset: 
