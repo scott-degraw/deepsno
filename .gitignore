@@ -1,10 +1,11 @@
-.vscode
+.vscode/
 *.code-workspace
 
 *.ipynb
 __pycache__
 
 runs/
+plots/
 
-condor_logs
+condor_logs/
 
