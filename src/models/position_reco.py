@@ -1,10 +1,28 @@
-from typing import Dict, Tuple
+from pathlib import Path
 
+import h5py
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from src.utils.utils import copy_if_tensor
+
+
+class PositionRecoNorm(dict):
+    def __init__(self, train_file: str | Path, positions: tuple = ["x", "y", "z"]):
+        super().__init__()
+
+        with h5py.File(train_file) as h5_file:
+            self["input_norms"] = {
+                "hit_time_mean": float(h5_file["cal_pmt_events/hit_times"].attrs["mean"]),
+                "hit_time_rmsd": float(h5_file["cal_pmt_events/hit_times"].attrs["root_mean_square_deviation"]),
+            }
+            self["output_norms"] = {
+                "position_means": [float(h5_file[f"mc_truth/position/{c}"].attrs["mean"]) for c in positions],
+                "position_rmsds": [
+                    float(h5_file[f"mc_truth/position/{c}"].attrs["root_mean_square_deviation"]) for c in positions
+                ],
+            }
 
 
 class PositionReco(nn.Module):
@@ -19,11 +37,20 @@ class PositionReco(nn.Module):
 
         self.input_norm = input_norm
 
-    def add_output_unnorm(self, position_means: Tuple, position_rmsds: Tuple, output_unnorm: bool = True):
+    def add_output_unnorm(self, position_means: tuple, position_rmsds: tuple, output_unnorm: bool = True):
         self.register_buffer("position_means", copy_if_tensor(position_means))
         self.register_buffer("position_rmsds", copy_if_tensor(position_rmsds))
 
         self.output_unnorm = output_unnorm
+
+    def input_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return (hit_times - self.hit_time_mean) / self.hit_time_rmsd
+
+    def output_unnormalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
+        return positions * self.position_rmsds + self.position_means
+
+    def output_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
+        return (positions - self.position_means) / self.position_rmsds
 
     def __init__(
         self,
@@ -34,7 +61,7 @@ class PositionReco(nn.Module):
         num_layers: int,
         dropout: float,
         hit_time_embedding_dim: int,
-        norm_dict: Dict | None = None,
+        norm_dict: dict | None = None,
     ):
         super().__init__()
         self.n_pmts = n_pmts
@@ -65,10 +92,13 @@ class PositionReco(nn.Module):
                 self.add_input_norm(**norm_dict["input_norms"])
             if "output_norms" in norm_dict:
                 self.add_output_unnorm(**norm_dict["output_norms"])
+        else:
+            self.input_norm = False
+            self.output_unnorm = False
 
     def forward(self, hit_times, pmt_ids):
         if self.input_norm:
-            hit_times = (hit_times - self.hit_time_mean) / self.hit_time_rmsd
+            hit_times = self.input_normalize(hit_times)
 
         pmt_masks = pmt_ids == -1  # -1 indicates the PMT is padded
         not_padding_masks = ~pmt_masks
@@ -85,13 +115,11 @@ class PositionReco(nn.Module):
         x = self.transformer_encoder(x, src_key_padding_mask=pmt_masks)
 
         # TODO: Try an einsum here
-        x = torch.div(
-            torch.sum(x * not_padding_masks.unsqueeze(2), dim=1), torch.sum(not_padding_masks, dim=1).unsqueeze(1)
-        )
+        x = torch.sum(x * not_padding_masks.unsqueeze(2), dim=1) / torch.sum(not_padding_masks, dim=1).unsqueeze(1)
 
         x = self.position_predictor(x)
 
         if self.output_unnorm:
-            x = x * self.position_rmsds + self.position_means
+            x = self.output_unnormalize(x)
 
         return x

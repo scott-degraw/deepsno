@@ -20,6 +20,7 @@ def test(
 ):
     model.to(device)
     model.eval()
+    model.output_unnorm = True
 
     _, truth = next(iter(dataloader))
     truth = truth.numpy()
@@ -86,8 +87,6 @@ def train(
     val_loss_fn: nn.Module,
     val_loss_is_inverted: bool,
     val_num_steps: int,
-    position_means: torch.Tensor,
-    position_rmsds: torch.Tensor,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
 ):
@@ -97,9 +96,7 @@ def train(
 
     model.to(device)
     model.train()
-
-    position_means = torch.from_numpy(position_means).to(device)
-    position_rmsds = torch.from_numpy(position_rmsds).to(device)
+    model.output_unnorm = False
 
     if "cuda" in device.type:
         writer.add_scalar("GPU/total_memory-MiB", str(get_gpu_memory_usage(device)[1]), new_style=True)
@@ -114,7 +111,8 @@ def train(
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)
 
-            truth = (truth - position_means) / position_rmsds
+            if not model.output_unnorm:
+                truth = model.output_normalize(truth)
 
             predict = model(**inputs)
 
@@ -132,8 +130,9 @@ def train(
 
             if it_num % val_num_steps == 0:
                 val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
-                model.output_unnorm = False
+                model.to(device)
                 model.train()
+                model.output_unnorm = False # TODO: This may need to be changed
 
                 writer.add_scalar("Loss/val", val_loss, it_num, new_style=True)
 

@@ -17,10 +17,10 @@ from src.train import test, train
 from src.utils.utils import get_best_ckpt, write_config_to_h5
 
 
-def check_instantiate_keys(namespace: Namespace, object_name: str):
-    if "class_path" not in namespace:
+def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
+    if "class_path" not in cfg_obj:
         raise KeyError(f"'class_path' not found in {object_name} config object")
-    if "init_args" not in namespace:
+    if "init_args" not in cfg_obj:
         raise KeyError(f"'init_args' not found in {object_name} config object")
 
 
@@ -82,10 +82,23 @@ if __name__ == "__main__":
         cfg = jsonargparse.namespace_to_dict(cfg)
         cfg: dict = {"model": cfg["model"], "train": cfg["train"]}
 
+        # Instantiate the norm class if it is given
+
+        if "norm_dict" in cfg["model"]["init_args"]:
+            norm_dict_cfg = cfg["model"]["init_args"]["norm_dict"]
+            check_instantiate_keys(norm_dict_cfg, "norm_dict")
+            norm_dict_class = get_class(norm_dict_cfg["class_path"])
+            norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
+            cfg["model"]["init_args"]["norm_dict"] = dict(norm_dict)
+
+        # Instantiate the model and other classes
+
         save_cfg: dict = cfg
         cfg: Namespace = parser.instantiate_classes(cfg)
         model: Namespace = cfg.model
         cfg: Namespace = cfg.train
+
+        # Create the model save directory
 
         model_save_dir: Path = Path(cfg.checkpoint_dir)
         model_save_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +110,7 @@ if __name__ == "__main__":
         model_save_dir.mkdir()
 
         # Instantiate the optimizer
+
         check_instantiate_keys(cfg.optimizer, "optimizer")
         optimizer_class = get_class(cfg.optimizer["class_path"])
 
@@ -123,28 +137,10 @@ if __name__ == "__main__":
             val_set, batch_size=cfg.val_batch_size, shuffle=False, num_workers=cfg.num_workers
         )
 
-        position_means = cfg.dataset.position_means
-        position_rmsds = cfg.dataset.position_rmsds
-        model.add_input_norm(hit_time_mean=cfg.dataset.hit_time_mean, hit_time_rmsd=cfg.dataset.hit_time_rmsd)
-        model.add_output_unnorm(
-            position_means=torch.from_numpy(position_means),
-            position_rmsds=torch.from_numpy(position_rmsds),
-            output_unnorm=False,
-        )
-
-        save_cfg["model"]["init_args"]["norm_dict"] = {
-            "input_norms": {
-                "hit_time_mean": float(cfg.dataset.hit_time_mean),
-                "hit_time_rmsd": float(cfg.dataset.hit_time_rmsd),
-            },
-            "output_norms": {
-                "position_means": position_means.tolist(),
-                "position_rmsds": position_rmsds.tolist(),
-            },
-        }
-
         if cfg.val_num_steps is None:
             cfg.val_num_steps = len(train_dataloader)
+
+        # Save the config file
 
         parser.save(save_cfg, model_save_dir / "config.yaml")
 
@@ -168,8 +164,6 @@ if __name__ == "__main__":
             val_loss_fn=cfg.val_loss_fn,
             val_loss_is_inverted=cfg.val_loss_is_inverted,
             val_num_steps=cfg.val_num_steps,
-            position_means=position_means,
-            position_rmsds=position_rmsds,
             max_grad_norm=cfg.max_grad_norm,
         )
 

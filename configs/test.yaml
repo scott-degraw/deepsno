@@ -1,15 +1,3 @@
-# TODO: Need to put in context window size somewhere. Maybe in h5 files.
-model: 
-    class_path: src.models.position_reco.PositionReco
-    init_args:
-        n_pmts: 9728 
-        d_model: &d_model 64
-        nhead: 4
-        dim_feedforward: 128
-        num_layers: 6
-        dropout: 0.1
-        hit_time_embedding_dim: 512
-
 train:
     seed: 783
     checkpoint_dir: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/
@@ -17,7 +5,7 @@ train:
     dataset: 
         class_path: &dataset_class_path src.data.datasets.PositionRecoDataset
         init_args: 
-            path: /data/snoplus3/degraw/uniform_electron_energy/train_dset.h5
+            path: &train_path /data/snoplus3/degraw/uniform_electron_energy/train_dset.h5 
 
     batch_size: 200
     val_batch_size: &val_batch_size 200
@@ -60,3 +48,19 @@ predict:
     
     batch_size: *val_batch_size
     num_workers: *num_workers
+
+# TODO: Need to put in context window size somewhere. Maybe in h5 files.
+model: 
+    class_path: src.models.position_reco.PositionReco
+    init_args:
+        n_pmts: 9728 
+        d_model: &d_model 64
+        nhead: 4
+        dim_feedforward: 128
+        num_layers: 6
+        dropout: 0.1
+        hit_time_embedding_dim: 512
+        norm_dict:
+            class_path: src.models.position_reco.PositionRecoNorm
+            init_args: 
+                train_file: *train_path
