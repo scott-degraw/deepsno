@@ -3,13 +3,15 @@ from pathlib import Path
 
 import htcondor
 
+python_executable = str(Path("preprocessing/ratds_extract.py").resolve())
+root_macro = str(Path("preprocessing/ratds_extract.C").resolve())
+conda_env_name = "snoplus"
+
 min_hit_time = 0.0
 max_hit_time = 800.0
-context_window = 1024
+context_window = 4096
 
 input_paths = list(Path("/data/snoplus2/hewittc/lemon-type/pt-net-ratds").glob("*.root"))
-
-python_executable = str(Path("ratds_extract.py").resolve())
 
 output_dir = Path("/data/snoplus3/degraw/uniform_electron_energy/pt-net-h5/")
 output_dir.mkdir(parents=True, exist_ok=True)
@@ -17,8 +19,6 @@ output_dir.mkdir(parents=True, exist_ok=True)
 output_paths: list[Path] = []
 for input_path in input_paths:
     output_paths.append((output_dir / input_path.name).with_suffix(".h5"))
-
-root_exec: str = shutil.which("root")
 
 condor_root_dir = Path("condor_logs/ratds_extract").resolve()
 condor_log_dir = (condor_root_dir / "logs").resolve()
@@ -42,8 +42,11 @@ for input_path, output_path in zip(input_paths, output_paths):
         }
     )
 
-arguments = f"{python_executable} -i $(input_file) -o $(output_file)"
-arguments += f" --min_hit_time {min_hit_time} --max_hit_time {max_hit_time} --context_window {context_window}"
+arguments = (
+    f"run --name {conda_env_name} --no-capture-output {python_executable} "
+    f" -m {root_macro} -i $(input_file) -o $(output_file) "
+    f" --min_hit_time {min_hit_time} --max_hit_time {max_hit_time} --context_window {context_window} "
+)
 
 print("Creating job")
 
@@ -52,7 +55,7 @@ job = htcondor.Submit(
         "nice_user": "True",
         "batch_name": "ratds_extract",
         "getenv": "true",
-        "executable": shutil.which("python3"),
+        "executable": shutil.which("conda"),
         "arguments": arguments,
         "output": "$(output_log)",
         "error": "$(error_log)",

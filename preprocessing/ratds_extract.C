@@ -57,9 +57,8 @@ void test_vector() {
 }
 
 void ratds_extract(std::string input_filename, std::string output_filename, Float_t min_hit_time, Float_t max_hit_time,
-                   std::size_t context_window) {
+                   std::size_t context_window, std::size_t max_triggers = 1) {
     std::cout << "Extracting data from " << input_filename << " into " << output_filename << "\n";
-    std::size_t max_triggers = 1; // TODO: Make this into an argument
 
     fs::path path(input_filename);
 
@@ -82,16 +81,16 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
     auto pmt_info_group = h5_file.createGroup("pmt_info");
 
     const RAT::DU::PMTInfo &pmt_info = RAT::DU::Utility::Get()->GetPMTInfo();
-    std::size_t n_pmts_all_types = pmt_info.GetCount();
+    std::size_t n_pmts = pmt_info.GetCount();
 
     auto pmt_pos_group = pmt_info_group.createGroup("position");
 
     // TODO: add in coordinate system
-    std::vector<Float_t> pmt_x_pos(n_pmts_all_types, 0);
-    std::vector<Float_t> pmt_y_pos(n_pmts_all_types, 0);
-    std::vector<Float_t> pmt_z_pos(n_pmts_all_types, 0);
+    std::vector<Float_t> pmt_x_pos(n_pmts, 0);
+    std::vector<Float_t> pmt_y_pos(n_pmts, 0);
+    std::vector<Float_t> pmt_z_pos(n_pmts, 0);
 
-    for (UInt_t pmt_id = 0; pmt_id < n_pmts_all_types; pmt_id++) {
+    for (UInt_t pmt_id = 0; pmt_id < n_pmts; pmt_id++) {
         const TVector3 pos = pmt_info.GetPosition(pmt_id);
         pmt_x_pos.at(pmt_id) = pos.X();
         pmt_y_pos.at(pmt_id) = pos.Y();
@@ -125,7 +124,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
 
     auto cal_pmt_events_group = h5_file.createGroup("cal_pmt_events");
 
-    Vector2D<Int_t> cal_pmt_ids(all_evs, context_window, -1);
+    Vector2D<UInt_t> cal_pmt_ids(all_evs, context_window, 0); // PMT id of 0 corresponds to PMT that does not exist
     Vector2D<Float_t> cal_pmt_times(all_evs, context_window, 0);
 
     std::size_t evs_counter = 0;
@@ -147,7 +146,6 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
             std::size_t n_cal_pmts = std::min(cal_pmts.GetCount(), context_window);
             for (std::size_t i_pmt = 0; i_pmt < n_cal_pmts; i_pmt++) {
                 const RAT::DS::PMTCal &cal_pmt = cal_pmts.GetPMT(i_pmt);
-                UInt_t pmt_id = cal_pmt.GetID();
                 cal_pmt_ids(evs_counter, i_pmt) = cal_pmt.GetID();
                 Float_t pmt_time = static_cast<Float_t>(cal_pmt.GetTime());
                 pmt_time = std::clamp(pmt_time, min_hit_time, max_hit_time);
@@ -170,6 +168,6 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
 
     auto cal_pmt_times_dset = cal_pmt_events_group.createDataSet<Float_t>("hit_times", cal_pmt_dataspace);
     cal_pmt_times_dset.write_raw(cal_pmt_times.data());
-    auto cal_pmt_ids_dset = cal_pmt_events_group.createDataSet<Int_t>("ids", cal_pmt_dataspace);
+    auto cal_pmt_ids_dset = cal_pmt_events_group.createDataSet<UInt_t>("ids", cal_pmt_dataspace);
     cal_pmt_ids_dset.write_raw(cal_pmt_ids.data());
 }
