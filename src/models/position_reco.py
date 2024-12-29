@@ -96,25 +96,21 @@ class PositionReco(nn.Module):
             self.input_norm = False
             self.output_unnorm = False
 
-    def forward(self, hit_times, pmt_ids):
+    def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
+        # TODO: Maybe think more about the memory usage. See if there are tensors that I should delete during the forward pass
         if self.input_norm:
             hit_times = self.input_normalize(hit_times)
 
-        pmt_masks = pmt_ids == -1  # -1 indicates the PMT is padded
-        not_padding_masks = ~pmt_masks
+        pmt_masks = pmt_ids == 0  # 0 indicates the PMT is padded
 
-        pmt_ids += 1  # F.one_hot requires all classes be labelled by 01
-        pmt_one_hot = F.one_hot(pmt_ids, num_classes=self.n_pmts + 1).float()
+        pmt_one_hot = F.one_hot(pmt_ids, num_classes=self.n_pmts).float()
 
-        pmt_embedding = self.pmt_embedder(pmt_one_hot)
-
-        hit_time_embedding = self.hit_time_embedder(hit_times.unsqueeze(-1))
-
-        x = pmt_embedding + hit_time_embedding
+        x = self.pmt_embedder(pmt_one_hot) + self.hit_time_embedder(hit_times.unsqueeze(-1))
 
         x = self.transformer_encoder(x, src_key_padding_mask=pmt_masks)
 
         # TODO: Try an einsum here
+        not_padding_masks = ~pmt_masks
         x = torch.sum(x * not_padding_masks.unsqueeze(2), dim=1) / torch.sum(not_padding_masks, dim=1).unsqueeze(1)
 
         x = self.position_predictor(x)
