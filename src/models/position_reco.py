@@ -65,6 +65,7 @@ class PositionReco(nn.Module):
     ):
         super().__init__()
         self.n_pmts = n_pmts
+        self.dropout_p = dropout
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -79,7 +80,7 @@ class PositionReco(nn.Module):
             encoder_layer, num_layers=num_layers, enable_nested_tensor=False
         )
 
-        self.pmt_embedder = nn.Linear(n_pmts + 1, d_model)
+        self.pmt_embedder = nn.Linear(n_pmts, d_model)
         self.hit_time_embedder = nn.Sequential(
             nn.Linear(1, hit_time_embedding_dim),
             nn.Tanh(),
@@ -95,6 +96,15 @@ class PositionReco(nn.Module):
         else:
             self.input_norm = False
             self.output_unnorm = False
+
+    def train(self, mode=True):
+        super().train(mode=mode)
+        self.transformer_encoder.train()
+        p = self.dropout_p if mode else 0.0
+        for layer in self.transformer_encoder.layers:
+            layer.dropout.p = p
+            layer.dropout1.p = p
+            layer.dropout2.p = p
 
     def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
         # TODO: Maybe think more about the memory usage. See if there are tensors that I should delete during the forward pass
