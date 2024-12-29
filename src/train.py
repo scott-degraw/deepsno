@@ -45,33 +45,28 @@ def test(
             start_row += batch_size
 
 
-def validate(
-    dataloader: data.DataLoader,
-    device: str | torch.device,
-    model: nn.Module,
-    loss_fn: nn.Module,
-) -> float:
-    model = model.to(device)
-    model = model.eval()
+@torch.inference_mode()
+def validate(dataloader: data.DataLoader, device: str | torch.device, model: nn.Module, loss_fn: nn.Module) -> float:
+    model.to(device)
+    model.eval()
     model.output_unnorm = True
+    val_metric_sum: float = 0
+    n_data_points: int = 0
+    print("Validating")
+    for batch_num, (inputs, truth) in enumerate(dataloader):
+        print(f"Validation batch: {batch_num + 1}/{len(dataloader)}")
+        inputs = pytree.tree_map(lambda x: x.to(device), inputs)
+        truth = pytree.tree_map(lambda x: x.to(device), truth)
 
-    with torch.no_grad():
-        val_metric_sum: float = 0
-        n_data_points: int = 0
-        for inputs, truth in dataloader:
-            inputs = pytree.tree_map(lambda x: x.to(device), inputs)
-            truth = pytree.tree_map(lambda x: x.to(device), truth)
+        batch_size = truth.shape[0]
+        n_data_points += batch_size
+        predict = model(**inputs)
 
-            batch_size = truth.shape[0]
-            n_data_points += batch_size
+        metric = batch_size * loss_fn(predict, truth).item()
+        val_metric_sum += metric
 
-            predict = model(**inputs)
-
-            metric = batch_size * loss_fn(predict, truth).item()
-            val_metric_sum += metric
-
-        val_metric = val_metric_sum / n_data_points
-        return val_metric
+    val_metric = val_metric_sum / n_data_points
+    return val_metric
 
 
 def train(
@@ -103,8 +98,9 @@ def train(
 
     it_num = 0
     sub_epoch = 0
-    for _ in range(num_epochs):
-        for inputs, truth in train_dataloader:
+    for epoch_num in range(num_epochs):
+        for batch_num, (inputs, truth) in enumerate(train_dataloader):
+            print(f"Epoch: {epoch_num + 1}, Training batch: {batch_num + 1}/{len(train_dataloader)}")
             if "cuda" in device.type:
                 writer.add_scalar("GPU/memory_usage-MiB", get_gpu_memory_usage(device)[0], it_num, new_style=True)
             optimizer.zero_grad()
@@ -129,10 +125,11 @@ def train(
             it_num += 1
 
             if it_num % val_num_steps == 0:
+                del inputs, truth, predict, loss
                 val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
                 model.to(device)
                 model.train()
-                model.output_unnorm = False # TODO: This may need to be changed
+                model.output_unnorm = False  # TODO: This may need to be changed
 
                 writer.add_scalar("Loss/val", val_loss, it_num, new_style=True)
 
