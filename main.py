@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -u
 
 import importlib
 from datetime import datetime
@@ -32,6 +32,17 @@ def get_class(class_path: str) -> type:
         module = importlib.import_module(__name__)
 
     return getattr(module, class_str)
+
+
+def initialize_norm_dict(model_cfg: dict):
+    # Instantiate the norm class if it is given
+
+    if "norm_dict" in model_cfg["init_args"]:
+        norm_dict_cfg = model_cfg["init_args"]["norm_dict"]
+        check_instantiate_keys(norm_dict_cfg, "norm_dict")
+        norm_dict_class = get_class(norm_dict_cfg["class_path"])
+        norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
+        model_cfg["init_args"]["norm_dict"] = dict(norm_dict)
 
 
 if __name__ == "__main__":
@@ -76,31 +87,16 @@ if __name__ == "__main__":
 
     cfg = parser.parse_args()
 
-    if cfg.subcommand == "train":
-        torch.manual_seed(cfg.train.seed)
+    cfg = jsonargparse.namespace_to_dict(cfg)
 
-        cfg = jsonargparse.namespace_to_dict(cfg)
+    if cfg["subcommand"] == "train":
+        torch.manual_seed(cfg["train"]["seed"])
+
         cfg: dict = {"model": cfg["model"], "train": cfg["train"]}
-
-        # Instantiate the norm class if it is given
-
-        if "norm_dict" in cfg["model"]["init_args"]:
-            norm_dict_cfg = cfg["model"]["init_args"]["norm_dict"]
-            check_instantiate_keys(norm_dict_cfg, "norm_dict")
-            norm_dict_class = get_class(norm_dict_cfg["class_path"])
-            norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
-            cfg["model"]["init_args"]["norm_dict"] = dict(norm_dict)
-
-        # Instantiate the model and other classes
-
-        save_cfg: dict = cfg
-        cfg: Namespace = parser.instantiate_classes(cfg)
-        model: Namespace = cfg.model
-        cfg: Namespace = cfg.train
 
         # Create the model save directory
 
-        model_save_dir: Path = Path(cfg.checkpoint_dir)
+        model_save_dir: Path = Path(cfg["train"]["checkpoint_dir"])
         model_save_dir.mkdir(parents=True, exist_ok=True)
 
         datetime_string = datetime.now().strftime(r"%Y-%m-%d_%H-%M-%S")
@@ -109,36 +105,53 @@ if __name__ == "__main__":
 
         model_save_dir.mkdir()
 
+        print(f"Saving model config and checkpoints to {str(model_save_dir.resolve())}")  # Instantiate the optimizer
+
+        # Substitute custom tags
+        # TODO: this needs to be written better
+        cfg["train"]["dataset"]["init_args"]["delays_save_path"] = cfg["train"]["dataset"]["init_args"][
+            "delays_save_path"
+        ].replace(r"<ckpt_dir>", str(model_save_dir))
+
+        initialize_norm_dict(cfg["model"])
+
+        # Instantiate the model and other classes
+
+        save_cfg: dict = cfg
+        cfg: Namespace = parser.instantiate_classes(cfg)
+        model: Namespace = cfg["model"]
+        cfg: Namespace = cfg["train"]
+
         # Instantiate the optimizer
 
-        check_instantiate_keys(cfg.optimizer, "optimizer")
-        optimizer_class = get_class(cfg.optimizer["class_path"])
+        check_instantiate_keys(cfg["optimizer"], "optimizer")
+        optimizer_class = get_class(cfg["optimizer"]["class_path"])
 
-        optimizer = optimizer_class(model.parameters(), **cfg.optimizer["init_args"])
+        optimizer = optimizer_class(model.parameters(), **cfg["optimizer"]["init_args"])
 
         # Instantiate the scheduler
 
         if "scheduler" in cfg:
-            check_instantiate_keys(cfg.scheduler, "scheduler")
-            scheduler_class = get_class(cfg.scheduler["class_path"])
+            check_instantiate_keys(cfg["scheduler"], "scheduler")
+            scheduler_class = get_class(cfg["scheduler"]["class_path"])
 
-            scheduler = scheduler_class(optimizer, **cfg.scheduler["init_args"])
+            scheduler = scheduler_class(optimizer, **cfg["scheduler"]["init_args"])
         else:
             scheduler = None
 
         # Instantiate the dataloaders
 
-        train_set, val_set = data.random_split(cfg.dataset, [cfg.train_val_split, 1 - cfg.train_val_split])
+        train_set, val_set = data.random_split(cfg["dataset"], [cfg["train_val_split"], 1 - cfg["train_val_split"]])
 
         train_dataloader = data.DataLoader(
-            train_set, batch_size=cfg.batch_size, shuffle=cfg.shuffle, num_workers=cfg.num_workers
+            train_set, batch_size=cfg["batch_size"], shuffle=cfg["shuffle"], num_workers=cfg["num_workers"]
         )
         val_dataloader = data.DataLoader(
-            val_set, batch_size=cfg.val_batch_size, shuffle=False, num_workers=cfg.num_workers
+            val_set, batch_size=cfg["val_batch_size"], shuffle=False, num_workers=cfg["num_workers"]
         )
 
         if cfg.val_num_steps is None:
-            cfg.val_num_steps = len(train_dataloader)
+            cfg["val_num_steps"] = len(train_dataloader)
 
         # Save the config file
 
@@ -154,25 +167,27 @@ if __name__ == "__main__":
             checkpoint_dir=model_save_dir / "ckpt",
             writer=writer,
             model=model,
-            device=torch.device(cfg.device),
+            device=torch.device(cfg["device"]),
             train_dataloader=train_dataloader,
             val_dataloader=val_dataloader,
-            num_epochs=cfg.num_epochs,
+            num_epochs=cfg["num_epochs"],
             optimizer=optimizer,
-            loss_fn=cfg.loss_fn,
+            loss_fn=cfg["loss_fn"],
             scheduler=scheduler,
-            val_loss_fn=cfg.val_loss_fn,
-            val_loss_is_inverted=cfg.val_loss_is_inverted,
-            val_num_steps=cfg.val_num_steps,
-            max_grad_norm=cfg.max_grad_norm,
+            val_loss_fn=cfg["val_loss_fn"],
+            val_loss_is_inverted=cfg["val_loss_is_inverted"],
+            val_num_steps=cfg["val_num_steps"],
+            max_grad_norm=cfg["max_grad_norm"],
         )
 
-    if "predict" in cfg:
-        save_cfg = {"predict": jsonargparse.namespace_to_dict(cfg.predict)}
-        cfg = cfg.predict
+    if cfg["subcommand"] == "predict":
+        save_cfg = {"predict": cfg["predict"]}
+        cfg = cfg["predict"]
 
-        ckpt_cfg: dict = jsonargparse.namespace_to_dict(parser.parse_path(cfg.ckpt_config))
+        ckpt_cfg: dict = jsonargparse.namespace_to_dict(parser.parse_path(cfg["ckpt_config"]))
         ckpt_model_cfg = {"model": ckpt_cfg["model"]}
+
+        initialize_norm_dict(ckpt_model_cfg["model"])
 
         save_cfg = save_cfg | ckpt_cfg
 
