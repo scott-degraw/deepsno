@@ -11,9 +11,10 @@ from torch.utils.data import Dataset
 
 
 class PositionRecoDataset(Dataset):
-    def __init__(self, path: str | Path, positions: list[str] = ["x", "y", "z"]):
+    def __init__(self, path: str | Path, context_len: int, positions: list[str] = ["x", "y", "z"]):
         super().__init__()
         self._path = Path(path)
+        self.context_len = context_len
         self._h5_file = h5py.File(path)
         self.positions: list = positions
 
@@ -48,11 +49,11 @@ class PositionRecoDataset(Dataset):
         return self.n_events
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
-        hit_times = torch.from_numpy(self._hit_times_dset[index])
+        hit_times = torch.from_numpy(self._hit_times_dset[index, : self.context_len])
         # PMT id of 0 indicates a masked PMT
         # TODO: maybe use torch int instead of long. This will decrease the amount of data to pass to GPU but we will
         # have to convert it into long at the gpu which may not be worth it
-        pmt_ids = torch.from_numpy(self._pmt_ids_dset[index]).long()
+        pmt_ids = torch.from_numpy(self._pmt_ids_dset[index, : self.context_len]).long()
 
         truth_position = np.zeros(len(self.positions), dtype=self.position_numpy_dtype)
         for i, c in enumerate(self.positions):
@@ -69,13 +70,14 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
     def __init__(
         self,
         path: str | Path,
+        context_len: int,
         mean_delay: float | None = None,
         std_delay: float | None = None,
         delays_save_path: str | Path | None = None,
         delays_file: str | Path | None = None,
         positions: list[str] = ["x", "y", "z"],
     ):
-        super().__init__(path=path, positions=positions)
+        super().__init__(path=path, positions=positions, context_len=context_len)
 
         n_pmts = self._h5_file[f"pmt_info/position/{positions[0]}"].shape[0]
         self._pmt_positions = torch.zeros((n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
