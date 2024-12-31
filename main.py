@@ -1,8 +1,10 @@
 #!/usr/bin/env -S python3 -u
 
 import importlib
+import subprocess
 from datetime import datetime
 from pathlib import Path
+from warnings import warn
 
 import h5py
 import jsonargparse
@@ -45,6 +47,32 @@ def initialize_norm_dict(model_cfg: dict):
         model_cfg["init_args"]["norm_dict"] = dict(norm_dict)
 
 
+class UncommitedChangesError(RuntimeError):
+    def __init__(self, message: str):
+        super().__init__(message)
+
+
+class UncommitedChangesWarning(RuntimeWarning):
+    def __init__(self, message: str):
+        super().__init__(message)
+
+
+def get_git_hash(quiet: bool = False) -> str:
+    class UncommitedChangesError(RuntimeError):
+        def __init__(self, message: str):
+            super().__init__(message)
+
+    if not quiet and subprocess.run(["git", "diff", "--quiet"]).returncode != 0:
+        raise UncommitedChangesError("Working tree is not clean. Please commit all changes.")
+
+    git_hash = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout
+
+    git_hash = git_hash.strip()
+    return git_hash
+
+
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
 
@@ -81,6 +109,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(prog="app", description="")
     parser.add_argument("-c", "--config", action="config")
     parser.add_argument("--model", type=nn.Module, required=True)
+    parser.add_argument("--force", action="store_true")
     subcommands = parser.add_subcommands()
     subcommands.add_subcommand("train", train_parser)
     subcommands.add_subcommand("predict", predict_parser)
@@ -89,10 +118,21 @@ if __name__ == "__main__":
 
     cfg = jsonargparse.namespace_to_dict(cfg)
 
+    if cfg["force"]:
+        warn(
+            "Running in 'force' mode. Git commit hash may not reflect state of working tree.", UncommitedChangesWarning
+        )
+        git_hash = get_git_hash(quiet=True)
+    else:
+        git_hash = get_git_hash()
+
+    cfg["git_hash"] = git_hash
+    parser.add_argument("--git_hash", type=str, required=True)
+
     if cfg["subcommand"] == "train":
         torch.manual_seed(cfg["train"]["seed"])
 
-        cfg: dict = {"model": cfg["model"], "train": cfg["train"]}
+        cfg: dict = {"model": cfg["model"], "train": cfg["train"], "git_hash": cfg["git_hash"], "force": cfg["force"]}
 
         # Create the model save directory
 
