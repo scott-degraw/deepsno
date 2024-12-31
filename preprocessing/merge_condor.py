@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import shutil
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import htcondor
 import yaml
 
 python_executable = str(Path("preprocessing/merge_and_preprocess.py").resolve())
+conda_env_name = "deepsno"
 
 input_paths = Path("/data/snoplus3/degraw/uniform_electron_energy/pt-net-h5").glob("*.h5")
 input_paths = [str(path) for path in input_paths]
@@ -26,18 +28,20 @@ config_path = condor_root_dir / "config.yaml"
 with open(config_path, "w") as yaml_file:
     yaml.dump(config, yaml_file)
 
+arguments = f"run --name {conda_env_name} --no-capture-output {python_executable} --config {config_path}"
+
 job = htcondor.Submit(
     {
-        "nice_user": "True",
+        "nice_user": "true",
         "batch_name": "merge",
-        "getenv": "true",
-        "executable": shutil.which("python3"),
-        "arguments": f"-u {python_executable} --config {config_path}",
+        "executable": shutil.which("conda"),
+        "arguments": arguments,
         "output": str(condor_root_dir / "out.log"),
         "error": str(condor_root_dir / "err.log"),
         "log": str(condor_root_dir / "log.log"),
         "max_materialize": "1",
-        "request_cpus": "16",
+        "request_cpus": "32",
+        "request_gpus": "1",
         "request_memory": "64GB",
     }
 )

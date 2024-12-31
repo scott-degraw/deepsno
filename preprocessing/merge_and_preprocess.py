@@ -1,3 +1,4 @@
+#!/usr/bin/env -S python3 -u
 from typing import List, Optional
 
 import h5py
@@ -20,7 +21,7 @@ def str_from_many_paths(paths: tuple[str], n=3) -> str:
     return output_str
 
 
-def find_norms(dataset: h5py.Dataset, block_size: int, mask_dataset: Optional[h5py.Dataset] = None) -> None:
+def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[h5py.Dataset] = None) -> None:
     # This function counts on masked values having a value of 0
     n_events = dataset.shape[0]
 
@@ -36,8 +37,8 @@ def find_norms(dataset: h5py.Dataset, block_size: int, mask_dataset: Optional[h5
         print(f"Block {block_num + 1}/{n_blocks}")
         block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
         data_block = dataset[block_slice]
-        if mask_dataset is not None:
-            mask_block = mask_dataset[block_slice] < 0
+        if pmt_id_dataset is not None:
+            mask_block = pmt_id_dataset[block_slice] == 0
             data_block = data_block[~mask_block]
             n_values += mask_block.size - mask_block.sum()
         else:
@@ -55,8 +56,8 @@ def find_norms(dataset: h5py.Dataset, block_size: int, mask_dataset: Optional[h5
         print(f"Block {block_num + 1}/{n_blocks}")
         block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
         data_block = dataset[block_slice]
-        if mask_dataset is not None:
-            mask_block = mask_dataset[block_slice] < 0
+        if pmt_id_dataset is not None:
+            mask_block = pmt_id_dataset[block_slice] == 0
             data_block = data_block[~mask_block]
         residual_sum += np.sum(np.square(data_block - mean))
         start_row += block_size
@@ -95,7 +96,7 @@ def merge_h5(
 
             start_row_i: int = 0
             for input_file_num, input_path in enumerate(input_paths):
-                print(f"Merging {dataset_identifier} for file {input_file_num}/{len(input_paths)}")
+                print(f"Merging {dataset_identifier} for file {input_file_num + 1}/{len(input_paths)}")
                 with h5py.File(input_path) as input_h5:
                     dataset = input_h5[dataset_identifier]
                     merged_dataset[start_row_i : start_row_i + dataset.shape[0]] = dataset[:]
@@ -157,6 +158,17 @@ def merge_and_norm(
         pmt_info_identifiers=pmt_info_identifiers,
     )
 
+    # Add in the mean and root mean square deviation normalization
+
+    with h5py.File(train_output_path, "r+") as train_h5:
+        print("Finding hit time norms")
+        find_norms(
+            train_h5["cal_pmt_events/hit_times"], block_size=block_size, pmt_id_dataset=train_h5["cal_pmt_events/ids"]
+        )
+        for c in positions:
+            print(f"Finding {c} position norms")
+            find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
+
     print("Merge test files")
     merge_h5(
         input_paths=test_input_paths,
@@ -164,17 +176,6 @@ def merge_and_norm(
         dataset_identifiers=dataset_identifiers,
         pmt_info_identifiers=pmt_info_identifiers,
     )
-
-    # Add in the mean and root mean square deviation normalization
-
-    with h5py.File(train_output_path, "r+") as train_h5:
-        print("Finding hit time norms")
-        find_norms(
-            train_h5["cal_pmt_events/hit_times"], block_size=block_size, mask_dataset=train_h5["cal_pmt_events/ids"]
-        )
-        for c in positions:
-            print(f"Finding {c} position norms")
-            find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
 
     print("Finished merging and proprocessing")
 
