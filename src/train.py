@@ -8,7 +8,7 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from src.utils.utils import get_gpu_memory_usage
+from src.utils.utils import convert_byte_units
 
 
 def test(
@@ -84,6 +84,7 @@ def train(
     val_num_steps: int,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
+    memory_unit: str = "MiB",
 ):
     device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
@@ -94,7 +95,11 @@ def train(
     model.output_unnorm = False
 
     if "cuda" in device.type:
-        writer.add_scalar("GPU/total_memory-MiB", str(get_gpu_memory_usage(device)[1]), new_style=True)
+        writer.add_scalar(
+            f"GPU/total_memory-{memory_unit}",
+            convert_byte_units(torch.cuda.mem_get_info()[1], memory_unit),
+            new_style=True,
+        )
 
     it_num = 0
     sub_epoch = 0
@@ -102,7 +107,13 @@ def train(
         for batch_num, (inputs, truth) in enumerate(train_dataloader):
             print(f"Epoch: {epoch_num + 1}, Training batch: {batch_num + 1}/{len(train_dataloader)}")
             if "cuda" in device.type:
-                writer.add_scalar("GPU/memory_usage-MiB", get_gpu_memory_usage(device)[0], it_num, new_style=True)
+                writer.add_scalar(
+                    "GPU/memory_allocated-MiB",
+                    convert_byte_units(torch.cuda.max_memory_reserved(), memory_unit),
+                    it_num,
+                    new_style=True,
+                )
+                torch.cuda.reset_peak_memory_stats()
             optimizer.zero_grad()
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)

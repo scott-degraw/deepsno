@@ -6,21 +6,37 @@ from typing import Any
 import h5py
 import jsonargparse
 import torch
-from torch import cuda
 
 
 def copy_if_tensor(x: Any | torch.Tensor) -> torch.Tensor:
+    # Mostly here to avoid warnings about copying tensors with torch.tensor. The performance here shouldn't really
+    # matter at all.
     if isinstance(x, torch.Tensor):
         return x.detach().clone()
     return torch.tensor(x)
 
 
-def get_gpu_memory_usage(device: str | torch.device) -> tuple[int, int]:
-    free_bytes, total_bytes = cuda.mem_get_info(device)
+def convert_byte_units(size: int, unit: str, original_unit: str = "B"):
+    unit_values = {
+        "B": 1,
+        "KB": 1000,
+        "KiB": 1024,
+        "MB": 1000**2,
+        "MiB": 1024**2,
+        "GB": 1000**3,
+        "GiB": 1024**3,
+        "TB": 1000**4,
+        "TiB": 1000**4,
+        "PB": 1000**5,
+        "PiB": 1000**5,
+    }
 
-    MiB: int = 1024**2
+    if unit not in unit_values:
+        raise ValueError(f"Invalid unit '{unit}'. Valid units: {unit_values.keys()}")
+    if original_unit not in unit_values:
+        raise ValueError(f"Invalid unit '{original_unit}'. Valid units: {unit_values.keys()}")
 
-    return free_bytes / MiB, total_bytes / MiB
+    return size * unit_values[original_unit] / unit_values[unit]
 
 
 def get_best_ckpt(checkpoint_dir: str | Path) -> Path:
