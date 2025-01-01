@@ -1,0 +1,60 @@
+# TODO: Need to put in context window size somewhere. Maybe in h5 files.
+model: 
+    class_path: src.models.hit_time_autoencoder.HitTimeAutoEncoder
+    init_args:
+        n_pmts: &n_pmts 9728
+        norm_dict:
+            class_path: src.models.hit_time_autoencoder.HitTimeAutoEncoderNorm
+            init_args: 
+                train_file: &train_path /data/snoplus3/degraw/uniform_electron_energy/train_dset.h5 
+        position_reconstructor:
+            class_path: src.models.position_reco.PositionReco
+            init_args:
+                n_pmts: *n_pmts 
+                d_model: &d_model 64
+                nhead: 4
+                dim_feedforward: 128
+                num_layers: 6
+                dropout: 0.1
+                hit_time_embedding_dim: 512
+train:
+    seed: 783
+    checkpoint_dir: /data/snoplus3/degraw/uniform_electron_energy/cable_delays_checkpoints/
+    device: &device cuda 
+    dataset: 
+        class_path: &dataset_class_path src.data.datasets.CableDelaysPositionRecoDataset
+        init_args: 
+            path: *train_path
+            std_delay: 3
+            mean_delay: 0
+            delays_save_path: <ckpt_dir>/delays.txt
+            context_len: 2048
+
+    batch_size: &batch_size 100
+    val_batch_size: &val_batch_size 125
+    shuffle: true
+    num_workers: &num_workers 63
+    num_epochs: 6
+    train_val_split: 0.997
+
+    optimizer: 
+        class_path: torch.optim.Adam
+        init_args:
+            lr: 1e-3
+            betas: [0.9, 0.98]
+            eps: 1e-9
+    loss_fn:
+        class_path: &train_loss_fn src.metrics.hit_time_autoencoder.VarianceLoss 
+    scheduler: 
+        class_path: torch.optim.lr_scheduler.OneCycleLR
+        init_args: 
+            max_lr: 1e-2
+            # total_steps: 5000
+            total_steps: 60000
+
+    val_loss_fn:
+        class_path: *train_loss_fn
+    val_loss_is_inverted: false
+    val_num_steps: 500
+
+    max_grad_norm: 1
