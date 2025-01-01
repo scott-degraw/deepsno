@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
+import yaml
 
 import htcondor
-import yaml
 
 python_executable = str(Path("main.py").resolve())
 conda_env_name = "deepsno"
@@ -23,7 +25,7 @@ job = htcondor.Submit(
         "executable": shutil.which("conda"),
         "arguments": arguments,
         "output": str(condor_root_dir / "out.log"),
-        "error": str(condor_root_dir / "err.log"),
+        "error": str(condor_root_dir / "out.log"),
         "log": str(condor_root_dir / "log.log"),
         "request_gpus": "1",
         "request_cpus": "64",
@@ -38,19 +40,25 @@ submit_result = schedd.submit(job)
 with open(config_path) as yaml_file:
     cfg = yaml.safe_load(yaml_file)
 
-# tensorboard_process = subprocess.Popen(
-#     [
-#         "conda",
-#         "run",
-#         "--name",
-#         conda_env_name,
-#         "--no-capture-output",
-#         "tensorboard",
-#         "--logdir",
-#         cfg["train"]["checkpoint_dir"],
-#         "--load_fast",
-#         "auto",
-#     ]
-# )
+checkpoint_dir = cfg["train"]["checkpoint_dir"]
+
+process = subprocess.run(
+    ["pgrep", "-u", os.environ["USER"], "-f", f"tensorboard --logdir={checkpoint_dir}"], capture_output=True
+)
+
+if process.returncode != 0:
+    tensorboard_process = subprocess.Popen(
+        [
+            "conda",
+            "run",
+            "--name",
+            conda_env_name,
+            "--no-capture-output",
+            "tensorboard",
+            f"--logdir={checkpoint_dir}",
+            "--load_fast",
+            "auto",
+        ]
+    )
 
 print(submit_result)
