@@ -9,7 +9,7 @@ conda_env_name = "snoplus"
 
 min_hit_time = 0.0
 max_hit_time = 800.0
-context_window = 4096
+context_window = 2048
 
 input_paths = list(Path("/data/snoplus2/hewittc/lemon-type/pt-net-ratds").glob("*.root"))
 
@@ -52,9 +52,8 @@ print("Creating job")
 
 job = htcondor.Submit(
     {
-        "nice_user": "True",
+        "nice_user": "true",
         "batch_name": "ratds_extract",
-        "getenv": "true",
         "executable": shutil.which("conda"),
         "arguments": arguments,
         "output": "$(output_log)",

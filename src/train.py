@@ -46,7 +46,9 @@ def test(
 
 
 @torch.inference_mode()
-def validate(dataloader: data.DataLoader, device: str | torch.device, model: nn.Module, loss_fn: nn.Module) -> float:
+def validate(
+    dataloader: data.DataLoader, device: str | torch.device, model: nn.Module, loss_fn: nn.Module, writer: SummaryWriter
+) -> float:
     model.to(device)
     model.eval()
     model.output_unnorm = True
@@ -54,6 +56,14 @@ def validate(dataloader: data.DataLoader, device: str | torch.device, model: nn.
     n_data_points: int = 0
     print("Validating")
     for batch_num, (inputs, truth) in enumerate(dataloader):
+        if "cuda" in device.type:
+            writer.add_scalar(
+                "GPU/memory_allocated-MiB",
+                convert_byte_units(torch.cuda.max_memory_reserved(), "MiB"),
+                batch_num,
+                new_style=True,
+            )
+            torch.cuda.reset_peak_memory_stats()
         print(f"Validation batch: {batch_num + 1}/{len(dataloader)}")
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
         truth = pytree.tree_map(lambda x: x.to(device), truth)
@@ -137,7 +147,7 @@ def train(
 
             if it_num % val_num_steps == 0:
                 del inputs, truth, predict, loss
-                val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
+                val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn, writer=writer)
                 model.to(device)
                 model.train()
                 model.output_unnorm = False  # TODO: This may need to be changed

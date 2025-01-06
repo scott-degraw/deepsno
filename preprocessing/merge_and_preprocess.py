@@ -21,6 +21,27 @@ def str_from_many_paths(paths: tuple[str], n=3) -> str:
     return output_str
 
 
+def find_valid_pmts(dataset: h5py.Dataset, block_size: int, n_pmts: int) -> None:
+    n_events = dataset.shape[0]
+
+    n_blocks = (n_events - 1) // block_size + 1
+    start_row: int = 0
+
+    id_dtype = dataset.dtype
+
+    valid_ids = np.array([], dtype=id_dtype)
+    for block_num in range(n_blocks):
+        print(f"Block {block_num + 1}/{n_blocks}")
+        id_block = dataset[start_row : min(start_row + block_size, n_events)]
+        block_unique_ids = np.unique_values(id_block)
+        valid_ids = np.unique_values(np.concatenate([valid_ids, block_unique_ids]))
+
+    valid_ids = valid_ids[valid_ids != 0]
+    dataset.attrs["valid_pmt_ids"] = np.sort(valid_ids)
+    all_ids = np.arange(0, n_pmts, dtype=id_dtype)
+    dataset.attrs["invalid_pmt_ids"] = np.sort(np.setdiff1d(all_ids, valid_ids))
+
+
 def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[h5py.Dataset] = None) -> None:
     # This function counts on masked values having a value of 0
     n_events = dataset.shape[0]
@@ -35,7 +56,7 @@ def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[
     print("Finding mean")
     for block_num in range(n_blocks):
         print(f"Block {block_num + 1}/{n_blocks}")
-        block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
+        block_slice = slice(start_row, min(start_row + block_size, n_events))
         data_block = dataset[block_slice]
         if pmt_id_dataset is not None:
             mask_block = pmt_id_dataset[block_slice] == 0
@@ -54,7 +75,7 @@ def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[
     print("Finding root mean square deviation")
     for block_num in range(n_blocks):
         print(f"Block {block_num + 1}/{n_blocks}")
-        block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
+        block_slice = slice(start_row, min(start_row + block_size, n_events))
         data_block = dataset[block_slice]
         if pmt_id_dataset is not None:
             mask_block = pmt_id_dataset[block_slice] == 0
@@ -131,7 +152,7 @@ def merge_and_norm(
     block_size: int = 100_000_000,
     seed: int = 487391,
 ) -> None:
-    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids"]
+    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "cal_pmt_events/qhs"]
     dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
 
     pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
@@ -168,6 +189,9 @@ def merge_and_norm(
         for c in positions:
             print(f"Finding {c} position norms")
             find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
+        print("Finding valid PMT IDs")
+        n_pmts = len(next(iter(train_h5["pmt_info/position"].values())))
+        find_valid_pmts(dataset=train_h5["cal_pmt_events/ids"], block_size=block_size, n_pmts=n_pmts)
 
     print("Merge test files")
     merge_h5(

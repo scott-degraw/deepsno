@@ -126,6 +126,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
 
     Vector2D<UInt_t> cal_pmt_ids(all_evs, context_window, 0); // PMT id of 0 corresponds to PMT that does not exist
     Vector2D<Float_t> cal_pmt_times(all_evs, context_window, 0);
+    Vector2D<Float_t> cal_pmt_qhs(all_evs, context_window, 0);
 
     std::size_t evs_counter = 0;
     for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
@@ -150,7 +151,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
                 Float_t pmt_time = static_cast<Float_t>(cal_pmt.GetTime());
                 pmt_time = std::clamp(pmt_time, min_hit_time, max_hit_time);
                 cal_pmt_times(evs_counter, i_pmt) = pmt_time;
-            }
+                cal_pmt_qhs(evs_counter, i_pmt) = cal_pmt.GetQHS();
+            };
             evs_counter++;
         }
     }
@@ -166,8 +168,10 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
 
     HF::DataSpace cal_pmt_dataspace(cal_pmt_times.size_0(), cal_pmt_times.size_1());
 
-    auto cal_pmt_times_dset = cal_pmt_events_group.createDataSet<Float_t>("hit_times", cal_pmt_dataspace);
-    cal_pmt_times_dset.write_raw(cal_pmt_times.data());
     auto cal_pmt_ids_dset = cal_pmt_events_group.createDataSet<UInt_t>("ids", cal_pmt_dataspace);
     cal_pmt_ids_dset.write_raw(cal_pmt_ids.data());
+    auto cal_pmt_times_dset = cal_pmt_events_group.createDataSet<Float_t>("hit_times", cal_pmt_dataspace);
+    cal_pmt_times_dset.write_raw(cal_pmt_times.data());
+    auto cal_pmt_qhs_dset = cal_pmt_events_group.createDataSet<Float_t>("qhs", cal_pmt_dataspace);
+    cal_pmt_qhs_dset.write_raw(cal_pmt_qhs.data());
 }
