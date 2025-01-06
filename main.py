@@ -41,10 +41,11 @@ def initialize_norm_dict(model_cfg: dict):
 
     if "norm_dict" in model_cfg["init_args"]:
         norm_dict_cfg = model_cfg["init_args"]["norm_dict"]
-        check_instantiate_keys(norm_dict_cfg, "norm_dict")
-        norm_dict_class = get_class(norm_dict_cfg["class_path"])
-        norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
-        model_cfg["init_args"]["norm_dict"] = dict(norm_dict)
+        if "class_path" in norm_dict_cfg:
+            check_instantiate_keys(norm_dict_cfg, "norm_dict")
+            norm_dict_class = get_class(norm_dict_cfg["class_path"])
+            norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
+            model_cfg["init_args"]["norm_dict"] = dict(norm_dict)
 
 
 class UncommitedChangesError(RuntimeError):
@@ -129,10 +130,14 @@ if __name__ == "__main__":
     cfg["git_hash"] = git_hash
     parser.add_argument("--git_hash", type=str, required=True)
 
-    if cfg["subcommand"] == "train":
-        torch.manual_seed(cfg["train"]["seed"])
+    cfg_keys = ["model", "git_hash", "force"]  # These are the keys for the config that will be used for all subcommands
 
-        cfg: dict = {"model": cfg["model"], "train": cfg["train"], "git_hash": cfg["git_hash"], "force": cfg["force"]}
+    if cfg["subcommand"] == "train":
+        cfg_keys.append("train")
+
+        cfg = {key: cfg[key] for key in cfg_keys}
+
+        torch.manual_seed(cfg["train"]["seed"])
 
         # Create the model save directory
 
@@ -221,10 +226,19 @@ if __name__ == "__main__":
         )
 
     if cfg["subcommand"] == "predict":
-        save_cfg = {"predict": cfg["predict"]}
-        cfg = cfg["predict"]
+        cfg: dict = {
+            "model": cfg["model"],
+            "predict": cfg["predict"],
+            "git_hash": cfg["git_hash"],
+            "force": cfg["force"],
+        }
+        cfg_keys.append("predict")
 
-        ckpt_cfg: dict = jsonargparse.namespace_to_dict(parser.parse_path(cfg["ckpt_config"]))
+        cfg = {key: cfg[key] for key in cfg_keys}
+
+        save_cfg = cfg
+
+        ckpt_cfg: dict = jsonargparse.namespace_to_dict(parser.parse_path(cfg["predict"]["ckpt_config"]))
         ckpt_model_cfg = {"model": ckpt_cfg["model"]}
 
         initialize_norm_dict(ckpt_model_cfg["model"])
