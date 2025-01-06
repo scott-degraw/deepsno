@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from src.utils.utils import copy_if_tensor
+from src.utils.train import copy_if_tensor
 
 
 class PositionRecoNorm(dict):
@@ -116,10 +116,10 @@ class PositionReco(nn.Module):
         pmt_one_hot = F.one_hot(pmt_ids, num_classes=self.n_pmts).float()
 
         x = self.pmt_embedder(pmt_one_hot) + self.hit_time_embedder(hit_times.unsqueeze(-1))
+        del pmt_one_hot
 
         x = self.transformer_encoder(x, src_key_padding_mask=pmt_masks)
 
-        # TODO: Try an einsum here
         not_padding_masks = ~pmt_masks
         x = torch.sum(x * not_padding_masks.unsqueeze(2), dim=1) / torch.sum(not_padding_masks, dim=1).unsqueeze(1)
 

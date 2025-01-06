@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.utils.utils import copy_if_tensor
+from src.utils.train import copy_if_tensor
 
 
 class HitTimeAutoEncoderNorm(dict):
@@ -79,6 +79,8 @@ class HitTimeAutoEncoder(nn.Module):
     def forward(
         self, uncal_hit_times: torch.FloatTensor, pmt_ids: torch.IntTensor, pmt_positions: torch.FloatTensor
     ) -> torch.FloatTensor:
+        self.position_reconstructor.input_norm = self.input_norm
+
         pmt_positions = self.position_normalize(pmt_positions)
 
         predict_positions = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
@@ -106,4 +108,6 @@ class PositionRecoFromHitTimeAutoEncoder(HitTimeAutoEncoder):
         super().__init__(*args, **kwargs)
 
     def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
+        self.position_reconstructor.input_norm = self.input_norm
+        self.position_reconstructor.output_unnorm = self.output_unnorm
         return self.position_reconstructor(hit_times=hit_times, pmt_ids=pmt_ids)

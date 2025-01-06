@@ -8,7 +8,7 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from src.utils.utils import convert_byte_units
+from src.utils.train import convert_byte_units
 
 
 def test(
@@ -33,7 +33,8 @@ def test(
 
     start_row = 0
     with torch.no_grad():
-        for inputs, truth in dataloader:
+        for batch_num, (inputs, truth) in enumerate(dataloader):
+            print(f"Batch: {batch_num}/{len(dataloader)}")
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             predicts = model(**inputs)
 
@@ -140,7 +141,7 @@ def train(
                 val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
                 model.to(device)
                 model.train()
-                model.output_unnorm = False  # TODO: This may need to be changed
+                model.output_unnorm = False
 
                 writer.add_scalar("Loss/val", val_loss, it_num, new_style=True)
 

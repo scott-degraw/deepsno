@@ -37,12 +37,11 @@ job = htcondor.Submit(
         "executable": shutil.which("conda"),
         "arguments": arguments,
         "output": str(condor_root_dir / "out.log"),
-        "error": str(condor_root_dir / "err.log"),
+        "error": str(condor_root_dir / "out.log"),
         "log": str(condor_root_dir / "log.log"),
         "max_materialize": "1",
-        "request_cpus": "32",
-        "request_gpus": "1",
-        "request_memory": "64GB",
+        "request_cpus": "16",
+        "request_memory": "32GB",
     }
 )
 

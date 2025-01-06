@@ -9,6 +9,5 @@ def fwhm(hist: np.ndarray, bin_arrays: np.ndarray):
 
     right_half_i = max_i + 1 + np.argmin(abs(hist[max_i + 1 :] - maximum / 2))
     left_half_i = np.argmin(abs(hist[:max_i] - maximum / 2))
-    print(maximum, hist[right_half_i], hist[left_half_i])
 
     return bin_centers[right_half_i] - bin_centers[left_half_i]

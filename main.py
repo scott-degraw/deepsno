@@ -16,7 +16,7 @@ from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
 from src.train import test, train
-from src.utils.utils import get_best_ckpt, write_config_to_h5
+from src.utils.train import get_best_ckpt, write_config_to_h5
 
 
 def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
@@ -58,12 +58,16 @@ class UncommitedChangesWarning(RuntimeWarning):
         super().__init__(message)
 
 
-def get_git_hash(quiet: bool = False) -> str:
+class MismatchedGitHash(RuntimeError):
+    pass
+
+
+def get_git_hash(raise_exception: bool = False) -> str:
     class UncommitedChangesError(RuntimeError):
         def __init__(self, message: str):
             super().__init__(message)
 
-    if not quiet and subprocess.run(["git", "diff", "--quiet"]).returncode != 0:
+    if not raise_exception and subprocess.run(["git", "diff", "--quiet"]).returncode != 0:
         raise UncommitedChangesError("Working tree is not clean. Please commit all changes.")
 
     git_hash = subprocess.run(
@@ -111,6 +115,9 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--config", action="config")
     parser.add_argument("--model", type=nn.Module, required=True)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--git_hash", type=str, required=False, help="If given, will check if current repository matches this hash."
+    )
     subcommands = parser.add_subcommands()
     subcommands.add_subcommand("train", train_parser)
     subcommands.add_subcommand("predict", predict_parser)
@@ -123,14 +130,20 @@ if __name__ == "__main__":
         warn(
             "Running in 'force' mode. Git commit hash may not reflect state of working tree.", UncommitedChangesWarning
         )
-        git_hash = get_git_hash(quiet=True)
+        git_hash = get_git_hash(raise_exception=True)
     else:
         git_hash = get_git_hash()
 
+    # TODO: This part may need some testing and some thought
+    if cfg["git_hash"] is not None:
+        if git_hash != cfg["git_hash"]:
+            raise MismatchedGitHash(
+                f"Git hash: {cfg["git_hash"]} does not match the git hash of the current working tree: {git_hash}"
+            )
+    
     cfg["git_hash"] = git_hash
-    parser.add_argument("--git_hash", type=str, required=True)
 
-    cfg_keys = ["model", "git_hash", "force"]  # These are the keys for the config that will be used for all subcommands
+    cfg_keys = ["model", "force", "git_hash"]  # These are the keys for the config that will be used for all subcommands
 
     if cfg["subcommand"] == "train":
         cfg_keys.append("train")
@@ -226,12 +239,6 @@ if __name__ == "__main__":
         )
 
     if cfg["subcommand"] == "predict":
-        cfg: dict = {
-            "model": cfg["model"],
-            "predict": cfg["predict"],
-            "git_hash": cfg["git_hash"],
-            "force": cfg["force"],
-        }
         cfg_keys.append("predict")
 
         cfg = {key: cfg[key] for key in cfg_keys}
@@ -245,31 +252,32 @@ if __name__ == "__main__":
 
         save_cfg = save_cfg | ckpt_cfg
 
-        cfg = predict_parser.instantiate_classes(cfg)
+        predict_cfg = predict_parser.instantiate_classes(cfg["predict"])
 
         model: torch.nn.Module = parser.instantiate_classes(ckpt_model_cfg)["model"]
 
-        ckpt_path: Path = Path(cfg.ckpt)
+        ckpt_path: Path = Path(predict_cfg["ckpt"])
 
         if ckpt_path.is_dir():
             ckpt_path = get_best_ckpt(ckpt_path)
 
-        state_dict = torch.load(ckpt_path, map_location=cfg.device, weights_only=True)
+        state_dict = torch.load(ckpt_path, map_location=predict_cfg["device"], weights_only=True)
         model_state_dict = state_dict["model"]
         del state_dict
 
         model.load_state_dict(model_state_dict)
 
         dataloader: data.DataLoader = data.DataLoader(
-            cfg.dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers
+            predict_cfg["dataset"], batch_size=predict_cfg["batch_size"], num_workers=predict_cfg["num_workers"]
         )
 
-        with h5py.File(cfg.output_file, "w") as h5_file:
+        with h5py.File(predict_cfg["output_file"], "w") as h5_file:
+            # TODO: perhaps have to rethink if this is the best way to do it
             write_config_to_h5(h5_group=h5_file, config_obj=save_cfg)
             test(
                 model=model,
                 dataloader=dataloader,
                 h5_group=h5_file,
-                dataset_length=len(cfg.dataset),
-                device=cfg.device,
+                dataset_length=len(predict_cfg["dataset"]),
+                device=predict_cfg["device"],
             )
