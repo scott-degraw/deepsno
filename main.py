@@ -90,7 +90,8 @@ if __name__ == "__main__":
     train_parser.add_argument("--val_batch_size", type=int, required=True)
     train_parser.add_argument("--shuffle", type=bool, required=True)
     train_parser.add_argument("--num_workers", type=int, default=0)
-    train_parser.add_argument("--num_epochs", type=int, required=True)
+    train_parser.add_argument("--num_epochs", type=int, required=False)
+    train_parser.add_argument("--num_steps", type=int, required=False)
     train_parser.add_argument("--train_val_split", type=float, required=True)
 
     train_parser.add_argument("--loss_fn", type=nn.Module, required=True)
@@ -124,6 +125,11 @@ if __name__ == "__main__":
 
     cfg = parser.parse_args()
 
+    if (cfg.train.num_epochs is not None) and (cfg.train.num_steps is not None):
+        raise ValueError("Only 'train.num_epochs' or 'train.num_steps' can be given, not both.")
+    if (cfg.train.num_epochs is None) and (cfg.train.num_steps is None):
+        raise ValueError("Either 'train.num_epochs' or 'train.num_steps' must be provided.")
+
     cfg = jsonargparse.namespace_to_dict(cfg)
 
     if cfg["force"]:
@@ -140,7 +146,7 @@ if __name__ == "__main__":
             raise MismatchedGitHash(
                 f"Git hash: {cfg["git_hash"]} does not match the git hash of the current working tree: {git_hash}"
             )
-    
+
     cfg["git_hash"] = git_hash
 
     cfg_keys = ["model", "force", "git_hash"]  # These are the keys for the config that will be used for all subcommands
@@ -229,6 +235,7 @@ if __name__ == "__main__":
             train_dataloader=train_dataloader,
             val_dataloader=val_dataloader,
             num_epochs=cfg["num_epochs"],
+            num_steps=cfg["num_steps"],
             optimizer=optimizer,
             loss_fn=cfg["loss_fn"],
             scheduler=scheduler,
@@ -237,8 +244,7 @@ if __name__ == "__main__":
             val_num_steps=cfg["val_num_steps"],
             max_grad_norm=cfg["max_grad_norm"],
         )
-
-    if cfg["subcommand"] == "predict":
+    elif cfg["subcommand"] == "predict":
         cfg_keys.append("predict")
 
         cfg = {key: cfg[key] for key in cfg_keys}

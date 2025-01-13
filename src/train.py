@@ -34,7 +34,7 @@ def test(
     start_row = 0
     with torch.no_grad():
         for batch_num, (inputs, truth) in enumerate(dataloader):
-            print(f"Batch: {batch_num}/{len(dataloader)}")
+            print(f"Batch: {batch_num + 1}/{len(dataloader)}")
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             predicts = model(**inputs)
 
@@ -77,12 +77,13 @@ def train(
     device: str | torch.device,
     train_dataloader: data.DataLoader,
     val_dataloader: data.DataLoader,
-    num_epochs: int,
     optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
     val_loss_fn: nn.Module,
     val_loss_is_inverted: bool,
     val_num_steps: int,
+    num_epochs: int | None = None,
+    num_steps: int | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
     memory_unit: str = "MiB",
@@ -90,6 +91,14 @@ def train(
     device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(exist_ok=True, parents=True)
+
+    if (num_epochs is not None) and (num_steps is not None):
+        raise ValueError("Only 'num_epochs' or 'num_steps' can be given, not both.")
+    if (num_epochs is None) and (num_steps is None):
+        raise ValueError("Either 'num_epochs' or 'num_steps' must be provided.")
+
+    if num_steps is not None:
+        num_epochs = (num_steps - 1) // len(train_dataloader) + 1
 
     model.to(device)
     model.train()
@@ -102,16 +111,20 @@ def train(
             new_style=True,
         )
 
-    it_num = 0
+    step_num = 0
     sub_epoch = 0
+    stop_training = False
     for epoch_num in range(num_epochs):
         for batch_num, (inputs, truth) in enumerate(train_dataloader):
+            if num_steps is not None and step_num == num_steps: 
+                stop_training = True
+                break
             print(f"Epoch: {epoch_num + 1}, Training batch: {batch_num + 1}/{len(train_dataloader)}")
             if "cuda" in device.type:
                 writer.add_scalar(
                     "GPU/memory_allocated-MiB",
                     convert_byte_units(torch.cuda.max_memory_reserved(), memory_unit),
-                    it_num,
+                    step_num,
                     new_style=True,
                 )
                 torch.cuda.reset_peak_memory_stats()
@@ -125,25 +138,25 @@ def train(
             predict = model(**inputs)
 
             loss = loss_fn(predict, truth)
-            writer.add_scalar("Loss/train", loss.item(), it_num, new_style=True)
+            writer.add_scalar("Loss/train", loss.item(), step_num, new_style=True)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
-                writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], it_num, new_style=True)
+                writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], step_num, new_style=True)
 
-            it_num += 1
+            step_num += 1
 
-            if it_num % val_num_steps == 0:
+            if step_num % val_num_steps == 0:
                 del inputs, truth, predict, loss
                 val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
                 model.to(device)
                 model.train()
                 model.output_unnorm = False
 
-                writer.add_scalar("Loss/val", val_loss, it_num, new_style=True)
+                writer.add_scalar("Loss/val", val_loss, step_num, new_style=True)
 
                 if val_loss_is_inverted:
                     val_loss = -val_loss
@@ -163,3 +176,8 @@ def train(
                 torch.save(state_dict, checkpoint_dir / filename)
 
                 sub_epoch += 1
+
+        if stop_training:
+            break
+
+    print("Training completed")

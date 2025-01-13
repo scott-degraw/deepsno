@@ -62,9 +62,6 @@ class PositionRecoDataset(Dataset):
 
         return {"hit_times": hit_times, "pmt_ids": pmt_ids}, truth_position
 
-    def __del__(self):
-        self._h5_file.close()
-
 
 class CableDelaysPositionRecoDataset(PositionRecoDataset):
     def __init__(
