@@ -11,40 +11,57 @@ min_hit_time = 0.0
 max_hit_time = 800.0
 context_window = 4096
 
-input_paths = list(Path("/data/snoplus2/hewittc/lemon-type/pt-net-ratds").glob("*.root"))
+input_paths = list(Path("/data/snoplus3/SNOplusData/production/rat-7-0-8-9/ratds/Po210").glob("*.root"))
 
-output_dir = Path("/data/snoplus3/degraw/uniform_electron_energy/pt-net-h5/")
+output_dir = Path("/data/snoplus3/degraw/Po210_rat-7.0.8-9/h5_extract")
 output_dir.mkdir(parents=True, exist_ok=True)
 
-output_paths: list[Path] = []
-for input_path in input_paths:
-    output_paths.append((output_dir / input_path.name).with_suffix(".h5"))
+# Split these input_paths into groups
+
+max_file_group_size: int = 25
+
+input_file_groups = []
+output_file_groups = []
+
+input_file_group = []
+output_file_group = []
+
+for file_counter, input_path in enumerate(input_paths):
+    input_file_group.append(str(input_path))
+    output_file_group.append(str((output_dir / input_path.name).with_suffix(".h5")))
+
+    if (file_counter + 1) % max_file_group_size == 0:
+        input_file_groups.append(input_file_group)
+        output_file_groups.append(output_file_group)
+        input_file_group = []
+        output_file_group = []
+
+if input_file_group:
+    input_file_groups.append(input_file_group)
+    output_file_groups.append(output_file_group)
 
 condor_root_dir = Path("condor_logs/ratds_extract").resolve()
 condor_log_dir = (condor_root_dir / "logs").resolve()
-stdout_dir = (condor_root_dir / "stdout").resolve()
-err_dir = (condor_root_dir / "err").resolve()
+stdouterr_dir = (condor_root_dir / "stdouterr").resolve()
 
 condor_log_dir.mkdir(parents=True, exist_ok=True)
-stdout_dir.mkdir(parents=True, exist_ok=True)
-err_dir.mkdir(parents=True, exist_ok=True)
+stdouterr_dir.mkdir(parents=True, exist_ok=True)
 
 itemdata = []
-for input_path, output_path in zip(input_paths, output_paths):
-    output_basename = output_path.name
+for input_file_group, output_file_group in zip(input_file_groups, output_file_groups):
     itemdata.append(
         {
-            "input_file": str(input_path),
-            "output_file": str(output_path),
-            "output_log": str((stdout_dir / output_basename).with_suffix(".out")),
-            "error_log": str((err_dir / output_basename).with_suffix(".err")),
-            "condor_log": str((condor_log_dir / output_basename).with_suffix(".log")),
+            "input_files": " ".join(input_file_group),
+            "output_files": " ".join(output_file_group),
+            "output_log": f"{str(stdouterr_dir)}/$(ProcID).log",
+            "error_log": f"{str(stdouterr_dir)}/$(ProcID).log",
+            "condor_log": f"{str(condor_log_dir)}/$(ProcID).log",
         }
     )
 
 arguments = (
     f"run --name {conda_env_name} --no-capture-output {python_executable} "
-    f" -m {root_macro} -i $(input_file) -o $(output_file) "
+    f" -m {root_macro} -i $(input_files) -o $(output_files) "
     f" --min_hit_time {min_hit_time} --max_hit_time {max_hit_time} --context_window {context_window} "
 )
 
@@ -52,9 +69,8 @@ print("Creating job")
 
 job = htcondor.Submit(
     {
-        "nice_user": "True",
+        "nice_user": "true",
         "batch_name": "ratds_extract",
-        "getenv": "true",
         "executable": shutil.which("conda"),
         "arguments": arguments,
         "output": "$(output_log)",
@@ -62,6 +78,7 @@ job = htcondor.Submit(
         "log": "$(condor_log)",
         "max_materialize": "200",
         "request_cpus": "1",
+        "request_memory": "2GB",
     }
 )
 
