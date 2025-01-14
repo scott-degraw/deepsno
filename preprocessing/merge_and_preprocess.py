@@ -35,7 +35,7 @@ def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[
     print("Finding mean")
     for block_num in range(n_blocks):
         print(f"Block {block_num + 1}/{n_blocks}")
-        block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
+        block_slice = slice(start_row, min(start_row + block_size, n_events))
         data_block = dataset[block_slice]
         if pmt_id_dataset is not None:
             mask_block = pmt_id_dataset[block_slice] == 0
@@ -54,7 +54,7 @@ def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[
     print("Finding root mean square deviation")
     for block_num in range(n_blocks):
         print(f"Block {block_num + 1}/{n_blocks}")
-        block_slice = slice(start_row, min(start_row + block_size, n_events - 1))
+        block_slice = slice(start_row, min(start_row + block_size, n_events))
         data_block = dataset[block_slice]
         if pmt_id_dataset is not None:
             mask_block = pmt_id_dataset[block_slice] == 0
