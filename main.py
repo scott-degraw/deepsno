@@ -125,11 +125,6 @@ if __name__ == "__main__":
 
     cfg = parser.parse_args()
 
-    if (cfg.train.num_epochs is not None) and (cfg.train.num_steps is not None):
-        raise ValueError("Only 'train.num_epochs' or 'train.num_steps' can be given, not both.")
-    if (cfg.train.num_epochs is None) and (cfg.train.num_steps is None):
-        raise ValueError("Either 'train.num_epochs' or 'train.num_steps' must be provided.")
-
     cfg = jsonargparse.namespace_to_dict(cfg)
 
     if cfg["force"]:
@@ -204,6 +199,11 @@ if __name__ == "__main__":
             scheduler = None
 
         # Instantiate the dataloaders
+
+        if (cfg["train"]["num_epochs"] is not None) and (cfg["train"]["num_steps"] is not None):
+            raise ValueError("Only 'train.num_epochs' or 'train.num_steps' can be given, not both.")
+        if (cfg["train"]["num_epochs"] is None) and (cfg["train"]["num_steps"] is None):
+            raise ValueError("Either 'train.num_epochs' or 'train.num_steps' must be provided.")
 
         train_set, val_set = data.random_split(cfg["dataset"], [cfg["train_val_split"], 1 - cfg["train_val_split"]])
 
