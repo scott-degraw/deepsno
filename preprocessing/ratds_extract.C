@@ -116,10 +116,13 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
     std::vector<Float_t> mc_event_pos_y;
     std::vector<Float_t> mc_event_pos_z;
 
+    std::vector<Double_t> mc_energy;
+
     if (is_mc) {
         mc_event_pos_x.resize(all_evs, 0);
         mc_event_pos_y.resize(all_evs, 0);
         mc_event_pos_z.resize(all_evs, 0);
+        mc_energy.resize(all_evs, 0);
     }
 
     auto cal_pmt_events_group = h5_file.createGroup("cal_pmt_events");
@@ -139,6 +142,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
                 mc_event_pos_x.at(evs_counter) = pos.X();
                 mc_event_pos_y.at(evs_counter) = pos.Y();
                 mc_event_pos_z.at(evs_counter) = pos.Z();
+                mc_energy.at(evs_counter) = mc_pcle.GetKineticEnergy();
             }
 
             const RAT::DS::EV &ev = entry.GetEV(i_evs);
@@ -162,6 +166,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
         mc_pos_group.createDataSet("x", mc_event_pos_x);
         mc_pos_group.createDataSet("y", mc_event_pos_y);
         mc_pos_group.createDataSet("z", mc_event_pos_z);
+
+        mc_truth_group.createDataSet("kinetic_energy", mc_energy);
     }
 
     HF::DataSpace cal_pmt_dataspace(cal_pmt_times.size_0(), cal_pmt_times.size_1());

@@ -131,7 +131,7 @@ def merge_and_norm(
     block_size: int = 100_000_000,
     seed: int = 487391,
 ) -> None:
-    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids"]
+    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
     dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
 
     pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
