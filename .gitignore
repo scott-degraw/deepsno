@@ -8,5 +8,6 @@ runs/
 plots/
 
 condor_logs/
+condor/
 configs/
 
