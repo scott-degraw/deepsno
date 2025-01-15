@@ -80,6 +80,7 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         self._pmt_positions = torch.zeros((n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
         for i, c in enumerate(self.positions):
             self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
+            self._pmt_positions[0, i] = 0.0
 
         if delays_file is not None:
             self.cable_delays = torch.from_numpy(np.loadtxt(delays_file, dtype=np.float32))
