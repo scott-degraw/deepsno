@@ -1,7 +1,9 @@
 import numpy as np
 
 
-def fwhm(hist: np.ndarray, bin_arrays: np.ndarray):
+def fwhm(hist: np.ndarray, bin_arrays: np.ndarray) -> float:
+    if np.any(np.isnan(hist)):
+        return np.nan
     bin_centers = np.convolve(bin_arrays, [0.5, 0.5], mode="valid")
 
     max_i = np.argmax(hist)
