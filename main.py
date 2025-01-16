@@ -111,6 +111,7 @@ if __name__ == "__main__":
     predict_parser.add_argument("--dataset", type=torch.utils.data.Dataset)
     predict_parser.add_argument("--batch_size", type=int, required=True)
     predict_parser.add_argument("--num_workers", type=int, default=0)
+    predict_parser.add_argument("--dataset_len", type=int, required=False)
 
     parser = ArgumentParser(prog="app", description="")
     parser.add_argument("-c", "--config", action="config")
@@ -277,6 +278,8 @@ if __name__ == "__main__":
             predict_cfg["dataset"], batch_size=predict_cfg["batch_size"], num_workers=predict_cfg["num_workers"]
         )
 
+        dataset_len = len(predict_cfg["dataset"]) if predict_cfg["dataset_len"] is None else predict_cfg["dataset_len"]
+
         with h5py.File(predict_cfg["output_file"], "w") as h5_file:
             # TODO: perhaps have to rethink if this is the best way to do it
             write_config_to_h5(h5_group=h5_file, config_obj=save_cfg)
@@ -284,6 +287,6 @@ if __name__ == "__main__":
                 model=model,
                 dataloader=dataloader,
                 h5_group=h5_file,
-                dataset_length=len(predict_cfg["dataset"]),
+                dataset_length=dataset_len,
                 device=predict_cfg["device"],
             )

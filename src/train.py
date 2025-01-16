@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from src.utils.train import convert_byte_units
 
 
+@torch.inference_mode()
 def test(
     model: nn.Module,
     dataloader: data.DataLoader,
@@ -24,26 +25,27 @@ def test(
 
     _, truth = next(iter(dataloader))
     truth = truth.numpy()
-    dataset_shape = (dataset_length, truth.shape[1])
+    dataset_shape = (dataset_length, 3)
     dataset_dtype = truth.dtype
 
     position_group = h5_group.create_group("position")
-    truth_dset = position_group.create_dataset("truth", shape=dataset_shape, dtype=dataset_dtype)
+    # truth_dset = position_group.create_dataset("truth", shape=dataset_shape, dtype=dataset_dtype)
     predict_dset = position_group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
 
     start_row = 0
-    with torch.no_grad():
-        for batch_num, (inputs, truth) in enumerate(dataloader):
-            print(f"Batch: {batch_num + 1}/{len(dataloader)}")
-            inputs = pytree.tree_map(lambda x: x.to(device), inputs)
-            predicts = model(**inputs)
+    for batch_num, (inputs, truth) in enumerate(dataloader):
+        print(f"Batch: {batch_num + 1}/{len(dataloader)}")
+        inputs = pytree.tree_map(lambda x: x.to(device), inputs)
+        predicts = model(hit_times=inputs["uncal_hit_times"], pmt_ids=inputs["pmt_ids"])
 
-            batch_size = truth.shape[0]
-            batch_slice = slice(start_row, start_row + batch_size)
-            truth_dset[batch_slice] = truth.numpy()
-            predict_dset[batch_slice] = predicts.cpu().numpy()
+        batch_size = truth.shape[0]
+        batch_slice = slice(start_row, min(start_row + batch_size, dataset_length))
+        # truth_dset[batch_slice] = truth.numpy()
+        predict_dset[batch_slice] = predicts.cpu().numpy()
 
-            start_row += batch_size
+        start_row += batch_size
+        if start_row >= dataset_length:
+            break
 
 
 @torch.inference_mode()
@@ -116,7 +118,7 @@ def train(
     stop_training = False
     for epoch_num in range(num_epochs):
         for batch_num, (inputs, truth) in enumerate(train_dataloader):
-            if num_steps is not None and step_num == num_steps: 
+            if num_steps is not None and step_num == num_steps:
                 stop_training = True
                 break
             print(f"Epoch: {epoch_num + 1}, Training batch: {batch_num + 1}/{len(train_dataloader)}")
