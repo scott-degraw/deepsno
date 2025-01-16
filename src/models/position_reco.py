@@ -97,15 +97,6 @@ class PositionReco(nn.Module):
             self.input_norm = False
             self.output_unnorm = False
 
-    def train(self, mode=True):
-        super().train(mode=mode)
-        self.transformer_encoder.train()
-        p = self.dropout_p if mode else 0.0
-        for layer in self.transformer_encoder.layers:
-            layer.dropout.p = p
-            layer.dropout1.p = p
-            layer.dropout2.p = p
-
     def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
         # TODO: Maybe think more about the memory usage. See if there are tensors that I should delete during the forward pass
         if self.input_norm:
