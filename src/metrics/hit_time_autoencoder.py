@@ -13,6 +13,8 @@ class VarianceLoss(nn.Module):
 
         n_hits = torch.sum(not_padding_masks, dim=-1, keepdims=True)
 
-        return torch.sum(
-            not_padding_masks * (residuals - torch.sum(residuals, dim=-1, keepdims=True) / n_hits).square() / n_hits
-        )
+        batch_size = n_hits.numel()
+
+        centered_residuals = residuals - torch.sum(residuals, dim=-1, keepdims=True) / n_hits
+
+        return torch.sum(not_padding_masks * centered_residuals.square() / n_hits) / batch_size
