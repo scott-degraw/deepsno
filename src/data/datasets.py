@@ -68,10 +68,7 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         self,
         path: str | Path,
         context_len: int,
-        mean_delay: float | None = None,
-        std_delay: float | None = None,
-        delays_save_path: str | Path | None = None,
-        delays_file: str | Path | None = None,
+        delays_file: str | Path,
         positions: list[str] = ["x", "y", "z"],
     ):
         super().__init__(path=path, positions=positions, context_len=context_len)
@@ -82,19 +79,10 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
             self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
             self._pmt_positions[0, i] = 0.0
 
-        if delays_file is not None:
-            self.cable_delays = torch.from_numpy(np.loadtxt(delays_file, dtype=np.float32))
-            assert (
-                len(self.cable_delays) == n_pmts
-            ), f"Cable delays from {delays_file} is length {len(self.cable_delays)}, which does not match {n_pmts}"
-        else:
-            gauss_dist = torch.distributions.Normal(loc=mean_delay, scale=std_delay)
-
-            self.cable_delays: torch.FloatTensor = gauss_dist.sample([n_pmts])
-            self.cable_delays[0] = 0.0  # PMT with ID 0 corresponds to masked PMT
-
-            if delays_save_path is not None:
-                np.savetxt(delays_save_path, self.cable_delays.numpy())
+        self.cable_delays = torch.from_numpy(np.loadtxt(delays_file, dtype=np.float32))
+        assert (
+            len(self.cable_delays) == n_pmts
+        ), f"Cable delays from {delays_file} is length {len(self.cable_delays)}, which does not match {n_pmts}"
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
         inputs, _ = super().__getitem__(index)

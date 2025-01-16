@@ -81,7 +81,7 @@ def get_git_hash(raise_exception: bool = False) -> str:
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
 
-    train_parser = ArgumentParser(prog="app")
+    train_parser = ArgumentParser(prog="DeepSNO")
     train_parser.add_argument("--seed", type=int, default=0)
     train_parser.add_argument("--checkpoint_dir", type=ptyping.Path_dc, required=True)
     train_parser.add_argument("--device", type=str, required=True)
@@ -166,12 +166,6 @@ if __name__ == "__main__":
         model_save_dir.mkdir()
 
         print(f"Saving model config and checkpoints to {str(model_save_dir.resolve())}")  # Instantiate the optimizer
-
-        # Substitute custom tags
-        # TODO: this needs to be written better
-        cfg["train"]["dataset"]["init_args"]["delays_save_path"] = cfg["train"]["dataset"]["init_args"][
-            "delays_save_path"
-        ].replace(r"<ckpt_dir>", str(model_save_dir))
 
         initialize_norm_dict(cfg["model"])
 
