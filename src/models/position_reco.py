@@ -2,7 +2,6 @@ from pathlib import Path
 
 import h5py
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from src.utils.train import copy_if_tensor
@@ -80,7 +79,9 @@ class PositionReco(nn.Module):
             encoder_layer, num_layers=num_layers, enable_nested_tensor=False
         )
 
-        self.pmt_embedder = nn.Linear(n_pmts, d_model)
+        pmt_id_embeddings = nn.Linear(n_pmts, d_model, bias=False).weight.T.contiguous()
+        self.register_parameter("pmt_id_embeddings", nn.Parameter(pmt_id_embeddings))
+
         self.hit_time_embedder = nn.Sequential(
             nn.Linear(1, hit_time_embedding_dim),
             nn.Tanh(),
@@ -118,10 +119,7 @@ class PositionReco(nn.Module):
 
         pmt_masks = pmt_ids == 0  # 0 indicates the PMT is padded
 
-        pmt_one_hot = F.one_hot(pmt_ids, num_classes=self.n_pmts).float()
-
-        x = self.pmt_embedder(pmt_one_hot) + self.hit_time_embedder(hit_times.unsqueeze(-1))
-        del pmt_one_hot
+        x = self.pmt_id_embeddings[pmt_ids] + self.hit_time_embedder(hit_times.unsqueeze(-1))
 
         x = self.transformer_encoder(x, src_key_padding_mask=pmt_masks)
 

@@ -91,7 +91,6 @@ class HitTimeAutoEncoder(nn.Module):
 
         # Masked pmt positions have positions of zero
         uncal_times = torch.linalg.vector_norm(predict_positions[..., None, :] - pmt_positions, dim=-1)
-        uncal_times = not_padding_masks * uncal_times
 
         uncal_times = uncal_times / self.effective_c
         uncal_times = uncal_times + self.cable_delays[pmt_ids]
@@ -99,6 +98,7 @@ class HitTimeAutoEncoder(nn.Module):
         if self.output_unnorm:
             uncal_times = self.output_unnormalize(uncal_times)
 
+        uncal_times = not_padding_masks * uncal_times
         return {"predict": uncal_times, "pad_masks": ~not_padding_masks}
 
 
