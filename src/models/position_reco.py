@@ -113,7 +113,6 @@ class PositionReco(nn.Module):
                 layer.self_attn.eval()
 
     def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
-        # TODO: Maybe think more about the memory usage. See if there are tensors that I should delete during the forward pass
         if self.input_norm:
             hit_times = self.input_normalize(hit_times)
 
@@ -124,7 +123,7 @@ class PositionReco(nn.Module):
         x = self.transformer_encoder(x, src_key_padding_mask=pmt_masks)
 
         not_padding_masks = ~pmt_masks
-        x = torch.sum(x * not_padding_masks.unsqueeze(2), dim=1) / torch.sum(not_padding_masks, dim=1).unsqueeze(1)
+        x = torch.sum(x * not_padding_masks.unsqueeze(-1), dim=-2) / not_padding_masks.sum(-1).unsqueeze(-1)
 
         x = self.position_predictor(x)
 
