@@ -15,3 +15,4 @@ dependencies:
   - highfive=2.10
   - jsonargparse=4.35
   - tensorboard=2.18
+  - torchtriton=3.1
