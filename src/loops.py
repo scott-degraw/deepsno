@@ -15,7 +15,7 @@ from src.utils.train import convert_byte_units
 def test(
     model: nn.Module,
     dataloader: data.DataLoader,
-    h5_group: h5py.File | h5py.Group,
+    group: h5py.File | h5py.Group,
     dataset_length: int,
     device: str | torch.device,
 ):
@@ -25,12 +25,10 @@ def test(
 
     _, truth = next(iter(dataloader))
     truth = truth.numpy()
-    dataset_shape = (dataset_length, 3)
+    dataset_shape = (dataset_length, *truth.shape[1:])
     dataset_dtype = truth.dtype
 
-    position_group = h5_group.create_group("position")
-    # truth_dset = position_group.create_dataset("truth", shape=dataset_shape, dtype=dataset_dtype)
-    predict_dset = position_group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
+    predict_dset = group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
 
     start_row = 0
     for batch_num, (inputs, truth) in enumerate(dataloader):
@@ -39,9 +37,7 @@ def test(
         predicts = model(hit_times=inputs["uncal_hit_times"], pmt_ids=inputs["pmt_ids"])
 
         batch_size = truth.shape[0]
-        batch_slice = slice(start_row, min(start_row + batch_size, dataset_length))
-        # truth_dset[batch_slice] = truth.numpy()
-        predict_dset[batch_slice] = predicts.cpu().numpy()
+        predict_dset[start_row : min(start_row + batch_size, dataset_length)] = predicts.cpu().numpy()
 
         start_row += batch_size
         if start_row >= dataset_length:
