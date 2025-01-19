@@ -129,7 +129,7 @@ if __name__ == "__main__":
     cfg: dict = jsonargparse.namespace_to_dict(cfg)
 
     if cfg["subcommand"] == "predict":
-        # Merge the values from the ckpt config but override ckpt config with ckpt from --config
+        # Merge the values from the ckpt config but override ckpt config with config from --config
         ckpt_cfg = jsonargparse.namespace_to_dict(parser.parse_path(cfg["predict"]["ckpt_config"]))
         cfg = ckpt_cfg | cfg
 

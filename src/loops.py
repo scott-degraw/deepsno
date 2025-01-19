@@ -1,3 +1,4 @@
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from src.utils.train import convert_byte_units
+from src.utils.train import convert_byte_units, convert_time_units
 
 
 @torch.inference_mode()
@@ -88,6 +89,7 @@ def train(
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
     memory_unit: str = "MiB",
+    profiling_unit: str = "ms",
 ):
     device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
@@ -116,11 +118,22 @@ def train(
     sub_epoch = 0
     stop_training = False
     for epoch_num in range(num_epochs):
+        step_start_time = time.perf_counter()
         for batch_num, (inputs, truth) in enumerate(train_dataloader):
+            train_data_load_time = time.perf_counter() - step_start_time
+            writer.add_scalar(
+                f"Profiling/train_data_load-{profiling_unit}",
+                convert_time_units(train_data_load_time, profiling_unit),
+                step_num,
+                new_style=True,
+            )
+
             if num_steps is not None and step_num == num_steps:
                 stop_training = True
                 break
+
             print(f"Epoch: {epoch_num + 1}, Training batch: {batch_num + 1}/{len(train_dataloader)}")
+
             if "cuda" in device.type:
                 writer.add_scalar(
                     "GPU/memory_allocated-MiB",
@@ -129,31 +142,82 @@ def train(
                     new_style=True,
                 )
                 torch.cuda.reset_peak_memory_stats()
+
             optimizer.zero_grad()
+
+            data_to_device_start_time = time.perf_counter()
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)
+            data_to_device_time = time.perf_counter() - data_to_device_start_time
+            writer.add_scalar(
+                f"Profiling/data_to_device-{profiling_unit}",
+                convert_time_units(data_to_device_time, profiling_unit),
+                step_num,
+                new_style=True,
+            )
 
             if not model.output_unnorm:
                 truth = model.output_normalize(truth)
 
+            forward_pass_start_time = time.perf_counter()
             predict = model(**inputs)
+            forward_pass_time = time.perf_counter() - forward_pass_start_time
+            writer.add_scalar(
+                f"Profiling/forward_pass-{profiling_unit}",
+                convert_time_units(forward_pass_time, profiling_unit),
+                step_num,
+                new_style=True,
+            )
 
+            loss_calc_start_time = time.perf_counter()
             loss = loss_fn(predict, truth)
+            loss_calc_time = time.perf_counter() - loss_calc_start_time
             writer.add_scalar("Loss/train", loss.item(), step_num, new_style=True)
+            writer.add_scalar(
+                f"Profiling/loss_calc-{profiling_unit}",
+                convert_time_units(loss_calc_time, profiling_unit),
+                step_num,
+                new_style=True,
+            )
 
+            backward_pass_start_time = time.perf_counter()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
+            backward_pass_time = time.perf_counter() - backward_pass_start_time
+            writer.add_scalar(
+                f"Profiling/backward_pass-{profiling_unit}",
+                convert_time_units(backward_pass_time, profiling_unit),
+                step_num,
+                new_style=True,
+            )
+
             if scheduler is not None:
                 scheduler.step()
                 writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], step_num, new_style=True)
 
             step_num += 1
 
+            step_time = time.perf_counter() - step_start_time
+            writer.add_scalar(
+                f"Profiling/step_total-{profiling_unit}",
+                convert_time_units(step_time, profiling_unit),
+                step_num,
+                new_style=True,
+            )
+
             if step_num % val_num_steps == 0:
                 del inputs, truth, predict, loss
+                validate_start_time = time.perf_counter()
                 val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
-                model.to(device)
+                validate_time = time.perf_counter() - validate_start_time
+                writer.add_scalar(
+                    f"Profiling/validation-{profiling_unit}",
+                    convert_time_units(validate_time, profiling_unit),
+                    step_num,
+                    new_style=True,
+                )
+
                 model.train()
                 model.output_unnorm = False
 
@@ -162,6 +226,7 @@ def train(
                 if val_loss_is_inverted:
                     val_loss = -val_loss
 
+                model_save_start_time = time.perf_counter()
                 state_dict = {
                     "sub_epoch": sub_epoch,
                     "model": deepcopy(model.state_dict()),
@@ -175,8 +240,17 @@ def train(
                 filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
 
                 torch.save(state_dict, checkpoint_dir / filename)
+                model_save_time = time.perf_counter() - model_save_start_time
+                writer.add_scalar(
+                    f"Profiling/model_save-{profiling_unit}",
+                    convert_time_units(model_save_time, profiling_unit),
+                    step_num,
+                    new_style=True,
+                )
 
                 sub_epoch += 1
+
+            step_start_time = time.perf_counter()
 
         if stop_training:
             break

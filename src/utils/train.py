@@ -16,6 +16,27 @@ def copy_if_tensor(x: Any | torch.Tensor) -> torch.Tensor:
     return torch.tensor(x)
 
 
+def convert_units(
+    value: float | int, unit: str, original_unit: str, unit_values: dict[str : int | float]
+) -> float | int:
+    if unit not in unit_values:
+        raise ValueError(f"Invalid unit '{unit}'. Valid units: {unit_values.keys()}")
+    if original_unit not in unit_values:
+        raise ValueError(f"Invalid unit '{original_unit}'. Valid units: {unit_values.keys()}")
+
+    return value * unit_values[original_unit] / unit_values[unit]
+
+
+def convert_time_units(time: float | int, unit: str, original_unit: str = "s"):
+    unit_values = {"s": 1}
+    unit_values["min"] = 60
+    unit_values["hr"] = 60 * unit_values["min"]
+    unit_values["day"] = 24 * unit_values["hr"]
+    unit_values |= {"ms": 1e-3, "us": 1e-6, "ns": 1e-9}
+
+    return convert_units(time, unit, original_unit, unit_values)
+
+
 def convert_byte_units(size: int, unit: str, original_unit: str = "B"):
     unit_values = {
         "B": 1,
@@ -31,12 +52,7 @@ def convert_byte_units(size: int, unit: str, original_unit: str = "B"):
         "PiB": 1000**5,
     }
 
-    if unit not in unit_values:
-        raise ValueError(f"Invalid unit '{unit}'. Valid units: {unit_values.keys()}")
-    if original_unit not in unit_values:
-        raise ValueError(f"Invalid unit '{original_unit}'. Valid units: {unit_values.keys()}")
-
-    return size * unit_values[original_unit] / unit_values[unit]
+    return convert_units(size, unit, original_unit, unit_values)
 
 
 def get_best_ckpt(checkpoint_dir: str | Path) -> Path:
