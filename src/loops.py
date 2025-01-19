@@ -16,7 +16,7 @@ def test(
     model: nn.Module,
     dataloader: data.DataLoader,
     group: h5py.File | h5py.Group,
-    dataset_length: int,
+    dataset_len: int,
     device: str | torch.device,
 ):
     model.to(device)
@@ -25,22 +25,25 @@ def test(
 
     _, truth = next(iter(dataloader))
     truth = truth.numpy()
-    dataset_shape = (dataset_length, *truth.shape[1:])
+    batch_size = truth.shape[0]
+    dataset_shape = (dataset_len, *truth.shape[1:])
     dataset_dtype = truth.dtype
 
     predict_dset = group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
 
+    num_batches = (dataset_len - 1) // batch_size + 1
+
     start_row = 0
     for batch_num, (inputs, truth) in enumerate(dataloader):
-        print(f"Batch: {batch_num + 1}/{len(dataloader)}")
+        print(f"Batch: {batch_num + 1}/{num_batches}")
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
-        predicts = model(hit_times=inputs["uncal_hit_times"], pmt_ids=inputs["pmt_ids"])
+        predicts = model(**inputs)
 
-        batch_size = truth.shape[0]
-        predict_dset[start_row : min(start_row + batch_size, dataset_length)] = predicts.cpu().numpy()
+        batch_size = min(start_row + truth.shape[0], dataset_len) - start_row
+        predict_dset[start_row : start_row + batch_size] = predicts[:batch_size].cpu().numpy()
 
         start_row += batch_size
-        if start_row >= dataset_length:
+        if start_row >= dataset_len:
             break
 
 

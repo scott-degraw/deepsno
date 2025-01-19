@@ -15,8 +15,8 @@ from torch import nn
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from src.train import test, train
-from src.utils.train import get_best_ckpt, write_config_to_h5
+from src.loops import test, train
+from src.utils.train import get_best_ckpt
 
 
 def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
@@ -67,7 +67,7 @@ def get_git_hash(raise_exception: bool = False) -> str:
         def __init__(self, message: str):
             super().__init__(message)
 
-    if not raise_exception and subprocess.run(["git", "diff", "--quiet"]).returncode != 0:
+    if raise_exception and subprocess.run(["git", "diff", "--quiet"]).returncode != 0:
         raise UncommitedChangesError("Working tree is not clean. Please commit all changes.")
 
     git_hash = subprocess.run(
@@ -126,22 +126,25 @@ if __name__ == "__main__":
 
     cfg = parser.parse_args()
 
-    cfg = jsonargparse.namespace_to_dict(cfg)
+    cfg: dict = jsonargparse.namespace_to_dict(cfg)
+
+    if cfg["subcommand"] == "predict":
+        # Merge the values from the ckpt config but override ckpt config with ckpt from --config
+        ckpt_cfg = jsonargparse.namespace_to_dict(parser.parse_path(cfg["predict"]["ckpt_config"]))
+        cfg = ckpt_cfg | cfg
 
     if cfg["force"]:
         warn(
             "Running in 'force' mode. Git commit hash may not reflect state of working tree.", UncommitedChangesWarning
         )
-        git_hash = get_git_hash(raise_exception=True)
+        git_hash = get_git_hash(raise_exception=False)
     else:
         git_hash = get_git_hash()
-
-    # TODO: This part may need some testing and some thought
-    if cfg["git_hash"] is not None:
-        if git_hash != cfg["git_hash"]:
-            raise MismatchedGitHash(
-                f"Git hash: {cfg["git_hash"]} does not match the git hash of the current working tree: {git_hash}"
-            )
+        if cfg["git_hash"] is not None:
+            if git_hash != cfg["git_hash"]:
+                raise MismatchedGitHash(
+                    f"Git hash: {cfg["git_hash"]} does not match the git hash of the current working tree: {git_hash}"
+                )
 
     cfg["git_hash"] = git_hash
 
@@ -239,48 +242,50 @@ if __name__ == "__main__":
             val_num_steps=cfg["val_num_steps"],
             max_grad_norm=cfg["max_grad_norm"],
         )
+
     elif cfg["subcommand"] == "predict":
         cfg_keys.append("predict")
 
         cfg = {key: cfg[key] for key in cfg_keys}
 
-        save_cfg = cfg
+        initialize_norm_dict(cfg["model"])
 
-        ckpt_cfg: dict = jsonargparse.namespace_to_dict(parser.parse_path(cfg["predict"]["ckpt_config"]))
-        ckpt_model_cfg = {"model": ckpt_cfg["model"]}
+        save_cfg: dict = cfg
 
-        initialize_norm_dict(ckpt_model_cfg["model"])
+        cfg: jsonargparse.Namespace = parser.instantiate_classes(cfg)
 
-        save_cfg = save_cfg | ckpt_cfg
+        model = cfg.model
 
-        predict_cfg = predict_parser.instantiate_classes(cfg["predict"])
-
-        model: torch.nn.Module = parser.instantiate_classes(ckpt_model_cfg)["model"]
-
-        ckpt_path: Path = Path(predict_cfg["ckpt"])
+        ckpt_path: Path = Path(cfg.predict.ckpt)
 
         if ckpt_path.is_dir():
             ckpt_path = get_best_ckpt(ckpt_path)
 
-        state_dict = torch.load(ckpt_path, map_location=predict_cfg["device"], weights_only=True)
-        model_state_dict = state_dict["model"]
-        del state_dict
+        state_dict = torch.load(ckpt_path, map_location=cfg.predict.device, weights_only=True)
 
-        model.load_state_dict(model_state_dict)
+        model.load_state_dict(state_dict["model"])
 
         dataloader: data.DataLoader = data.DataLoader(
-            predict_cfg["dataset"], batch_size=predict_cfg["batch_size"], num_workers=predict_cfg["num_workers"]
+            cfg.predict.dataset, batch_size=cfg.predict.batch_size, num_workers=cfg.predict.num_workers
         )
 
-        dataset_len = len(predict_cfg["dataset"]) if predict_cfg["dataset_len"] is None else predict_cfg["dataset_len"]
+        if cfg.predict.dataset_len > len(cfg.predict.dataset):
+            raise ValueError(
+                (
+                    f"The value of 'dataset_len' is larger than the length of the dataset: {len(cfg.predict.dataset)}. "
+                    "'dataset_len' must be less than or equal to the length of the dataset."
+                )
+            )
+        dataset_len = len(cfg.predict.dataset) if cfg.predict.dataset_len is None else cfg.predict.dataset_len
 
-        with h5py.File(predict_cfg["output_file"], "w") as h5_file:
-            # TODO: perhaps have to rethink if this is the best way to do it
-            write_config_to_h5(h5_group=h5_file, config_obj=save_cfg)
+        predict_cfg_path = Path(cfg.predict.output_file).with_suffix(".yaml")
+        parser.save(save_cfg, predict_cfg_path, overwrite=True)
+
+        with h5py.File(cfg.predict.output_file, "w") as h5_file:
             test(
                 model=model,
                 dataloader=dataloader,
-                h5_group=h5_file,
-                dataset_length=dataset_len,
-                device=predict_cfg["device"],
+                group=h5_file,
+                dataset_len=dataset_len,
+                device=cfg.predict.device,
             )
