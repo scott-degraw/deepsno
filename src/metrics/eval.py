@@ -7,6 +7,8 @@ def fwhm(hist: np.ndarray, bin_arrays: np.ndarray) -> float:
     bin_centers = np.convolve(bin_arrays, [0.5, 0.5], mode="valid")
 
     max_i = np.argmax(hist)
+    if max_i == 0 or max_i == len(hist):
+        return np.nan
     maximum = hist[max_i]
 
     right_half_i = max_i + 1 + np.argmin(abs(hist[max_i + 1 :] - maximum / 2))
