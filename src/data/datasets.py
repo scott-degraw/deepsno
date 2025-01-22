@@ -45,15 +45,23 @@ class PositionRecoDataset(Dataset):
             if "root_mean_square_deviation" in mc_pos_dset.attrs:
                 self.position_rmsds[i] = mc_pos_dset.attrs["root_mean_square_deviation"].item()
 
+        self.generator = np.random.default_rng(seed)
+        self.available_indices = np.arange(0, self._hit_times_dset.shape[1])
     def __len__(self) -> int:
         return self.n_events
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
-        hit_times = torch.from_numpy(self._hit_times_dset[index, : self.context_len])
-        # PMT id of 0 indicates a masked PMT
-        # TODO: maybe use torch int instead of long. This will decrease the amount of data to pass to GPU but we will
-        # have to convert it into long at the gpu which may not be worth it
-        pmt_ids = torch.from_numpy(self._pmt_ids_dset[index, : self.context_len]).long()
+        pmt_ids = self._pmt_ids_dset[index]
+        non_zero_pmt_indices = np.nonzero(pmt_ids)[0]
+
+        if len(non_zero_pmt_indices) > self.context_len:
+            pmt_indices = np.sort(self.generator.choice(non_zero_pmt_indices, size=self.context_len, replace=False))
+        else:
+            pmt_indices = np.arange(self.context_len)
+
+        pmt_ids = torch.from_numpy(pmt_ids[pmt_indices]).long()
+
+        hit_times = torch.from_numpy(self._hit_times_dset[index, pmt_indices])
 
         truth_position = np.zeros(len(self.positions), dtype=self.position_numpy_dtype)
         for i, c in enumerate(self.positions):
