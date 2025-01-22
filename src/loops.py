@@ -139,7 +139,6 @@ def train(
         profiler.start("step_total")
         profiler.start("train_data_load")
         for batch_num, (inputs, truth) in enumerate(train_dataloader):
-            print(truth.ravel()[0])
             profiler.stop("train_data_load")
 
             if num_steps is not None and step_num == num_steps:
