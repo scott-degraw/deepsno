@@ -107,7 +107,9 @@ class PositionRecoFromHitTimeAutoEncoder(HitTimeAutoEncoder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
+    def forward(
+        self, uncal_hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor, pmt_positions: torch.FloatTensor
+    ) -> torch.FloatTensor:
         self.position_reconstructor.input_norm = self.input_norm
         self.position_reconstructor.output_unnorm = self.output_unnorm
-        return self.position_reconstructor(hit_times=hit_times, pmt_ids=pmt_ids)
+        return self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
