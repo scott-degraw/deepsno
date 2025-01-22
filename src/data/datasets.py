@@ -76,7 +76,7 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         self,
         path: str | Path,
         context_len: int,
-        delays_file: str | Path,
+        delays_file: str | Path = None,
         positions: list[str] = ["x", "y", "z"],
     ):
         super().__init__(path=path, positions=positions, context_len=context_len)
@@ -87,17 +87,21 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
             self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
             self._pmt_positions[0, i] = 0.0
 
-        self.cable_delays = torch.from_numpy(np.loadtxt(delays_file, dtype=np.float32))
-        assert (
-            len(self.cable_delays) == n_pmts
-        ), f"Cable delays from {delays_file} is length {len(self.cable_delays)}, which does not match {n_pmts}"
+        if delays_file is not None:
+            self.cable_delays = torch.from_numpy(np.loadtxt(delays_file, dtype=np.float32))
+            assert (
+                len(self.cable_delays) == n_pmts
+            ), f"Cable delays from {delays_file} is length {len(self.cable_delays)}, which does not match {n_pmts}"
+        else:
+            self.cable_delays = None
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
         inputs, _ = super().__getitem__(index)
 
         inputs["pmt_positions"] = self._pmt_positions[inputs["pmt_ids"]]
 
-        inputs["hit_times"] += self.cable_delays[inputs["pmt_ids"]]
+        if self.cable_delays is not None:
+            inputs["hit_times"] += self.cable_delays[inputs["pmt_ids"]]
         inputs["uncal_hit_times"] = inputs.pop("hit_times")
 
         truth = inputs["uncal_hit_times"]
