@@ -54,7 +54,7 @@ class PositionRecoDataset(Dataset):
 
         if cut_index_file is not None:
             with h5py.File(cut_index_file) as cut_index_h5:
-                self.cut_indices = torch.from_numpy(cut_index_h5["cut_indices"][:]).squeeze()
+                self.cut_indices = torch.from_numpy(cut_index_h5["cut_indices"][:])
                 self.n_events = len(self.cut_indices)
         else:
             self.cut_indices = None
