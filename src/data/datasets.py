@@ -6,12 +6,16 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# TODO: We might be able to make this quicker. Implement custom that uses a slice of indices. This index slice
-# could be fed into the h5py to more efficiently load the data
-
 
 class PositionRecoDataset(Dataset):
-    def __init__(self, path: str | Path, context_len: int, positions: list[str] = ["x", "y", "z"]):
+    def __init__(
+        self,
+        path: str | Path,
+        context_len: int,
+        cut_index_file: str | Path = None,
+        positions: list[str] = ["x", "y", "z"],
+        seed=74819,
+    ):
         super().__init__()
         self._path = Path(path)
         self.context_len = context_len
@@ -47,10 +51,21 @@ class PositionRecoDataset(Dataset):
 
         self.generator = np.random.default_rng(seed)
         self.available_indices = np.arange(0, self._hit_times_dset.shape[1])
+
+        if cut_index_file is not None:
+            with h5py.File(cut_index_file) as cut_index_h5:
+                self.cut_indices = torch.from_numpy(cut_index_h5["cut_indices"][:]).squeeze()
+                self.n_events = len(self.cut_indices)
+        else:
+            self.cut_indices = None
+
     def __len__(self) -> int:
         return self.n_events
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
+        if self.cut_indices is not None:
+            index = self.cut_indices[index].item()
+
         pmt_ids = self._pmt_ids_dset[index]
         non_zero_pmt_indices = np.nonzero(pmt_ids)[0]
 
@@ -77,9 +92,10 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         path: str | Path,
         context_len: int,
         delays_file: str | Path = None,
+        cut_index_file: str | Path = None,
         positions: list[str] = ["x", "y", "z"],
     ):
-        super().__init__(path=path, positions=positions, context_len=context_len)
+        super().__init__(path=path, positions=positions, context_len=context_len, cut_index_file=cut_index_file)
 
         n_pmts = self._h5_file[f"pmt_info/position/{positions[0]}"].shape[0]
         self._pmt_positions = torch.zeros((n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
