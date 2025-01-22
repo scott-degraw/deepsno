@@ -188,7 +188,7 @@ if __name__ == "__main__":
 
         # Instantiate the scheduler
 
-        if "scheduler" in cfg:
+        if cfg["scheduler"] is not None:
             check_instantiate_keys(cfg["scheduler"], "scheduler")
             scheduler_class = get_class(cfg["scheduler"]["class_path"])
 
