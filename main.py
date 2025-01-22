@@ -269,14 +269,14 @@ if __name__ == "__main__":
             cfg.predict.dataset, batch_size=cfg.predict.batch_size, num_workers=cfg.predict.num_workers
         )
 
-        if cfg.predict.dataset_len > len(cfg.predict.dataset):
+        dataset_len = len(cfg.predict.dataset) if cfg.predict.dataset_len is None else cfg.predict.dataset_len
+        if dataset_len > len(cfg.predict.dataset):
             raise ValueError(
                 (
                     f"The value of 'dataset_len' is larger than the length of the dataset: {len(cfg.predict.dataset)}. "
                     "'dataset_len' must be less than or equal to the length of the dataset."
                 )
             )
-        dataset_len = len(cfg.predict.dataset) if cfg.predict.dataset_len is None else cfg.predict.dataset_len
 
         predict_cfg_path = Path(cfg.predict.output_file).with_suffix(".yaml")
         parser.save(save_cfg, predict_cfg_path, overwrite=True)
