@@ -67,11 +67,14 @@ def get_git_hash(raise_exception: bool = False) -> str:
         def __init__(self, message: str):
             super().__init__(message)
 
-    if raise_exception and subprocess.run(["git", "diff", "--quiet"]).returncode != 0:
+    repo_directory = Path(__file__).parent.resolve()
+
+    is_working_tree_clean = subprocess.run(["git", "diff", "--quiet"], cwd=repo_directory).returncode != 0
+    if raise_exception and is_working_tree_clean:
         raise UncommitedChangesError("Working tree is not clean. Please commit all changes.")
 
     git_hash = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True
+        ["git", "rev-parse", "--short", "HEAD"], cwd=repo_directory, capture_output=True, text=True, check=True
     ).stdout
 
     git_hash = git_hash.strip()
@@ -79,6 +82,7 @@ def get_git_hash(raise_exception: bool = False) -> str:
 
 
 if __name__ == "__main__":
+    # TODO: put this in the config
     torch.set_float32_matmul_precision("high")
 
     train_parser = ArgumentParser(prog="DeepSNO")
@@ -139,15 +143,13 @@ if __name__ == "__main__":
         )
         git_hash = get_git_hash(raise_exception=False)
     else:
-        git_hash = get_git_hash()
-        if cfg["git_hash"] is not None:
-            if git_hash != cfg["git_hash"]:
-                raise MismatchedGitHash(
-                    f"Git hash: {cfg["git_hash"]} does not match the git hash of the current working tree: {git_hash}"
-                )
+        git_hash = get_git_hash(raise_exception=True)
+        if cfg["git_hash"] is not None and git_hash != cfg["git_hash"]:
+            raise MismatchedGitHash(
+                f"Git hash '{cfg["git_hash"]}' does not match the git hash of the current working tree: '{git_hash}'"
+            )
 
     cfg["git_hash"] = git_hash
-
     cfg_keys = ["model", "force", "git_hash"]  # These are the keys for the config that will be used for all subcommands
 
     if cfg["subcommand"] == "train":
