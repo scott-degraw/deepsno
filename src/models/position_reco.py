@@ -98,25 +98,11 @@ class PositionReco(nn.Module):
             self.input_norm = False
             self.output_unnorm = False
 
-    def train(self, mode=True):
-        super().train(mode=mode)
-        self.transformer_encoder.train()
-        if not mode:
-            for layer in self.transformer_encoder.layers:
-                layer.dropout.eval()
-                layer.dropout1.eval()
-                layer.dropout2.eval()
-                layer.norm1.eval()
-                layer.norm2.eval()
-                layer.linear1.eval()
-                layer.linear2.eval()
-                layer.self_attn.eval()
-
     def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
         if self.input_norm:
             hit_times = self.input_normalize(hit_times)
 
-        pmt_masks = pmt_ids == 0  # 0 indicates the PMT is padded
+        pmt_masks = pmt_ids == 0
 
         x = self.pmt_id_embeddings[pmt_ids] + self.hit_time_embedder(hit_times.unsqueeze(-1))
 
