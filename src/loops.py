@@ -1,4 +1,3 @@
-import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -9,7 +8,8 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from src.utils.train import convert_byte_units, convert_time_units
+from src.utils.profiling import LoopProfiler
+from src.utils.train import convert_byte_units
 
 
 @torch.inference_mode()
@@ -95,6 +95,22 @@ def train(
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(exist_ok=True, parents=True)
 
+    profiler = LoopProfiler(
+        writer=writer,
+        profiles=[
+            "train_data_load",
+            "data_to_device",
+            "forward_pass",
+            "loss_calc",
+            "backward_pass",
+            "step_total",
+            "validation",
+            "model_save",
+        ],
+        cuda_sync="cuda" in device.type,
+        profiling_unit=profiling_unit,
+    )
+
     if (num_epochs is not None) and (num_steps is not None):
         raise ValueError("Only 'num_epochs' or 'num_steps' can be given, not both.")
     if (num_epochs is None) and (num_steps is None):
@@ -118,15 +134,11 @@ def train(
     sub_epoch = 0
     stop_training = False
     for epoch_num in range(num_epochs):
-        step_start_time = time.perf_counter()
+        profiler.start("step_total")
+        profiler.start("train_data_load")
         for batch_num, (inputs, truth) in enumerate(train_dataloader):
-            train_data_load_time = time.perf_counter() - step_start_time
-            writer.add_scalar(
-                f"Profiling/train_data_load-{profiling_unit}",
-                convert_time_units(train_data_load_time, profiling_unit),
-                step_num,
-                new_style=True,
-            )
+            print(truth.ravel()[0])
+            profiler.stop("train_data_load")
 
             if num_steps is not None and step_num == num_steps:
                 stop_training = True
@@ -145,78 +157,42 @@ def train(
 
             optimizer.zero_grad()
 
-            data_to_device_start_time = time.perf_counter()
+            profiler.start("data_to_device")
             inputs = pytree.tree_map(lambda x: x.to(device), inputs)
             truth = pytree.tree_map(lambda x: x.to(device), truth)
-            data_to_device_time = time.perf_counter() - data_to_device_start_time
-            writer.add_scalar(
-                f"Profiling/data_to_device-{profiling_unit}",
-                convert_time_units(data_to_device_time, profiling_unit),
-                step_num,
-                new_style=True,
-            )
+            profiler.stop("data_to_device")
 
             if not model.output_unnorm:
                 truth = model.output_normalize(truth)
 
-            forward_pass_start_time = time.perf_counter()
+            profiler.start("forward_pass")
             predict = model(**inputs)
-            forward_pass_time = time.perf_counter() - forward_pass_start_time
-            writer.add_scalar(
-                f"Profiling/forward_pass-{profiling_unit}",
-                convert_time_units(forward_pass_time, profiling_unit),
-                step_num,
-                new_style=True,
-            )
+            profiler.stop("forward_pass")
 
-            loss_calc_start_time = time.perf_counter()
+            profiler.start("loss_calc")
             loss = loss_fn(predict, truth)
-            loss_calc_time = time.perf_counter() - loss_calc_start_time
+            profiler.stop("loss_calc")
             writer.add_scalar("Loss/train", loss.item(), step_num, new_style=True)
-            writer.add_scalar(
-                f"Profiling/loss_calc-{profiling_unit}",
-                convert_time_units(loss_calc_time, profiling_unit),
-                step_num,
-                new_style=True,
-            )
 
-            backward_pass_start_time = time.perf_counter()
+            profiler.start("backward_pass")
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             optimizer.step()
-            backward_pass_time = time.perf_counter() - backward_pass_start_time
-            writer.add_scalar(
-                f"Profiling/backward_pass-{profiling_unit}",
-                convert_time_units(backward_pass_time, profiling_unit),
-                step_num,
-                new_style=True,
-            )
+            profiler.stop("backward_pass")
 
             if scheduler is not None:
                 scheduler.step()
                 writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], step_num, new_style=True)
 
-            step_num += 1
+            profiler.stop("step_total")
 
-            step_time = time.perf_counter() - step_start_time
-            writer.add_scalar(
-                f"Profiling/step_total-{profiling_unit}",
-                convert_time_units(step_time, profiling_unit),
-                step_num,
-                new_style=True,
-            )
+            step_num += 1
 
             if step_num % val_num_steps == 0:
                 del inputs, truth, predict, loss
-                validate_start_time = time.perf_counter()
+                profiler.start("validation")
                 val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
-                validate_time = time.perf_counter() - validate_start_time
-                writer.add_scalar(
-                    f"Profiling/validation-{profiling_unit}",
-                    convert_time_units(validate_time, profiling_unit),
-                    step_num,
-                    new_style=True,
-                )
+                profiler.stop("validation")
 
                 model.train()
                 model.output_unnorm = False
@@ -226,7 +202,7 @@ def train(
                 if val_loss_is_inverted:
                     val_loss = -val_loss
 
-                model_save_start_time = time.perf_counter()
+                profiler.start("model_save")
                 state_dict = {
                     "sub_epoch": sub_epoch,
                     "model": deepcopy(model.state_dict()),
@@ -240,17 +216,13 @@ def train(
                 filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
 
                 torch.save(state_dict, checkpoint_dir / filename)
-                model_save_time = time.perf_counter() - model_save_start_time
-                writer.add_scalar(
-                    f"Profiling/model_save-{profiling_unit}",
-                    convert_time_units(model_save_time, profiling_unit),
-                    step_num,
-                    new_style=True,
-                )
+                profiler.stop("model_save")
 
                 sub_epoch += 1
 
-            step_start_time = time.perf_counter()
+            profiler.log_all(step_num)
+            profiler.start("step_total")
+            profiler.start("train_data_load")
 
         if stop_training:
             break
