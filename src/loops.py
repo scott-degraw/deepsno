@@ -24,11 +24,13 @@ def test(
     model.eval()
     model.output_unnorm = True
 
-    _, truth = next(iter(dataloader))
-    truth = truth.numpy()
-    batch_size = truth.shape[0]
-    dataset_shape = (dataset_len, *truth.shape[1:])
-    dataset_dtype = truth.dtype
+    inputs, _ = next(iter(dataloader))
+    inputs = pytree.tree_map(lambda x: x.to(device), inputs)
+    predicts = model(**inputs)
+    batch_size = predicts.shape[0]
+
+    dataset_shape = (dataset_len, *predicts.shape[1:])
+    dataset_dtype = predicts.numpy().dtype
 
     predict_dset = group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
 
