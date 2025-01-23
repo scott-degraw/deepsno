@@ -2,6 +2,7 @@
 
 import importlib
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from warnings import warn
@@ -96,7 +97,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--num_workers", type=int, default=0)
     train_parser.add_argument("--num_epochs", type=int, required=False)
     train_parser.add_argument("--num_steps", type=int, required=False)
-    train_parser.add_argument("--train_val_split", type=float, required=True)
+    train_parser.add_argument("--val_len", type=int | float, required=True)
 
     train_parser.add_argument("--loss_fn", type=nn.Module, required=True)
     train_parser.add_argument("--optimizer", type=dict, required=True)
@@ -107,10 +108,12 @@ if __name__ == "__main__":
     train_parser.add_argument("--val_num_steps", type=int, required=False)
     train_parser.add_argument("--val_loss_is_inverted", type=bool, default=False)
 
+    train_parser.add_argument("--dry_run", action="store_true")
+
     predict_parser = ArgumentParser()
     predict_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=True)
-    predict_parser.add_argument("--ckpt_config", type=ptyping.Path_fr, required=True)
-    predict_parser.add_argument("--output_file", type=ptyping.Path_fc, required=True)
+    predict_parser.add_argument("--ckpt_config", type=ptyping.Path_fr, required=False)
+    predict_parser.add_argument("--output_path", type=ptyping.Path_fc, required=False)
     predict_parser.add_argument("--device", type=str, required=True)
     predict_parser.add_argument("--dataset", type=torch.utils.data.Dataset)
     predict_parser.add_argument("--batch_size", type=int, required=True)
@@ -133,6 +136,21 @@ if __name__ == "__main__":
     cfg: dict = jsonargparse.namespace_to_dict(cfg)
 
     if cfg["subcommand"] == "predict":
+        ckpt = Path(cfg["predict"]["ckpt"]).resolve()
+        checkpoint_dir = ckpt.parent
+        if ckpt.is_file():
+            checkpoint_dir = checkpoint_dir.parent
+
+        if cfg["predict"]["ckpt_config"] is None:
+            cfg["predict"]["ckpt_config"] = checkpoint_dir / "config.yaml"
+        elif not Path(cfg["predict"]["ckpt_config"]).is_absolute():
+            cfg["predict"]["ckpt_config"] = checkpoint_dir / cfg["predict"]["ckpt_config"]
+
+        if cfg["predict"]["output_path"] is None:
+            cfg["predict"]["output_path"] = checkpoint_dir / "test_result.h5"
+        elif not Path(cfg["predict"]["output_path"]).is_absolute():
+            cfg["predict"]["output_path"] = checkpoint_dir / cfg["predict"]["output_path"]
+
         # Merge the values from the ckpt config but override ckpt config with config from --config
         ckpt_cfg = jsonargparse.namespace_to_dict(parser.parse_path(cfg["predict"]["ckpt_config"]))
         cfg = ckpt_cfg | cfg
@@ -159,12 +177,19 @@ if __name__ == "__main__":
 
         torch.manual_seed(cfg["train"]["seed"])
 
+        datetime_string = datetime.now().strftime(r"%Y-%m-%d_%H-%M-%S")
+
+        if cfg["train"]["dry_run"]:
+            cfg["train"]["num_epochs"] = None
+            cfg["train"]["num_steps"] = 3
+            cfg["train"]["val_num_steps"] = 2
+            cfg["train"]["val_len"] = int(1.5 * cfg["train"]["val_batch_size"])
+            cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / f"dry_run_{datetime_string}"
+
         # Create the model save directory
 
         model_save_dir: Path = Path(cfg["train"]["checkpoint_dir"])
         model_save_dir.mkdir(parents=True, exist_ok=True)
-
-        datetime_string = datetime.now().strftime(r"%Y-%m-%d_%H-%M-%S")
 
         model_save_dir = model_save_dir / datetime_string
 
@@ -205,7 +230,12 @@ if __name__ == "__main__":
         if (cfg["num_epochs"] is None) and (cfg["num_steps"] is None):
             raise ValueError("Either 'train.num_epochs' or 'train.num_steps' must be provided.")
 
-        train_set, val_set = data.random_split(cfg["dataset"], [cfg["train_val_split"], 1 - cfg["train_val_split"]])
+        if isinstance(cfg["val_len"], float):
+            lengths = [1 - cfg["val_len"], cfg["val_len"]]
+        else:
+            lengths = [len(cfg["dataset"]) - cfg["val_len"], cfg["val_len"]]
+
+        train_set, val_set = data.random_split(cfg["dataset"], lengths)
 
         train_dataloader = data.DataLoader(
             train_set, batch_size=cfg["batch_size"], shuffle=cfg["shuffle"], num_workers=cfg["num_workers"]
@@ -280,10 +310,10 @@ if __name__ == "__main__":
                 )
             )
 
-        predict_cfg_path = Path(cfg.predict.output_file).with_suffix(".yaml")
+        predict_cfg_path = Path(cfg.predict.output_path).with_suffix(".yaml")
         parser.save(save_cfg, predict_cfg_path, overwrite=True)
 
-        with h5py.File(cfg.predict.output_file, "w") as h5_file:
+        with h5py.File(cfg.predict.output_path, "w") as h5_file:
             test(
                 model=model,
                 dataloader=dataloader,
