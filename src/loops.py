@@ -30,7 +30,7 @@ def test(
     batch_size = predicts.shape[0]
 
     dataset_shape = (dataset_len, *predicts.shape[1:])
-    dataset_dtype = predicts.numpy().dtype
+    dataset_dtype = predicts.cpu().numpy().dtype
 
     predict_dset = group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
 
