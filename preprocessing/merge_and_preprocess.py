@@ -21,34 +21,32 @@ def str_from_many_paths(paths: tuple[str], n=3) -> str:
     return output_str
 
 
-def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[h5py.Dataset] = None) -> None:
-    # This function counts on masked values having a value of 0
+def find_norms(
+    dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[h5py.Dataset] = None, n_blocks: int = None
+) -> None:
+    # This function relies on masked values having a value of 0
     n_events = dataset.shape[0]
 
-    n_blocks = (n_events - 1) // block_size + 1
+    if n_blocks is None:
+        # For ease of good numerical calculation of means I only consider evenly sized blocks
+        n_blocks = n_events // block_size
 
-    data_sum = 0
+    block_means = np.full(n_blocks, dtype=np.float64, fill_value=np.nan)
 
-    n_values: int = 0
     start_row: int = 0
-
     print("Finding mean")
     for block_num in range(n_blocks):
         print(f"Block {block_num + 1}/{n_blocks}")
         block_slice = slice(start_row, min(start_row + block_size, n_events))
         data_block = dataset[block_slice]
         if pmt_id_dataset is not None:
-            mask_block = pmt_id_dataset[block_slice] == 0
-            data_block = data_block[~mask_block]
-            n_values += mask_block.size - mask_block.sum()
-        else:
-            n_values += data_block.size
-        data_sum += data_block.sum()
+            data_block = data_block[pmt_id_dataset[block_slice] != 0]
+        block_means[block_num] = np.mean(data_block)
         start_row += block_size
 
-    mean = data_sum / n_values
+    mean = np.mean(block_means)
 
-    residual_sum = 0
+    block_variances = np.full(n_blocks, dtype=np.float64, fill_value=np.nan)
 
     start_row = 0
     print("Finding root mean square deviation")
@@ -57,15 +55,14 @@ def find_norms(dataset: h5py.Dataset, block_size: int, pmt_id_dataset: Optional[
         block_slice = slice(start_row, min(start_row + block_size, n_events))
         data_block = dataset[block_slice]
         if pmt_id_dataset is not None:
-            mask_block = pmt_id_dataset[block_slice] == 0
-            data_block = data_block[~mask_block]
-        residual_sum += np.sum(np.square(data_block - mean))
+            data_block = data_block[pmt_id_dataset[block_slice] != 0]
+        block_variances[block_num] = np.mean(np.square(data_block - mean))
         start_row += block_size
 
-    root_mean_square_deviation = np.sqrt(residual_sum / n_values)
+    rmsd = np.sqrt(np.mean(block_variances))
 
     dataset.attrs["mean"] = mean
-    dataset.attrs["root_mean_square_deviation"] = root_mean_square_deviation
+    dataset.attrs["root_mean_square_deviation"] = rmsd
 
 
 def merge_h5(
