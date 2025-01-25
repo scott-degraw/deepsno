@@ -104,6 +104,29 @@ class HitTimeAutoEncoder(nn.Module):
         return {"predict": uncal_times, "pad_masks": ~not_padding_masks}
 
 
+class CableDelayFineTune(HitTimeAutoEncoder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        for param in super().parameters():
+            param.requires_grad = False
+
+        self.fine_tune = True
+        for param in self.parameters():
+            param.requires_grad = True
+
+    def parameters(self, *args, **kwargs):
+        if self.fine_tune:
+            return [self.get_parameter("effective_c"), self.get_parameter("cable_delays")]
+        return super().parameters(*args, **kwargs)
+
+    def state_dict(self, *args, **kwargs):
+        self.fine_tune = False
+        state_dict = super().state_dict(*args, **kwargs)
+        self.fine_tune = True
+        return state_dict
+
+
 class PositionRecoFromHitTimeAutoEncoder(HitTimeAutoEncoder):
     # This subclass is used when I want to just look at the predictions from the position reconstructor
     def __init__(self, *args, **kwargs):
