@@ -34,9 +34,6 @@ class HitTimeAutoEncoder(nn.Module):
     ):
         super().__init__()
 
-        self.register_parameter("effective_c", nn.Parameter(torch.tensor(1.0)))
-        self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
-
         self.add_module("position_reconstructor", position_reconstructor)
 
         if norm_dict is not None:
@@ -61,6 +58,10 @@ class HitTimeAutoEncoder(nn.Module):
         else:
             self.input_norm = False
             self.output_unnorm = False
+
+        c_eff = 3e2 * self.hit_time_rmsd / self.position_rmsd
+        self.register_parameter("effective_c", nn.Parameter(c_eff))
+        self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.output_normalize(positions)
