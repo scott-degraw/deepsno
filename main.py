@@ -12,7 +12,7 @@ import jsonargparse
 import torch
 from jsonargparse import ArgumentParser, Namespace
 from jsonargparse import typing as ptyping
-from torch import nn
+from torch import nn, optim
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
@@ -98,6 +98,9 @@ if __name__ == "__main__":
     train_parser.add_argument("--num_epochs", type=int, required=False)
     train_parser.add_argument("--num_steps", type=int, required=False)
     train_parser.add_argument("--val_len", type=int | float, required=True)
+
+    train_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=False)
+    train_parser.add_argument("--ckpt_keys", type=list[str], required=False)
 
     train_parser.add_argument("--loss_fn", type=nn.Module, required=True)
     train_parser.add_argument("--optimizer", type=dict, required=True)
@@ -203,7 +206,7 @@ if __name__ == "__main__":
 
         save_cfg: dict = cfg
         cfg: Namespace = parser.instantiate_classes(cfg)
-        model: Namespace = cfg["model"]
+        model: nn.Module = cfg["model"]
         cfg: Namespace = cfg["train"]
 
         # Instantiate the optimizer
@@ -211,7 +214,7 @@ if __name__ == "__main__":
         check_instantiate_keys(cfg["optimizer"], "optimizer")
         optimizer_class = get_class(cfg["optimizer"]["class_path"])
 
-        optimizer = optimizer_class(model.parameters(), **cfg["optimizer"]["init_args"])
+        optimizer: optim.Optimizer = optimizer_class(model.parameters(), **cfg["optimizer"]["init_args"])
 
         # Instantiate the scheduler
 
@@ -219,9 +222,24 @@ if __name__ == "__main__":
             check_instantiate_keys(cfg["scheduler"], "scheduler")
             scheduler_class = get_class(cfg["scheduler"]["class_path"])
 
-            scheduler = scheduler_class(optimizer, **cfg["scheduler"]["init_args"])
+            scheduler: optim.lr_scheduler.LRScheduler = scheduler_class(optimizer, **cfg["scheduler"]["init_args"])
         else:
             scheduler = None
+
+        # if ckpt is given, load the state dicts
+
+        if cfg["ckpt"] is not None:
+            ckpt = Path(cfg["ckpt"])
+            if ckpt.is_dir():
+                ckpt = get_best_ckpt(ckpt)
+            state_dict = torch.load(ckpt, map_location=cfg["device"], weights_only=True)
+            ckpt_keys = cfg["ckpt_keys"]
+            if "model" in ckpt_keys:
+                model.load_state_dict(state_dict["model"], strict=True)
+            if "optimizer" in ckpt_keys:
+                optimizer.load_state_dict(state_dict["optimizer"], strict=True)
+            if "scheduler" in ckpt_keys:
+                scheduler.load_state_dict(state_dict["scheduler"], strict=True)
 
         # Instantiate the dataloaders
 
