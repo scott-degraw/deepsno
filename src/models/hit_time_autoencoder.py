@@ -20,7 +20,7 @@ class HitTimeAutoEncoderNorm(dict):
             position_rmsds = np.array(
                 [h5_file[f"mc_truth/position/{c}"].attrs["root_mean_square_deviation"].item() for c in positions]
             )
-            self["position_rmsd"] = np.sqrt(np.sum(np.square(position_rmsds))).item()
+            self["position_rmsd"] = np.sqrt(np.mean(np.square(position_rmsds))).item()
 
 
 @torch.compile()

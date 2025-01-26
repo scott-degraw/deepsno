@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import h5py
+import numpy as np
 import torch
 from torch import nn
 
@@ -13,14 +14,18 @@ class PositionRecoNorm(dict):
 
         with h5py.File(train_file) as h5_file:
             self["input_norms"] = {
-                "hit_time_mean": float(h5_file["cal_pmt_events/hit_times"].attrs["mean"]),
-                "hit_time_rmsd": float(h5_file["cal_pmt_events/hit_times"].attrs["root_mean_square_deviation"]),
+                "hit_time_mean": h5_file["cal_pmt_events/hit_times"].attrs["mean"].item(),
+                "hit_time_rmsd": h5_file["cal_pmt_events/hit_times"].attrs["root_mean_square_deviation"].item(),
             }
+            position_means = [h5_file[f"mc_truth/position/{c}"].attrs["mean"].item() for c in positions]
+            position_mean = np.mean(position_means).item()
+            position_rmsds = np.array(
+                [h5_file[f"mc_truth/position/{c}"].attrs["root_mean_square_deviation"].item() for c in positions]
+            )
+            position_rmsd = np.sqrt(np.mean(np.square(position_rmsds))).item()
             self["output_norms"] = {
-                "position_means": [float(h5_file[f"mc_truth/position/{c}"].attrs["mean"]) for c in positions],
-                "position_rmsds": [
-                    float(h5_file[f"mc_truth/position/{c}"].attrs["root_mean_square_deviation"]) for c in positions
-                ],
+                "position_means": 3 * [position_mean],
+                "position_rmsds": 3 * [position_rmsd],
             }
 
 
