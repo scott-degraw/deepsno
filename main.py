@@ -100,7 +100,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--val_len", type=int | float, required=True)
 
     train_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=False)
-    train_parser.add_argument("--ckpt_keys", type=list[str], required=False)
+    train_parser.add_argument("--ckpt_keys", type=str, nargs="+", required=False)
 
     train_parser.add_argument("--loss_fn", type=nn.Module, required=True)
     train_parser.add_argument("--optimizer", type=dict, required=True)
@@ -237,9 +237,9 @@ if __name__ == "__main__":
             if "model" in ckpt_keys:
                 model.load_state_dict(state_dict["model"], strict=True)
             if "optimizer" in ckpt_keys:
-                optimizer.load_state_dict(state_dict["optimizer"], strict=True)
+                optimizer.load_state_dict(state_dict["optimizer"])
             if "scheduler" in ckpt_keys:
-                scheduler.load_state_dict(state_dict["scheduler"], strict=True)
+                scheduler.load_state_dict(state_dict["scheduler"])
 
         # Instantiate the dataloaders
 

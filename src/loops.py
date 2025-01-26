@@ -210,9 +210,7 @@ def train(
                     "optimizer": deepcopy(optimizer.state_dict()),
                 }
 
-                if scheduler is not None:
-                    state_dict["scheduler"] = deepcopy(scheduler.state_dict())
-                state_dict["scheduler"] = None
+                state_dict["scheduler"] = None if scheduler is None else deepcopy(scheduler.state_dict())
 
                 filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
 
