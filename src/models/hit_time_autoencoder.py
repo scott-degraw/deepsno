@@ -29,6 +29,8 @@ class HitTimeAutoEncoder(nn.Module):
         self,
         position_reconstructor: nn.Module,
         n_pmts: int,
+        effective_c: float = 100,
+        position_reconstructor_state_dict_path: str | Path | None = None,
         norm_dict: dict | None = None,
         positions: tuple = ["x", "y", "z"],
     ):
@@ -36,7 +38,25 @@ class HitTimeAutoEncoder(nn.Module):
 
         self.add_module("position_reconstructor", position_reconstructor)
 
-        if norm_dict is not None:
+        if position_reconstructor_state_dict_path is not None:
+            state_dict = torch.load(position_reconstructor_state_dict_path, map_location="cpu", weights_only=True)
+            self.position_reconstructor.load_state_dict(state_dict["model"], strict=True)
+
+            hit_time_mean = self.position_reconstructor.hit_time_mean
+            hit_time_rmsd = self.position_reconstructor.hit_time_rmsd
+            position_mean = self.position_reconstructor.position_means.mean()
+
+            position_rmsd = self.position_reconstructor.position_rmsds.square().mean().sqrt()
+
+            self.register_buffer("hit_time_mean", copy_if_tensor(hit_time_mean))
+            self.register_buffer("hit_time_rmsd", copy_if_tensor(hit_time_rmsd))
+            self.register_buffer("position_mean", copy_if_tensor(position_mean))
+            self.register_buffer("position_rmsd", copy_if_tensor(position_rmsd))
+
+            self.input_norm = True
+            self.output_unnorm = False
+
+        elif norm_dict is not None:
             self.register_buffer("hit_time_mean", copy_if_tensor(norm_dict["hit_time_mean"]))
             self.register_buffer("hit_time_rmsd", copy_if_tensor(norm_dict["hit_time_rmsd"]))
             self.register_buffer("position_mean", copy_if_tensor(norm_dict["position_mean"]))
@@ -59,7 +79,7 @@ class HitTimeAutoEncoder(nn.Module):
             self.input_norm = False
             self.output_unnorm = False
 
-        c_eff = 3e2 * self.hit_time_rmsd / self.position_rmsd
+        c_eff = effective_c * self.hit_time_rmsd / self.position_rmsd
         self.register_parameter("effective_c", nn.Parameter(c_eff))
         self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
 
