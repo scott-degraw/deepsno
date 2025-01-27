@@ -115,6 +115,13 @@ class HitTimeAutoEncoder(nn.Module):
         uncal_times = torch.linalg.vector_norm(predict_positions[..., None, :] - pmt_positions, dim=-1)
 
         uncal_times = uncal_times / self.effective_c
+        with torch.no_grad():
+            print(
+                f"TOF: mean: {torch.mean(uncal_times[not_padding_masks])}, std: {torch.std(uncal_times[not_padding_masks])}"
+            )
+            print(
+                f"cable delays: mean: {torch.mean(self.cable_delays[pmt_ids])}, std: {torch.std(self.cable_delays[pmt_ids])}"
+            )
         uncal_times = uncal_times + self.cable_delays[pmt_ids]
 
         if self.output_unnorm:
