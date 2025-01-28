@@ -10,18 +10,6 @@ parser.add_argument("-m", "--macro", type=str, help="Path to ROOT macro", requir
 parser.add_argument("-i", "--input_files", type=Path, nargs="+", help="Paths to input ROOT file.", required=True)
 parser.add_argument("-o", "--output_files", type=Path, nargs="+", help="Paths to output h5 file.", required=True)
 parser.add_argument(
-    "--min_hit_time",
-    type=float,
-    help="Minimum allowed hit time. Values larger than this will be clipped.",
-    required=True,
-)
-parser.add_argument(
-    "--max_hit_time",
-    type=float,
-    help="Maximum allowed hit time. Values smaller than this will be clipped.",
-    required=True,
-)
-parser.add_argument(
     "--context_window", type=int, help="Maximum number of calibrated hit PMTs to be extracted.", required=True
 )
 
@@ -44,5 +32,5 @@ ROOT.gROOT.LoadMacro(args.macro)
 
 for input_path, output_path in zip(args.input_files, args.output_files):
     ROOT.ratds_extract(
-        str(input_path.resolve()), str(output_path.resolve()), args.min_hit_time, args.max_hit_time, args.context_window
+        str(input_path.resolve()), str(output_path.resolve()),  args.context_window
     )

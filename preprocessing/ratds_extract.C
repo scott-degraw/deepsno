@@ -56,8 +56,8 @@ void test_vector() {
     std::cout << x << "\n";
 }
 
-void ratds_extract(std::string input_filename, std::string output_filename, Float_t min_hit_time, Float_t max_hit_time,
-                   std::size_t context_window, std::size_t max_triggers = 1) {
+void ratds_extract(std::string input_filename, std::string output_filename, std::size_t context_window, 
+        std::size_t max_triggers = 1) {
     std::cout << "Extracting data from " << input_filename << " into " << output_filename << "\n";
 
     fs::path path(input_filename);
@@ -152,7 +152,6 @@ void ratds_extract(std::string input_filename, std::string output_filename, Floa
                 const RAT::DS::PMTCal &cal_pmt = cal_pmts.GetPMT(i_pmt);
                 cal_pmt_ids(evs_counter, i_pmt) = cal_pmt.GetID();
                 Float_t pmt_time = static_cast<Float_t>(cal_pmt.GetTime());
-                pmt_time = std::clamp(pmt_time, min_hit_time, max_hit_time);
                 cal_pmt_times(evs_counter, i_pmt) = pmt_time;
             }
             evs_counter++;

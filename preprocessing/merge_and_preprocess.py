@@ -26,8 +26,15 @@ def find_norms(
 ) -> None:
     # This function relies on masked values having a value of 0
     n_events = dataset.shape[0]
-
     max_n_blocks = n_events // block_size
+
+    if max_n_blocks == 0:
+        raise ValueError(
+            (
+                f"The value of 'block_size' ({block_size}) is too large. "
+                f"It is smaller than length of data dataset: {n_events}."
+            )
+        )
     if n_blocks is None:
         # For ease of good numerical calculation of means I only consider evenly sized blocks
         n_blocks = max_n_blocks
@@ -70,8 +77,36 @@ def find_norms(
     dataset.attrs["root_mean_square_deviation"] = rmsd
 
 
+def preprocess_hit_time(output_path: str, min_hit_time: float, max_hit_time: float, block_size: int):
+    if not isinstance(output_path, h5py.Group):
+        output_path = h5py.File(output_path, "r+")
+
+    hit_time_dset = output_path["cal_pmt_events/hit_times"]
+    id_dset = output_path["cal_pmt_events/ids"]
+
+    n_events = hit_time_dset.shape[0]
+    n_blocks = (n_events - 1) // block_size + 1
+    start_row = 0
+    for block_num in range(n_blocks):
+        print(f"Block {block_num + 1}/{n_blocks}")
+        block_slice = slice(start_row, min(start_row + block_size, n_events))
+        hit_time_block = hit_time_dset[block_slice]
+        id_block = id_dset[block_slice]
+
+        selector = (hit_time_block > max_hit_time) | (hit_time_block < min_hit_time)
+        hit_time_block[selector] = 0.0
+        id_block[selector] = 0
+
+        hit_time_dset[block_slice] = hit_time_block
+        id_dset[block_slice] = id_block
+        start_row += block_size
+
+
 def merge_h5(
-    input_paths: List[str], output_path: str, dataset_identifiers: List[str], pmt_info_identifiers: List[str]
+    input_paths: List[str],
+    output_path: str,
+    dataset_identifiers: List[str],
+    pmt_info_identifiers: List[str],
 ) -> None:
     print(f"Merging {str_from_many_paths(input_paths)} to {output_path}.")
     with h5py.File(output_path, "w", libver="latest") as merged_h5:
@@ -129,8 +164,10 @@ def merge_and_norm(
     train_output_path: str,
     test_output_path: str,
     train_test_split: float,
+    min_hit_time: float,
+    max_hit_time: float,
     positions: List[str] = ["x", "y", "z"],
-    block_size: int = 100_000_000,
+    block_size: int = 100_000,
     seed: int = 487391,
 ) -> None:
     dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
@@ -159,6 +196,8 @@ def merge_and_norm(
         dataset_identifiers=dataset_identifiers,
         pmt_info_identifiers=pmt_info_identifiers,
     )
+    print("Preprocess train dataset")
+    preprocess_hit_time(train_output_path, min_hit_time=min_hit_time, max_hit_time=max_hit_time, block_size=block_size)
 
     # Add in the mean and root mean square deviation normalization
 
@@ -178,6 +217,9 @@ def merge_and_norm(
         dataset_identifiers=dataset_identifiers,
         pmt_info_identifiers=pmt_info_identifiers,
     )
+
+    print("Preprocess test dataset")
+    preprocess_hit_time(test_output_path, min_hit_time=min_hit_time, max_hit_time=max_hit_time, block_size=block_size)
 
     print("Finished merging and proprocessing")
 
