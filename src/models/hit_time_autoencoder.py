@@ -30,6 +30,7 @@ class HitTimeAutoEncoder(nn.Module):
         position_reconstructor: nn.Module,
         n_pmts: int,
         effective_c: float = 100,
+        fix_effective_c: bool = False,
         position_reconstructor_state_dict_path: str | Path | None = None,
         norm_dict: dict | None = None,
         positions: tuple = ["x", "y", "z"],
@@ -81,6 +82,7 @@ class HitTimeAutoEncoder(nn.Module):
 
         c_eff = effective_c * self.hit_time_rmsd / self.position_rmsd
         self.register_parameter("effective_c", nn.Parameter(c_eff))
+        self.effective_c.requires_grad = False
         self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
