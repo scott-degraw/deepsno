@@ -29,6 +29,7 @@ class PositionRecoNorm(dict):
             }
 
 
+@torch.compile
 class PositionReco(nn.Module):
     def add_input_norm(
         self,
