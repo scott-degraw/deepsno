@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.utils.train import copy_if_tensor
+from src.utils.train import copy_if_tensor, get_best_ckpt
 
 
 class HitTimeAutoEncoderNorm(dict):
@@ -40,7 +40,10 @@ class HitTimeAutoEncoder(nn.Module):
         self.add_module("position_reconstructor", position_reconstructor)
 
         if position_reconstructor_state_dict_path is not None:
-            state_dict = torch.load(position_reconstructor_state_dict_path, map_location="cpu", weights_only=True)
+            state_dict_path = Path(position_reconstructor_state_dict_path)
+            if state_dict_path.is_dir():
+                state_dict_path = get_best_ckpt(state_dict_path)
+            state_dict = torch.load(state_dict_path, map_location="cpu", weights_only=True)
             self.position_reconstructor.load_state_dict(state_dict["model"], strict=True)
 
             hit_time_mean = self.position_reconstructor.hit_time_mean
