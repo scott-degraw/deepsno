@@ -42,7 +42,7 @@ def initialize_norm_dict(model_cfg: dict):
 
     if "norm_dict" in model_cfg["init_args"]:
         norm_dict_cfg = model_cfg["init_args"]["norm_dict"]
-        if "class_path" in norm_dict_cfg:
+        if norm_dict_cfg is not None and "class_path" in norm_dict_cfg:
             check_instantiate_keys(norm_dict_cfg, "norm_dict")
             norm_dict_class = get_class(norm_dict_cfg["class_path"])
             norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
