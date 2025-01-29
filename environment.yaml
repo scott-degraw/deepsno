@@ -16,3 +16,4 @@ dependencies:
   - jsonargparse=4.35
   - tensorboard=2.18
   - torchtriton=3.1
+  - tqdm=4.67

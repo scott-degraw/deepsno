@@ -82,7 +82,7 @@ class HitTimeAutoEncoder(nn.Module):
 
         c_eff = effective_c * self.hit_time_rmsd / self.position_rmsd
         self.register_parameter("effective_c", nn.Parameter(c_eff))
-        self.effective_c.requires_grad = False
+        self.effective_c.requires_grad = fix_effective_c
         self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
