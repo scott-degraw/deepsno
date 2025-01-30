@@ -46,6 +46,9 @@ class HitTimeAutoEncoder(nn.Module):
             state_dict = torch.load(state_dict_path, map_location="cpu", weights_only=True)
             self.position_reconstructor.load_state_dict(state_dict["model"], strict=True)
 
+            self.position_reconstructor.input_norm = True
+            self.position_reconstructor.output_unnorm = False
+
             hit_time_mean = self.position_reconstructor.hit_time_mean
             hit_time_rmsd = self.position_reconstructor.hit_time_rmsd
             position_mean = self.position_reconstructor.position_means.mean()
@@ -59,7 +62,6 @@ class HitTimeAutoEncoder(nn.Module):
 
             self.input_norm = True
             self.output_unnorm = False
-
         elif norm_dict is not None:
             self.register_buffer("hit_time_mean", copy_if_tensor(norm_dict["hit_time_mean"]))
             self.register_buffer("hit_time_rmsd", copy_if_tensor(norm_dict["hit_time_rmsd"]))
@@ -85,7 +87,7 @@ class HitTimeAutoEncoder(nn.Module):
 
         c_eff = effective_c * self.hit_time_rmsd / self.position_rmsd
         self.register_parameter("effective_c", nn.Parameter(c_eff))
-        self.effective_c.requires_grad = fix_effective_c
+        self.effective_c.requires_grad = not fix_effective_c
         self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
@@ -94,14 +96,26 @@ class HitTimeAutoEncoder(nn.Module):
     def position_unnormalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.output_unnormalize(positions)
 
+    def hit_time_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return (hit_times - self.hit_time_mean) / self.hit_time_rmsd
+
+    def hit_time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return hit_times * self.hit_time_rmsd + self.hit_time_mean
+
     def input_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.input_normalize(hit_times)
 
-    def output_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return hit_times * self.hit_time_rmsd + self.hit_time_mean
+    def output_unnormalize(self, x: dict) -> dict:
+        return {
+            "uncal_hit_times": self.hit_time_unnormalize(x["uncal_hit_times"]),
+            "positions": self.position_unnormalize(x["positions"]),
+        }
 
-    def output_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return self.input_normalize(hit_times)
+    def output_normalize(self, x: dict) -> dict:
+        return {
+            "uncal_hit_times": self.hit_time_normalize(x["uncal_hit_times"]),
+            "positions": self.position_normalize(x["positions"]),
+        }
 
     def forward(
         self, uncal_hit_times: torch.FloatTensor, pmt_ids: torch.IntTensor, pmt_positions: torch.FloatTensor
@@ -130,10 +144,11 @@ class HitTimeAutoEncoder(nn.Module):
         uncal_times = uncal_times + self.cable_delays[pmt_ids]
 
         if self.output_unnorm:
-            uncal_times = self.output_unnormalize(uncal_times)
+            uncal_times = self.hit_time_normalize(uncal_times)
 
         uncal_times = not_padding_masks * uncal_times
-        return {"predict": uncal_times, "pad_masks": ~not_padding_masks}
+
+        return {"predict": uncal_times, "pad_masks": ~not_padding_masks, "positions": predict_positions}
 
 
 class CableDelayFineTune(HitTimeAutoEncoder):

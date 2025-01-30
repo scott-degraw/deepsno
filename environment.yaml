@@ -17,3 +17,4 @@ dependencies:
   - tensorboard=2.18
   - torchtriton=3.1
   - tqdm=4.67
+  - matplotlib=3.10

@@ -8,6 +8,7 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
+from src.metrics.metric_monitor import MetricMonitor
 from src.utils.profiling import LoopProfiler
 from src.utils.train import convert_byte_units
 
@@ -51,27 +52,41 @@ def test(
 
 
 @torch.inference_mode()
-def validate(dataloader: data.DataLoader, device: str | torch.device, model: nn.Module, loss_fn: nn.Module) -> float:
+def validate(
+    dataloader: data.DataLoader,
+    device: str | torch.device,
+    model: nn.Module,
+    metric: object,
+    global_step: int | None = None,
+    metric_monitor: MetricMonitor | None = None,
+) -> float:
     model.to(device)
     model.eval()
     model.output_unnorm = True
-    val_metric_sum: float = 0
-    n_data_points: int = 0
+
+    if metric_monitor is not None:
+        if global_step is None:
+            raise ValueError("'global_step' must be given a value that is not 'None'")
+        metric_monitor.reset()
+
+    metric.reset()
     print("Validating")
     for batch_num, (inputs, truth) in enumerate(dataloader):
         print(f"Validation batch: {batch_num + 1}/{len(dataloader)}")
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
         truth = pytree.tree_map(lambda x: x.to(device), truth)
 
-        batch_size = truth.shape[0]
-        n_data_points += batch_size
         predict = model(**inputs)
 
-        metric = batch_size * loss_fn(predict, truth).item()
-        val_metric_sum += metric
+        if metric_monitor is not None:
+            metric_monitor.update(predict=predict, truth=truth)
 
-    val_metric = val_metric_sum / n_data_points
-    return val_metric
+        metric.update(predict, truth)
+
+    if metric_monitor is not None:
+        metric_monitor.compute(global_step)
+
+    return metric.compute()
 
 
 def train(
@@ -83,8 +98,8 @@ def train(
     val_dataloader: data.DataLoader,
     optimizer: torch.optim.Optimizer,
     loss_fn: nn.Module,
-    val_loss_fn: nn.Module,
-    val_loss_is_inverted: bool,
+    val_metric: object,
+    val_metric_is_inverted: bool,
     val_num_steps: int,
     num_epochs: int | None = None,
     num_steps: int | None = None,
@@ -92,6 +107,7 @@ def train(
     max_grad_norm: float = 0.0,
     memory_unit: str = "MiB",
     profiling_unit: str = "ms",
+    metric_monitor: MetricMonitor | None = None,
 ):
     device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
@@ -192,7 +208,14 @@ def train(
             if step_num % val_num_steps == 0:
                 del inputs, truth, predict, loss
                 profiler.start("validation")
-                val_loss = validate(val_dataloader, device=device, model=model, loss_fn=val_loss_fn)
+                val_loss = validate(
+                    val_dataloader,
+                    device=device,
+                    model=model,
+                    metric=val_metric,
+                    global_step=step_num,
+                    metric_monitor=metric_monitor,
+                )
                 profiler.stop("validation")
 
                 model.train()
@@ -200,7 +223,7 @@ def train(
 
                 writer.add_scalar("Loss/val", val_loss, step_num, new_style=True)
 
-                if val_loss_is_inverted:
+                if val_metric_is_inverted:
                     val_loss = -val_loss
 
                 profiler.start("model_save")

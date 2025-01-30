@@ -18,12 +18,13 @@ from torch.utils.tensorboard import SummaryWriter
 
 from src.loops import test, train
 from src.utils.train import get_best_ckpt
+from src.metrics.metrics import Metric
 
 
 def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
-    if "class_path" not in cfg_obj:
+    if "class_path" not in cfg_obj[object_name]:
         raise KeyError(f"'class_path' not found in {object_name} config object")
-    if "init_args" not in cfg_obj:
+    if "init_args" not in cfg_obj[object_name]:
         raise KeyError(f"'init_args' not found in {object_name} config object")
 
 
@@ -43,7 +44,7 @@ def initialize_norm_dict(model_cfg: dict):
     if "norm_dict" in model_cfg["init_args"]:
         norm_dict_cfg = model_cfg["init_args"]["norm_dict"]
         if norm_dict_cfg is not None and "class_path" in norm_dict_cfg:
-            check_instantiate_keys(norm_dict_cfg, "norm_dict")
+            check_instantiate_keys(model_cfg["init_args"], "norm_dict")
             norm_dict_class = get_class(norm_dict_cfg["class_path"])
             norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
             model_cfg["init_args"]["norm_dict"] = dict(norm_dict)
@@ -107,9 +108,10 @@ if __name__ == "__main__":
     train_parser.add_argument("--scheduler", type=dict, required=False)
     train_parser.add_argument("--max_grad_norm", type=float, default=0.0)
 
-    train_parser.add_argument("--val_loss_fn", type=nn.Module, required=True)
+    train_parser.add_argument("--val_metric", type=Metric, required=True)
     train_parser.add_argument("--val_num_steps", type=int, required=False)
-    train_parser.add_argument("--val_loss_is_inverted", type=bool, default=False)
+    train_parser.add_argument("--val_metric_is_inverted", action="store_true")
+    train_parser.add_argument("--metric_monitor", type=dict, required=False)
 
     train_parser.add_argument("--dry_run", action="store_true")
 
@@ -211,7 +213,7 @@ if __name__ == "__main__":
 
         # Instantiate the optimizer
 
-        check_instantiate_keys(cfg["optimizer"], "optimizer")
+        check_instantiate_keys(cfg, "optimizer")
         optimizer_class = get_class(cfg["optimizer"]["class_path"])
 
         optimizer: optim.Optimizer = optimizer_class(model.parameters(), **cfg["optimizer"]["init_args"])
@@ -219,7 +221,7 @@ if __name__ == "__main__":
         # Instantiate the scheduler
 
         if cfg["scheduler"] is not None:
-            check_instantiate_keys(cfg["scheduler"], "scheduler")
+            check_instantiate_keys(cfg, "scheduler")
             scheduler_class = get_class(cfg["scheduler"]["class_path"])
 
             scheduler: optim.lr_scheduler.LRScheduler = scheduler_class(optimizer, **cfg["scheduler"]["init_args"])
@@ -275,6 +277,13 @@ if __name__ == "__main__":
         writer.add_scalar("Number of validation events", len(val_set))
         writer.add_scalar("Number of training batches", len(train_dataloader))
 
+        # Instantiate the metric monitor
+        if cfg["metric_monitor"] is not None:
+            check_instantiate_keys(cfg, "metric_monitor")
+            metric_monitor_class = get_class(cfg["metric_monitor"]["class_path"])
+
+            metric_monitor = metric_monitor_class(writer, **cfg["metric_monitor"]["init_args"])
+
         train(
             checkpoint_dir=model_save_dir / "ckpt",
             writer=writer,
@@ -287,10 +296,11 @@ if __name__ == "__main__":
             optimizer=optimizer,
             loss_fn=cfg["loss_fn"],
             scheduler=scheduler,
-            val_loss_fn=cfg["val_loss_fn"],
-            val_loss_is_inverted=cfg["val_loss_is_inverted"],
+            val_metric=cfg["val_metric"],
+            val_metric_is_inverted=cfg["val_metric_is_inverted"],
             val_num_steps=cfg["val_num_steps"],
             max_grad_norm=cfg["max_grad_norm"],
+            metric_monitor=metric_monitor,
         )
 
     elif cfg["subcommand"] == "predict":
