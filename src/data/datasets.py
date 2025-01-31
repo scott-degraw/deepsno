@@ -85,7 +85,7 @@ class PositionRecoDataset(Dataset):
         if len(non_zero_pmt_indices) > self.context_len:
             pmt_indices = np.sort(self.generator.choice(non_zero_pmt_indices, size=self.context_len, replace=False))
         else:
-            pmt_indices = non_zero_pmt_indices
+            pmt_indices = np.pad(non_zero_pmt_indices, (0, self.context_len - len(non_zero_pmt_indices)))
 
         hit_times = torch.from_numpy(hit_times[pmt_indices])
         pmt_ids = torch.from_numpy(pmt_ids[pmt_indices]).long()
