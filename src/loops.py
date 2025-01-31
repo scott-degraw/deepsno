@@ -43,7 +43,7 @@ def test(
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
         predicts = model(**inputs)
 
-        batch_size = min(start_row + truth.shape[0], dataset_len) - start_row
+        batch_size = min(start_row + truth[next(iter(truth.keys()))].shape[0], dataset_len) - start_row
         predict_dset[start_row : start_row + batch_size] = predicts[:batch_size].cpu().numpy()
 
         start_row += batch_size

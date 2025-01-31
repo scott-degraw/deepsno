@@ -51,7 +51,11 @@ class PositionMonitor(MetricMonitor):
     def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
         residuals = predict["positions"].cpu().numpy() - truth["positions"].cpu().numpy()
         self.n_points += residuals.shape[0]
-        batch_counts = np.apply_along_axis(lambda x: np.histogram(x, bins=self.bin_array)[0], axis=0, arr=residuals)
+        batch_counts = np.apply_along_axis(
+            lambda x: np.histogram(np.clip(x, self.min_residual, self.max_residual), bins=self.bin_array)[0],
+            axis=0,
+            arr=residuals,
+        )
         self.counts += batch_counts
 
         self.residual_sum += residuals.sum(0)

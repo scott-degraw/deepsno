@@ -144,7 +144,8 @@ class HitTimeAutoEncoder(nn.Module):
         uncal_times = uncal_times + self.cable_delays[pmt_ids]
 
         if self.output_unnorm:
-            uncal_times = self.hit_time_normalize(uncal_times)
+            uncal_times = self.hit_time_unnormalize(uncal_times)
+            predict_positions = self.position_unnormalize(predict_positions)
 
         uncal_times = not_padding_masks * uncal_times
 
