@@ -1,4 +1,7 @@
 #!/usr/bin/env -S python3 -u
+import os
+import shutil
+from pathlib import Path
 from typing import List, Optional
 
 import h5py
@@ -169,7 +172,22 @@ def merge_and_norm(
     positions: List[str] = ["x", "y", "z"],
     block_size: int = 100_000,
     seed: int = 487391,
+    condor_transfer_files: bool = False,
 ) -> None:
+    if condor_transfer_files:
+        condor_scratch_dir = Path(os.environ["_CONDOR_SCRATCH_DIR"])
+        print("Copying files to Condor scratch disk")
+        for file_num, path in enumerate(input_paths):
+            print(f"File {file_num + 1}/{len(input_paths)}")
+            shutil.copy(path, condor_scratch_dir)
+
+        final_train_output_path = train_output_path
+        final_test_output_path = test_output_path
+
+        input_paths = [condor_scratch_dir / Path(path).name for path in input_paths]
+        train_output_path = condor_scratch_dir / Path(train_output_path).name
+        test_output_path = condor_scratch_dir / Path(test_output_path).name
+
     dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
     dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
 
@@ -220,6 +238,11 @@ def merge_and_norm(
 
     print("Preprocess test dataset")
     preprocess_hit_time(test_output_path, min_hit_time=min_hit_time, max_hit_time=max_hit_time, block_size=block_size)
+
+    if condor_transfer_files:
+        print("Transferring output files back")
+        shutil.copy(train_output_path, final_train_output_path)
+        shutil.copy(test_output_path, final_test_output_path)
 
     print("Finished merging and proprocessing")
 
