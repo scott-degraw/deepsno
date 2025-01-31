@@ -12,7 +12,9 @@ class PositionRecoDataset(Dataset):
         self,
         path: str | Path,
         context_len: int,
-        cut_index_file: str | Path = None,
+        cut_index_file: str | Path | None = None,
+        min_hit_time: float | None = None,
+        max_hit_time: float | None = None,
         positions: list[str] = ["x", "y", "z"],
         seed=74819,
     ):
@@ -20,7 +22,7 @@ class PositionRecoDataset(Dataset):
         self._path = Path(path)
         self.context_len = context_len
         self._h5_file = h5py.File(path)
-        
+
         self.positions: list = positions
 
         self._hit_times_dset: h5py.Dataset = self._h5_file["cal_pmt_events/hit_times"]
@@ -60,6 +62,9 @@ class PositionRecoDataset(Dataset):
         else:
             self.cut_indices = None
 
+        self.min_hit_time = min_hit_time
+        self.max_hit_time = max_hit_time
+
     def __len__(self) -> int:
         return self.n_events
 
@@ -68,16 +73,22 @@ class PositionRecoDataset(Dataset):
             index = self.cut_indices[index].item()
 
         pmt_ids = self._pmt_ids_dset[index]
+        hit_times = self._hit_times_dset[index]
+
+        if self.min_hit_time is not None:
+            pmt_ids[hit_times < self.min_hit_time] = 0
+        if self.max_hit_time is not None:
+            pmt_ids[hit_times > self.max_hit_time] = 0
+
         non_zero_pmt_indices = np.nonzero(pmt_ids)[0]
 
         if len(non_zero_pmt_indices) > self.context_len:
             pmt_indices = np.sort(self.generator.choice(non_zero_pmt_indices, size=self.context_len, replace=False))
         else:
-            pmt_indices = np.arange(self.context_len)
+            pmt_indices = non_zero_pmt_indices
 
+        hit_times = torch.from_numpy(hit_times[pmt_indices])
         pmt_ids = torch.from_numpy(pmt_ids[pmt_indices]).long()
-
-        hit_times = torch.from_numpy(self._hit_times_dset[index, pmt_indices])
 
         truth_position = np.zeros(len(self.positions), dtype=self.position_numpy_dtype)
         for i, c in enumerate(self.positions):
@@ -98,7 +109,14 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         cut_index_file: str | Path = None,
         positions: list[str] = ["x", "y", "z"],
     ):
-        super().__init__(path=path, positions=positions, context_len=context_len, cut_index_file=cut_index_file)
+        super().__init__(
+            path=path,
+            positions=positions,
+            context_len=context_len,
+            cut_index_file=cut_index_file,
+            min_hit_time=min_hit_time,
+            max_hit_time=max_hit_time,
+        )
 
         n_pmts = self._h5_file[f"pmt_info/position/{positions[0]}"].shape[0]
         self._pmt_positions = torch.zeros((n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
@@ -114,8 +132,8 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         else:
             self.cable_delays = None
 
-        self.min_hit_time = min_hit_time
-        self.max_hit_time = max_hit_time
+        self.min_hit_time: float = min_hit_time
+        self.max_hit_time: float = max_hit_time
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
         inputs, truth_pos = super().__getitem__(index)
@@ -125,13 +143,6 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         if self.cable_delays is not None:
             inputs["hit_times"] += self.cable_delays[inputs["pmt_ids"]]
         inputs["uncal_hit_times"] = inputs.pop("hit_times")
-
-        truth = inputs["uncal_hit_times"]
-
-        if self.min_hit_time is not None:
-            inputs["pmt_ids"][inputs["uncal_hit_times"] < self.min_hit_time] = 0
-        if self.max_hit_time is not None:
-            inputs["pmt_ids"][inputs["uncal_hit_times"] > self.max_hit_time] = 0
 
         truth = {
             "uncal_hit_times": inputs["uncal_hit_times"],
