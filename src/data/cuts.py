@@ -9,7 +9,7 @@ from tqdm import trange
 def cuts(
     h5_path: str | Path,
     save_path: str | Path,
-    save_prefix: str = None,
+    save_prefix: str,
     min_nhits: int | None = None,
     max_nhits: int | None = None,
     min_radius: float | None = None,
