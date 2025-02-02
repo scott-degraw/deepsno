@@ -49,7 +49,7 @@ class TotalVarianceLoss(nn.Module):
     def forward(self, input: dict, reference: torch.Tensor):
         predict: torch.FloatTensor = input["predict"]
         not_padding_masks: torch.BoolTensor = ~input["pad_masks"]
-        residuals: torch.FloatTensor = not_padding_masks * (reference - predict)
+        residuals: torch.FloatTensor = not_padding_masks * (reference["uncal_hit_times"] - predict)
 
         total_nhits = torch.sum(not_padding_masks)
 
