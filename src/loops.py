@@ -20,6 +20,7 @@ def test(
     group: h5py.File | h5py.Group,
     dataset_len: int,
     device: str | torch.device,
+    predict_key: str | None = None,
 ):
     model.to(device)
     model.eval()
@@ -28,9 +29,12 @@ def test(
     inputs, _ = next(iter(dataloader))
     inputs = pytree.tree_map(lambda x: x.to(device), inputs)
     predicts = model(**inputs)
-    batch_size = predicts.shape[0]
+    if predict_key is not None:
+        predicts = predicts[predict_key]
 
-    dataset_shape = (dataset_len, *predicts.shape[1:])
+    batch_size = predicts.shape[0]
+    data_shape = predicts.shape[1:]
+    dataset_shape = (dataset_len, *data_shape)
     dataset_dtype = predicts.cpu().numpy().dtype
 
     predict_dset = group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
@@ -42,8 +46,10 @@ def test(
         print(f"Batch: {batch_num + 1}/{num_batches}")
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
         predicts = model(**inputs)
+        if predict_key is not None:
+            predicts = predicts[predict_key]
 
-        batch_size = min(start_row + truth[next(iter(truth.keys()))].shape[0], dataset_len) - start_row
+        batch_size = min(start_row + predicts.shape[0], dataset_len) - start_row
         predict_dset[start_row : start_row + batch_size] = predicts[:batch_size].cpu().numpy()
 
         start_row += batch_size

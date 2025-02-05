@@ -124,6 +124,7 @@ if __name__ == "__main__":
     predict_parser.add_argument("--batch_size", type=int, required=True)
     predict_parser.add_argument("--num_workers", type=int, default=0)
     predict_parser.add_argument("--dataset_len", type=int, required=False)
+    predict_parser.add_argument("--predict_key", type=str, required=False)
 
     parser = ArgumentParser(prog="app", description="")
     parser.add_argument("-c", "--config", action="config")
@@ -348,4 +349,5 @@ if __name__ == "__main__":
                 group=h5_file,
                 dataset_len=dataset_len,
                 device=cfg.predict.device,
+                predict_key=cfg.predict.predict_key,
             )
