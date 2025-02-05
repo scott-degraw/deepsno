@@ -23,7 +23,6 @@ class HitTimeAutoEncoderNorm(dict):
             self["position_rmsd"] = np.sqrt(np.mean(np.square(position_rmsds))).item()
 
 
-@torch.compile()
 class HitTimeAutoEncoder(nn.Module):
     def __init__(
         self,

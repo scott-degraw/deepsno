@@ -12,7 +12,7 @@ from src.metrics.eval import fwhm
 
 class MetricMonitor(ABC):
     @abstractmethod
-    def __init__(self, dset_len):
+    def __init__(self):
         pass
 
     @abstractmethod

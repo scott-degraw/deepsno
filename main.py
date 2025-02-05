@@ -17,8 +17,8 @@ from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
 from src.loops import test, train
-from src.utils.train import get_best_ckpt
 from src.metrics.metrics import Metric
+from src.utils.train import get_best_ckpt
 
 
 def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
@@ -129,6 +129,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(prog="app", description="")
     parser.add_argument("-c", "--config", action="config")
     parser.add_argument("--model", type=nn.Module, required=True)
+    parser.add_argument("--compile", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
         "--git_hash", type=str, required=False, help="If given, will check if current repository matches this hash."
@@ -174,7 +175,8 @@ if __name__ == "__main__":
             )
 
     cfg["git_hash"] = git_hash
-    cfg_keys = ["model", "force", "git_hash"]  # These are the keys for the config that will be used for all subcommands
+    # These are the keys for the config that will be used for all subcommands
+    cfg_keys = ["model", "force", "git_hash", "compile"]
 
     if cfg["subcommand"] == "train":
         cfg_keys.append("train")
@@ -210,6 +212,9 @@ if __name__ == "__main__":
         save_cfg: dict = cfg
         cfg: Namespace = parser.instantiate_classes(cfg)
         model: nn.Module = cfg["model"]
+        if cfg["compile"]:
+            model = torch.compile(model)
+
         cfg: Namespace = cfg["train"]
 
         # Instantiate the optimizer
@@ -316,6 +321,9 @@ if __name__ == "__main__":
         cfg: jsonargparse.Namespace = parser.instantiate_classes(cfg)
 
         model = cfg.model
+
+        if cfg["compile"]:
+            model = torch.compile(model)
 
         ckpt_path: Path = Path(cfg.predict.ckpt)
 
