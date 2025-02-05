@@ -1,4 +1,3 @@
-from copy import deepcopy
 from pathlib import Path
 
 import h5py
@@ -235,11 +234,11 @@ def train(
                 profiler.start("model_save")
                 state_dict = {
                     "sub_epoch": sub_epoch,
-                    "model": deepcopy(model.state_dict()),
-                    "optimizer": deepcopy(optimizer.state_dict()),
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
                 }
 
-                state_dict["scheduler"] = None if scheduler is None else deepcopy(scheduler.state_dict())
+                state_dict["scheduler"] = None if scheduler is None else scheduler.state_dict()
 
                 filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
 
