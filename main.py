@@ -107,6 +107,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--optimizer", type=dict, required=True)
     train_parser.add_argument("--scheduler", type=dict, required=False)
     train_parser.add_argument("--max_grad_norm", type=float, default=0.0)
+    train_parser.add_argument("--train_unnorm", action="store_true")
 
     train_parser.add_argument("--val_metric", type=Metric, required=True)
     train_parser.add_argument("--val_num_steps", type=int, required=False)
@@ -302,6 +303,7 @@ if __name__ == "__main__":
             optimizer=optimizer,
             loss_fn=cfg["loss_fn"],
             scheduler=scheduler,
+            train_unnorm=cfg["train_unnorm"],
             val_metric=cfg["val_metric"],
             val_metric_is_inverted=cfg["val_metric_is_inverted"],
             val_num_steps=cfg["val_num_steps"],

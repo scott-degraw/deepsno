@@ -109,6 +109,7 @@ def train(
     num_epochs: int | None = None,
     num_steps: int | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
+    train_unnorm: bool = False,
     max_grad_norm: float = 0.0,
     memory_unit: str = "MiB",
     profiling_unit: str = "ms",
@@ -144,7 +145,7 @@ def train(
 
     model.to(device)
     model.train()
-    model.output_unnorm = False
+    model.output_unnorm = train_unnorm
 
     if "cuda" in device.type:
         writer.add_scalar(
@@ -224,7 +225,7 @@ def train(
                 profiler.stop("validation")
 
                 model.train()
-                model.output_unnorm = False
+                model.output_unnorm = train_unnorm
 
                 writer.add_scalar("Loss/val", val_loss, step_num, new_style=True)
 
