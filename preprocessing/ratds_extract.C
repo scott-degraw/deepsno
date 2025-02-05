@@ -112,6 +112,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
     h5_file.createAttribute<std::size_t>("number_of_events", all_evs);
 
+    std::vector<Float_t> mc_global_trigger_time;
     std::vector<Float_t> mc_event_pos_x;
     std::vector<Float_t> mc_event_pos_y;
     std::vector<Float_t> mc_event_pos_z;
@@ -119,6 +120,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
     std::vector<Double_t> mc_energy;
 
     if (is_mc) {
+        mc_global_trigger_time.resize(all_evs, -99999);
         mc_event_pos_x.resize(all_evs, 0);
         mc_event_pos_y.resize(all_evs, 0);
         mc_event_pos_z.resize(all_evs, 0);
@@ -143,6 +145,9 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
                 mc_event_pos_y.at(evs_counter) = pos.Y();
                 mc_event_pos_z.at(evs_counter) = pos.Z();
                 mc_energy.at(evs_counter) = mc_pcle.GetKineticEnergy();
+
+                if (entry.GetMCEVCount() > 0)
+                    mc_global_trigger_time.at(evs_counter) = static_cast<Float_t>(entry.GetMCEV(i_evs).GetGTTime());
             }
 
             const RAT::DS::EV &ev = entry.GetEV(i_evs);
@@ -160,6 +165,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
     if (is_mc) {
         auto mc_truth_group = h5_file.createGroup("mc_truth");
+        mc_truth_group.createDataSet("global_trigger_time", mc_global_trigger_time);
+
         auto mc_pos_group = mc_truth_group.createGroup("position");
 
         mc_pos_group.createDataSet("x", mc_event_pos_x);

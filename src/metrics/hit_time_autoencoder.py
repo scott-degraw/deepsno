@@ -6,10 +6,10 @@ class VarianceLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, input: dict, reference: dict):
-        predict: torch.FloatTensor = input["predict"]
-        not_padding_masks: torch.BoolTensor = ~input["pad_masks"]
-        residuals: torch.FloatTensor = not_padding_masks * (reference["uncal_hit_times"] - predict)
+    def forward(self, predict: dict, truth: dict):
+        times: torch.FloatTensor = predict["times_of_flight"]
+        not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
+        residuals: torch.FloatTensor = not_padding_masks * (truth["uncal_hit_times"] - times)
 
         n_hits = torch.sum(not_padding_masks, dim=-1, keepdims=True)
 
@@ -24,10 +24,10 @@ class TotalVarianceLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, input: dict, reference: torch.Tensor):
-        predict: torch.FloatTensor = input["predict"]
-        not_padding_masks: torch.BoolTensor = ~input["pad_masks"]
-        residuals: torch.FloatTensor = not_padding_masks * (reference["uncal_hit_times"] - predict)
+    def forward(self, predict: dict, truth: torch.Tensor):
+        times: torch.FloatTensor = predict["predict"]
+        not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
+        residuals: torch.FloatTensor = not_padding_masks * (truth["uncal_hit_times"] - times)
 
         total_nhits = torch.sum(not_padding_masks)
 

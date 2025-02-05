@@ -172,9 +172,10 @@ def merge_and_norm(
     positions: List[str] = ["x", "y", "z"],
     block_size: int = 100_000,
     seed: int = 487391,
-    condor_transfer_files: bool = False,
+    condor_transfer_input_files: bool = False,
+    condor_transfer_output_files: bool = False,
 ) -> None:
-    if condor_transfer_files:
+    if condor_transfer_input_files:
         condor_scratch_dir = Path(os.environ["_CONDOR_SCRATCH_DIR"])
         print("Copying files to Condor scratch disk")
         for file_num, path in enumerate(input_paths):
@@ -185,11 +186,14 @@ def merge_and_norm(
         final_test_output_path = test_output_path
 
         input_paths = [condor_scratch_dir / Path(path).name for path in input_paths]
+
+    if condor_transfer_output_files:
         train_output_path = condor_scratch_dir / Path(train_output_path).name
         test_output_path = condor_scratch_dir / Path(test_output_path).name
 
     dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
     dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
+    dataset_identifiers += ["mc_truth/global_trigger_time"]
 
     pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
 
@@ -227,6 +231,8 @@ def merge_and_norm(
         for c in positions:
             print(f"Finding {c} position norms")
             find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
+        print("Finding event time norms")
+        find_norms(train_h5["mc_truth/global_trigger_time"], block_size=block_size)
 
     print("Merge test files")
     merge_h5(
@@ -239,7 +245,7 @@ def merge_and_norm(
     print("Preprocess test dataset")
     preprocess_hit_time(test_output_path, min_hit_time=min_hit_time, max_hit_time=max_hit_time, block_size=block_size)
 
-    if condor_transfer_files:
+    if condor_transfer_output_files:
         print("Transferring output files back")
         shutil.copy(train_output_path, final_train_output_path)
         shutil.copy(test_output_path, final_test_output_path)

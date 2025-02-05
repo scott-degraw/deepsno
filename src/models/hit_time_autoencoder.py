@@ -90,19 +90,16 @@ class HitTimeAutoEncoder(nn.Module):
         self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
-        return self.position_reconstructor.output_normalize(positions)
+        return self.position_reconstructor.position_normalize(positions)
 
     def position_unnormalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
-        return self.position_reconstructor.output_unnormalize(positions)
+        return self.position_reconstructor.position_unnormalize(positions)
 
     def hit_time_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
         return (hit_times - self.hit_time_mean) / self.hit_time_rmsd
 
     def hit_time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
         return hit_times * self.hit_time_rmsd + self.hit_time_mean
-
-    def input_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return self.position_reconstructor.input_normalize(hit_times)
 
     def output_unnormalize(self, x: dict) -> dict:
         return {
@@ -123,25 +120,35 @@ class HitTimeAutoEncoder(nn.Module):
 
         pmt_positions = self.position_normalize(pmt_positions)
 
-        predict_positions = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
+        predict = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
+        predict_positions = predict["positions"]
+        if "times" in predict:
+            predict_times = predict["times"]
 
         # Dims: (batch_size, context_window, ...)
 
         not_padding_masks = pmt_ids != 0
 
         # Masked pmt positions have positions of zero
-        uncal_times = torch.linalg.vector_norm(predict_positions[..., None, :] - pmt_positions, dim=-1)
+        out = torch.linalg.vector_norm(predict_positions[..., None, :] - pmt_positions, dim=-1)
 
-        uncal_times = uncal_times / self.effective_c
-        uncal_times = uncal_times + self.cable_delays[pmt_ids]
+        out = out / self.effective_c
+        out = out + self.cable_delays[pmt_ids]
+        if "times" in predict:
+            out = out + predict_times.unsqueeze(-1)
 
         if self.output_unnorm:
-            uncal_times = self.hit_time_unnormalize(uncal_times)
+            out = self.hit_time_unnormalize(out)
             predict_positions = self.position_unnormalize(predict_positions)
 
-        uncal_times = not_padding_masks * uncal_times
+        out = not_padding_masks * out
 
-        return {"predict": uncal_times, "pad_masks": ~not_padding_masks, "positions": predict_positions}
+        out = {"times_of_flight": out, "pad_masks": ~not_padding_masks, "positions": predict_positions}
+
+        if "times" in predict:
+            out["times"] = predict_times
+
+        return out
 
 
 class CableDelayFineTune(HitTimeAutoEncoder):
@@ -174,7 +181,7 @@ class PositionRecoFromHitTimeAutoEncoder(HitTimeAutoEncoder):
 
     def forward(
         self, uncal_hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor, pmt_positions: torch.FloatTensor
-    ) -> torch.FloatTensor:
+    ) -> dict:
         self.position_reconstructor.input_norm = self.input_norm
         self.position_reconstructor.output_unnorm = self.output_unnorm
         return self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)

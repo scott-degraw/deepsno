@@ -7,5 +7,5 @@ class ResolutionLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, prediction, truth):
-        return torch.sqrt(F.mse_loss(prediction, truth) / 3)
+    def forward(self, predict: dict, truth: dict):
+        return torch.sqrt(F.mse_loss(predict["positions"], truth["positions"]) / 3)

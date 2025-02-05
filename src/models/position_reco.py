@@ -47,14 +47,32 @@ class PositionReco(nn.Module):
 
         self.output_unnorm = output_unnorm
 
-    def input_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+    def hit_time_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
         return (hit_times - self.hit_time_mean) / self.hit_time_rmsd
 
-    def output_unnormalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
+    def hit_time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return hit_times * self.hit_time_rmsd + self.hit_time_mean
+
+    def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
+        return (positions - self.position_means) / self.position_rmsds
+
+    def position_unnormalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return positions * self.position_rmsds + self.position_means
 
-    def output_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
-        return (positions - self.position_means) / self.position_rmsds
+    def input_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return self.hit_time_normalize(hit_times)
+
+    def output_unnormalize(self, predict: torch.FloatTensor) -> dict:
+        out = {"positions": self.position_unnormalize(predict["positions"])}
+        if "times" in predict:
+            out["times"] = self.hit_time_unnormalize(predict["times"])
+        return out
+
+    def output_normalize(self, predict: torch.FloatTensor) -> dict:
+        out = {"positions": self.position_normalize(predict["positions"])}
+        if "times" in predict:
+            out["times"] = self.hit_time_normalize(predict["times"])
+        return out
 
     def __init__(
         self,
@@ -65,6 +83,7 @@ class PositionReco(nn.Module):
         num_layers: int,
         dropout: float,
         hit_time_embedding_dim: int,
+        predict_time: bool = False,
         norm_dict: dict | None = None,
     ):
         super().__init__()
@@ -92,7 +111,10 @@ class PositionReco(nn.Module):
             nn.Tanh(),
             nn.Linear(hit_time_embedding_dim, d_model),
         )
-        self.position_predictor = nn.Linear(d_model, 3)
+
+        self.predict_time = predict_time
+        output_dim: int = 4 if predict_time else 3
+        self.position_predictor = nn.Linear(d_model, output_dim)
 
         if norm_dict is not None:
             if "input_norms" in norm_dict:
@@ -118,7 +140,12 @@ class PositionReco(nn.Module):
 
         x = self.position_predictor(x)
 
-        if self.output_unnorm:
-            x = self.output_unnormalize(x)
+        if self.predict_time:
+            out = {"positions": x[..., -3:], "times": x[..., 0]}
+        else:
+            out = {"positions": x}
 
-        return x
+        if self.output_unnorm:
+            out = self.output_unnormalize(out)
+
+        return out

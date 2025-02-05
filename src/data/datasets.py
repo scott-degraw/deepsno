@@ -38,7 +38,7 @@ class PositionRecoDataset(Dataset):
             self.hit_time_rmsd = None
 
         self._pmt_ids_dset: h5py.Dataset = self._h5_file["cal_pmt_events/ids"]
-        self._mc_truth_pos_group: h5py.Dataset = self._h5_file["mc_truth/position"]
+        self._mc_truth_pos_group: h5py.Group = self._h5_file["mc_truth/position"]
 
         self.position_numpy_dtype = self._mc_truth_pos_group[self.positions[0]].dtype
         self.position_torch_dtype = torch.from_numpy(self._mc_truth_pos_group[self.positions[0]][0:1]).dtype
@@ -94,8 +94,10 @@ class PositionRecoDataset(Dataset):
         for i, c in enumerate(self.positions):
             self._mc_truth_pos_group[c].read_direct(truth_position, index, i)
         truth_position = torch.from_numpy(truth_position)
+        inputs = {"hit_times": hit_times, "pmt_ids": pmt_ids}
+        truth = {"positions": truth_position}
 
-        return {"hit_times": hit_times, "pmt_ids": pmt_ids}, truth_position
+        return inputs, truth
 
 
 class CableDelaysPositionRecoDataset(PositionRecoDataset):
@@ -136,7 +138,7 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         self.max_hit_time: float = max_hit_time
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
-        inputs, truth_pos = super().__getitem__(index)
+        inputs, truth = super().__getitem__(index)
 
         inputs["pmt_positions"] = self._pmt_positions[inputs["pmt_ids"]]
 
@@ -144,9 +146,6 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
             inputs["hit_times"] += self.cable_delays[inputs["pmt_ids"]]
         inputs["uncal_hit_times"] = inputs.pop("hit_times")
 
-        truth = {
-            "uncal_hit_times": inputs["uncal_hit_times"],
-            "positions": truth_pos,
-        }
+        truth["uncal_hit_times"] = inputs["uncal_hit_times"]
 
         return inputs, truth
