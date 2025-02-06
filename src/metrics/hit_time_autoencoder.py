@@ -2,6 +2,27 @@ import torch
 from torch import nn
 
 
+class TimeResidualLoss(nn.Module):
+    def __init__(self, a: float, b: float, mu: float, sigma: float, offset: float = 0.0, scale: float = 1.0):
+        super().__init__()
+        self.a = a
+        self.b = b
+        self.mu = (mu - offset) / scale
+        self.sigma = sigma / scale
+
+    def forward(self, predict: dict, truth: dict):
+        times: torch.FloatTensor = predict["times_of_flight"]
+        not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
+        uncal_hit_times: torch.FloatTensor = truth["uncal_hit_times"]
+
+        time_res = uncal_hit_times - times
+        time_res = (time_res - self.mu) / self.sigma
+
+        fraction = time_res / (self.a + self.b + time_res.square()).sqrt()
+        log_likelihoods = (self.a + 0.5) * (1 + fraction).log() + (self.b + 0.5) * (1 - fraction).log()
+        return -(not_padding_masks * log_likelihoods).sum() / not_padding_masks.sum()
+
+
 class VarianceLoss(nn.Module):
     def __init__(self):
         super().__init__()
