@@ -81,6 +81,8 @@ class PositionRecoDataset(Dataset):
             pmt_ids[hit_times > self.max_hit_time] = 0
 
         non_zero_pmt_indices = np.nonzero(pmt_ids)[0]
+        if len(non_zero_pmt_indices) == 0:
+            raise RuntimeError("Input has no valid PMTs")
 
         if len(non_zero_pmt_indices) > self.context_len:
             pmt_indices = np.sort(self.generator.choice(non_zero_pmt_indices, size=self.context_len, replace=False))
