@@ -154,11 +154,15 @@ class HitTimeAutoEncoder(nn.Module):
 
 
 class CableDelayFineTune(HitTimeAutoEncoder):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, fix_effective_c: bool = False, **kwargs):
+        super().__init__(*args, fix_effective_c=fix_effective_c, **kwargs)
 
         for param in super().parameters():
             param.requires_grad = False
+
+        self.fixed_parameters = ["cable_delays"]
+        if not fix_effective_c:
+            self.fixed_parameters.append("effective_c")
 
         self.fine_tune = True
         for param in self.parameters():
@@ -166,7 +170,7 @@ class CableDelayFineTune(HitTimeAutoEncoder):
 
     def parameters(self, *args, **kwargs):
         if self.fine_tune:
-            return [self.get_parameter("effective_c"), self.get_parameter("cable_delays")]
+            return [self.get_parameter(param) for param in self.fixed_parameters]
         return super().parameters(*args, **kwargs)
 
     def state_dict(self, *args, **kwargs):
