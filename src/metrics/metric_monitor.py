@@ -1,4 +1,3 @@
-import math
 from abc import ABC, abstractmethod
 from typing import Hashable, Iterable
 
@@ -101,3 +100,58 @@ class PositionMonitor(MetricMonitor):
         residual_fwhm = [fwhm(hist.view(), hist.axes[0].edges) for hist in self.residual_hists]
         for fwhm_value, c in zip(residual_fwhm, positions):
             self.writer.add_scalar(f"{self.name_prefix}/fwhm/{c}-mm", fwhm_value, global_step=global_step)
+
+
+class TimeResidualMonitor(MetricMonitor):
+    def __init__(
+        self,
+        writer: SummaryWriter,
+        effective_c: float,
+        offset: float = 0.0,
+        scale: float = 1.0,
+        min_residual: float = -50,
+        max_residual: float = 300,
+        bins: int = 100,
+        name_prefix: str = "validation_metrics",
+    ):
+        self.writer = writer
+        self.min_residual = min_residual
+        self.max_residual = max_residual
+        self.bins = bins
+        self.offset = offset
+        self.scale = scale
+
+        self.predict_hist = bh.Histogram(
+            bh.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True)
+        )
+        self.truth_hist = bh.Histogram(bh.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True))
+
+        self.name_prefix = name_prefix
+        self.effective_c = effective_c
+
+    def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
+        predict = pytree.tree_map(lambda x: x.cpu().numpy(), predict)
+        truth = pytree.tree_map(lambda x: x.cpu().numpy(), truth)
+        predicted_time_residuals = truth["uncal_hit_times"] - predict["times_of_flight"]
+        predicted_time_residuals = predicted_time_residuals.ravel() * self.scale + self.offset
+        self.predict_hist.fill(predicted_time_residuals)
+
+        times_of_flight = np.linalg.vector_norm(truth["positions"][..., None, :] - truth["pmt_positions"], axis=-1)
+        times_of_flight = times_of_flight / self.effective_c
+
+        # truth_time_residuals = truth["uncal_hit_times"] - times_of_flight - truth["event_times"][..., None]
+        # truth_time_residuals = truth["uncal_hit_times"] - (truth["times_of_flight"] + truth["event_times"])
+        # self.truth_hist.fill(truth_time_residuals)
+
+    def reset(self) -> None:
+        self.truth_hist[:] = 0
+        self.predict_hist[:] = 0
+
+    def compute(self, global_step: int) -> None:
+        fig, axis = plt.subplots()
+        axis.stairs(self.predict_hist.values(), self.predict_hist.axes[0].edges, label="Predict")
+        axis.stairs(self.truth_hist.values(), self.truth_hist.axes[0].edges, label="Truth")
+        axis.legend()
+        axis.set_xlabel("Time residual (ns)")
+        axis.set_ylabel("Counts")
+        self.writer.add_figure(f"{self.name_prefix}/time_residuals", fig, global_step=global_step)
