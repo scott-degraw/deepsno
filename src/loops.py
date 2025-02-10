@@ -64,10 +64,11 @@ def validate(
     metric: object,
     global_step: int | None = None,
     metric_monitor: MetricMonitor | None = None,
+    val_norm: bool = False,
 ) -> float:
     model.to(device)
     model.eval()
-    model.output_unnorm = True
+    model.output_unnorm = not val_norm
 
     if metric_monitor is not None:
         if global_step is None:
@@ -110,6 +111,7 @@ def train(
     num_steps: int | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     train_unnorm: bool = False,
+    val_norm: bool = False,
     max_grad_norm: float = 0.0,
     memory_unit: str = "MiB",
     profiling_unit: str = "ms",
@@ -221,6 +223,7 @@ def train(
                     metric=val_metric,
                     global_step=step_num,
                     metric_monitor=metric_monitor,
+                    val_norm=val_norm,
                 )
                 profiler.stop("validation")
 

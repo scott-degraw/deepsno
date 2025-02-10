@@ -110,6 +110,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--scheduler", type=dict, required=False)
     train_parser.add_argument("--max_grad_norm", type=float, default=0.0)
     train_parser.add_argument("--train_unnorm", action="store_true")
+    train_parser.add_argument("--val_norm", action="store_true")
 
     train_parser.add_argument("--val_metric", type=Metric, required=True)
     train_parser.add_argument("--val_num_steps", type=int, required=False)
@@ -147,9 +148,14 @@ if __name__ == "__main__":
 
     if cfg["subcommand"] == "predict":
         ckpt = Path(cfg["predict"]["ckpt"]).resolve()
-        checkpoint_dir = ckpt.parent
-        if ckpt.is_file():
-            checkpoint_dir = checkpoint_dir.parent
+        if ckpt.name == "ckpt":
+            checkpoint_dir = ckpt.parent
+        elif ckpt.is_file():
+            checkpoint_dir = ckpt.parent.parent
+        else:
+            checkpoint_dir = ckpt
+            ckpt = ckpt / "ckpt"
+            cfg["predict"]["ckpt"] = ckpt
 
         if cfg["predict"]["ckpt_config"] is None:
             cfg["predict"]["ckpt_config"] = checkpoint_dir / "config.yaml"
@@ -316,6 +322,7 @@ if __name__ == "__main__":
             loss_fn=cfg["loss_fn"],
             scheduler=scheduler,
             train_unnorm=cfg["train_unnorm"],
+            val_norm=cfg["val_norm"],
             val_metric=cfg["val_metric"],
             val_metric_is_inverted=cfg["val_metric_is_inverted"],
             val_num_steps=cfg["val_num_steps"],
