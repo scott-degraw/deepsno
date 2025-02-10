@@ -29,6 +29,7 @@ class PositionRecoDataset(Dataset):
         self.positions: list = positions
 
         self._hit_times_dset: h5py.Dataset = self._h5_file["cal_pmt_events/hit_times"]
+        self._times_of_flight_dset = self._h5_file["cal_pmt_events/times_of_flight"]
         self.n_events = self._hit_times_dset.shape[0]
         n_pmts = self._h5_file[f"pmt_info/position/{positions[0]}"].shape[0]
 
@@ -93,6 +94,7 @@ class PositionRecoDataset(Dataset):
 
         pmt_ids = self._pmt_ids_dset[index]
         hit_times = self._hit_times_dset[index]
+        times_of_flight = self._times_of_flight_dset[index]
 
         if self.min_hit_time is not None:
             pmt_ids[hit_times < self.min_hit_time] = 0
@@ -105,11 +107,20 @@ class PositionRecoDataset(Dataset):
 
         if len(non_zero_pmt_indices) > self.context_len:
             pmt_indices = np.sort(self.generator.choice(non_zero_pmt_indices, size=self.context_len, replace=False))
+            pmt_ids = pmt_ids[pmt_indices]
+            hit_times = hit_times[pmt_indices]
+            times_of_flight = times_of_flight[pmt_indices]
         else:
-            pmt_indices = np.pad(non_zero_pmt_indices, (0, self.context_len - len(non_zero_pmt_indices)))
+            pmt_ids = pmt_ids[non_zero_pmt_indices]
+            hit_times = hit_times[non_zero_pmt_indices]
+            times_of_flight = times_of_flight[non_zero_pmt_indices]
+            pmt_ids = np.pad(pmt_ids, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
+            hit_times = np.pad(hit_times, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
+            times_of_flight = np.pad(times_of_flight, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
 
-        hit_times = torch.from_numpy(hit_times[pmt_indices])
-        pmt_ids = torch.from_numpy(pmt_ids[pmt_indices]).long()
+        pmt_ids = torch.from_numpy(pmt_ids).long()
+        hit_times = torch.from_numpy(hit_times)
+        times_of_flight = torch.from_numpy(times_of_flight)
 
         truth_position = np.zeros(len(self.positions), dtype=self.position_numpy_dtype)
         for i, c in enumerate(self.positions):
@@ -117,7 +128,7 @@ class PositionRecoDataset(Dataset):
         truth_position = torch.from_numpy(truth_position)
 
         inputs = {"hit_times": hit_times, "pmt_ids": pmt_ids}
-        truth = {"positions": truth_position}
+        truth = {"positions": truth_position, "times_of_flight": times_of_flight}
 
         if self._trigger_time_dset is not None:
             truth["event_times"] = self.trigger_offset - self._trigger_time_dset[index]
@@ -159,8 +170,6 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
             self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
             self._pmt_positions[0, i] = 0.0
 
-        self._times_of_flight_dset = self._h5_file["cal_pmt_events/times_of_flight"]
-
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
         inputs, truth = super().__getitem__(index)
 
@@ -169,7 +178,7 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
         inputs["uncal_hit_times"] = inputs.pop("hit_times")
         truth["uncal_hit_times"] = inputs["uncal_hit_times"]
 
-        truth["times_of_flight"] = self._times_of_flight_dset[index]
         truth["pmt_positions"] = inputs["pmt_positions"]
+        truth["pmt_ids"] = inputs["pmt_ids"]
 
         return inputs, truth
