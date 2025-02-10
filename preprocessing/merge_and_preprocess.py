@@ -162,6 +162,17 @@ def merge_h5(
                 merged_h5.copy(source=pmt_info_item, dest=merged_h5, name=pmt_info_ident)
 
 
+def check_files(input_paths: List[str], dataset_identifiers: List[str], pmt_info_identifiers: List[str]):
+    for input_path in input_paths:
+        with h5py.File(input_path) as h5_file:
+            for dataset_identifier in dataset_identifiers:
+                if dataset_identifier not in h5_file:
+                    raise KeyError(f"Dataset identifier '{dataset_identifier}' not found in {input_path}")
+            for pmt_info_identifier in pmt_info_identifiers:
+                if pmt_info_identifier not in h5_file:
+                    raise KeyError(f"PMT information identifier '{pmt_info_identifier}' not found in {input_path}")
+
+
 def merge_and_norm(
     input_paths: List[str],
     train_output_path: str,
@@ -175,6 +186,16 @@ def merge_and_norm(
     condor_transfer_input_files: bool = False,
     condor_transfer_output_files: bool = False,
 ) -> None:
+    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
+    dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
+    dataset_identifiers += ["mc_truth/global_trigger_time", "cal_pmt_events/times_of_flight"]
+
+    pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
+
+    print("Checking files")
+    check_files(input_paths, dataset_identifiers, pmt_info_identifiers)
+    print("Checking successful")
+
     if condor_transfer_input_files:
         condor_scratch_dir = Path(os.environ["_CONDOR_SCRATCH_DIR"])
         print("Copying files to Condor scratch disk")
@@ -190,12 +211,6 @@ def merge_and_norm(
     if condor_transfer_output_files:
         train_output_path = condor_scratch_dir / Path(train_output_path).name
         test_output_path = condor_scratch_dir / Path(test_output_path).name
-
-    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
-    dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
-    dataset_identifiers += ["mc_truth/global_trigger_time", "cal_pmt_events/times_of_flight"]
-
-    pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
 
     generator = np.random.default_rng(seed)
     input_path_indices = generator.choice(np.arange(len(input_paths)), size=len(input_paths), replace=False)
