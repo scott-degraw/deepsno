@@ -130,23 +130,25 @@ class HitTimeAutoEncoder(nn.Module):
         not_padding_masks = pmt_ids != 0
 
         # Masked pmt positions have positions of zero
-        out = torch.linalg.vector_norm(predict_positions[..., None, :] - pmt_positions, dim=-1)
+        times_of_flight = torch.linalg.vector_norm(predict_positions[..., None, :] - pmt_positions, dim=-1)
 
-        out = out / self.effective_c
-        out = out + self.cable_delays[pmt_ids]
+        times_of_flight = times_of_flight / self.effective_c
+        times_of_flight = times_of_flight + self.cable_delays[pmt_ids]
         if "times" in predict:
-            out = out + predict_times.unsqueeze(-1)
+            times_of_flight = times_of_flight + predict_times.unsqueeze(-1)
 
-        if self.output_unnorm:
-            out = self.hit_time_unnormalize(out)
-            predict_positions = self.position_unnormalize(predict_positions)
+        times_of_flight = not_padding_masks * times_of_flight
 
-        out = not_padding_masks * out
-
-        out = {"times_of_flight": out, "pad_masks": ~not_padding_masks, "positions": predict_positions}
+        out = {"times_of_flight": times_of_flight, "pad_masks": ~not_padding_masks, "positions": predict_positions}
 
         if "times" in predict:
             out["times"] = predict_times
+
+        if self.output_unnorm:
+            out["times_of_flight"] = self.hit_time_unnormalize(out["times_of_flight"])
+            out["positions"] = self.position_unnormalize(out["positions"])
+            if "times" in predict:
+                out["times"] = self.hit_time_unnormalize(out["times"])
 
         return out
 

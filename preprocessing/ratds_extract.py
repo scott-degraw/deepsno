@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from pathlib import Path
+from time import time
 
 import ROOT
 from rat import RAT
@@ -28,9 +29,9 @@ for output_path in args.output_files:
 ROOT.gROOT.SetBatch(True)
 RAT.DU.Utility.Get().LoadDBAndBeginRun()  # Database will not be loaded unless this is run
 
-ROOT.gROOT.LoadMacro(args.macro)
+now = time()
+ROOT.gROOT.LoadMacro(args.macro + "+")
+print(f"Time to compile: {time() - now}")
 
 for input_path, output_path in zip(args.input_files, args.output_files):
-    ROOT.ratds_extract(
-        str(input_path.resolve()), str(output_path.resolve()),  args.context_window
-    )
+    ROOT.ratds_extract(str(input_path.resolve()), str(output_path.resolve()), args.context_window)

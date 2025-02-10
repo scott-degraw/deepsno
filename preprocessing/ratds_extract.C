@@ -9,6 +9,7 @@
 #include <map>
 #include <system_error>
 #include <vector>
+#include <limits>
 
 namespace fs = std::filesystem;
 
@@ -80,7 +81,11 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
     auto pmt_info_group = h5_file.createGroup("pmt_info");
 
-    const RAT::DU::PMTInfo &pmt_info = RAT::DU::Utility::Get()->GetPMTInfo();
+    RAT::DU::Utility *rat_util = RAT::DU::Utility::Get();
+    const RAT::DU::PMTInfo &pmt_info = rat_util->GetPMTInfo();
+    RAT::DU::LightPathCalculator light_path_calculator = rat_util->GetLightPathCalculator();
+    const RAT::DU::GroupVelocity &group_velocity = rat_util->GetGroupVelocity();
+
     std::size_t n_pmts = pmt_info.GetCount();
 
     auto pmt_pos_group = pmt_info_group.createGroup("position");
@@ -112,38 +117,33 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
     h5_file.createAttribute<std::size_t>("number_of_events", all_evs);
 
-    std::vector<Float_t> mc_global_trigger_time;
-    std::vector<Float_t> mc_event_pos_x;
-    std::vector<Float_t> mc_event_pos_y;
-    std::vector<Float_t> mc_event_pos_z;
-
-    std::vector<Double_t> mc_energy;
-
-    if (is_mc) {
-        mc_global_trigger_time.resize(all_evs, -99999);
-        mc_event_pos_x.resize(all_evs, 0);
-        mc_event_pos_y.resize(all_evs, 0);
-        mc_event_pos_z.resize(all_evs, 0);
-        mc_energy.resize(all_evs, 0);
-    }
-
-    auto cal_pmt_events_group = h5_file.createGroup("cal_pmt_events");
+    Float_t float_nan = std::numeric_limits<Float_t>::quiet_NaN();
+    Double_t double_nan = std::numeric_limits<Double_t>::quiet_NaN();
+    std::vector<Float_t> mc_global_trigger_time(all_evs, float_nan);
+    std::vector<Float_t> mc_event_pos_x(all_evs, float_nan);
+    std::vector<Float_t> mc_event_pos_y(all_evs, float_nan);
+    std::vector<Float_t> mc_event_pos_z(all_evs, float_nan);
+    std::vector<Double_t> mc_energy(all_evs, double_nan);
 
     Vector2D<UInt_t> cal_pmt_ids(all_evs, context_window, 0); // PMT id of 0 corresponds to PMT that does not exist
     Vector2D<Float_t> cal_pmt_times(all_evs, context_window, 0);
+    Vector2D<Float_t> mc_times_of_flight(all_evs, context_window, 0);
+
+    std::size_t fPSUPSystemId = RAT::DU::Point3D::GetSystemId("innerPMT");
 
     std::size_t evs_counter = 0;
     for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
         const RAT::DS::Entry &entry = dsreader.GetEntry(i_entry);
         std::size_t n_evs = std::min(max_triggers, entry.GetEVCount());
         for (std::size_t i_evs = 0; i_evs < n_evs; i_evs++) {
+            RAT::DU::Point3D event_pos(fPSUPSystemId);
             if (is_mc) {
                 const RAT::DS::MC &mc_event = entry.GetMC();
                 const RAT::DS::MCParticle &mc_pcle = mc_event.GetMCParticle(0);
-                const TVector3 pos = mc_pcle.GetPosition();
-                mc_event_pos_x.at(evs_counter) = pos.X();
-                mc_event_pos_y.at(evs_counter) = pos.Y();
-                mc_event_pos_z.at(evs_counter) = pos.Z();
+                event_pos.SetXYZ(fPSUPSystemId, mc_pcle.GetPosition());
+                mc_event_pos_x.at(evs_counter) = event_pos.X();
+                mc_event_pos_y.at(evs_counter) = event_pos.Y();
+                mc_event_pos_z.at(evs_counter) = event_pos.Z();
                 mc_energy.at(evs_counter) = mc_pcle.GetKineticEnergy();
 
                 if (entry.GetMCEVCount() > 0)
@@ -158,6 +158,15 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
                 cal_pmt_ids(evs_counter, i_pmt) = cal_pmt.GetID();
                 Float_t pmt_time = static_cast<Float_t>(cal_pmt.GetTime());
                 cal_pmt_times(evs_counter, i_pmt) = pmt_time;
+                if (is_mc) {
+                    RAT::DU::Point3D pmt_pos(fPSUPSystemId, pmt_info.GetPosition(cal_pmt.GetID()));
+                    light_path_calculator.CalcByPosition(event_pos, pmt_pos);
+                    Double_t inner_av = light_path_calculator.GetDistInInnerAV();
+                    Double_t av = light_path_calculator.GetDistInAV();
+                    Double_t water = light_path_calculator.GetDistInWater();
+                    Float_t time_of_flight = static_cast<Float_t>(group_velocity.CalcByDistance(inner_av, av, water));
+                    mc_times_of_flight(evs_counter, i_pmt) = time_of_flight;
+                }
             }
             evs_counter++;
         }
@@ -178,8 +187,13 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
     HF::DataSpace cal_pmt_dataspace(cal_pmt_times.size_0(), cal_pmt_times.size_1());
 
+    auto cal_pmt_events_group = h5_file.createGroup("cal_pmt_events");
     auto cal_pmt_times_dset = cal_pmt_events_group.createDataSet<Float_t>("hit_times", cal_pmt_dataspace);
     cal_pmt_times_dset.write_raw(cal_pmt_times.data());
     auto cal_pmt_ids_dset = cal_pmt_events_group.createDataSet<UInt_t>("ids", cal_pmt_dataspace);
     cal_pmt_ids_dset.write_raw(cal_pmt_ids.data());
+    if (is_mc) {
+        auto mc_tof_dset = cal_pmt_events_group.createDataSet<Float_t>("times_of_flight", cal_pmt_dataspace);
+        mc_tof_dset.write_raw(mc_times_of_flight.data());
+    }
 }

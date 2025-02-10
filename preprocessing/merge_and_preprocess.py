@@ -193,7 +193,7 @@ def merge_and_norm(
 
     dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
     dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
-    dataset_identifiers += ["mc_truth/global_trigger_time"]
+    dataset_identifiers += ["mc_truth/global_trigger_time", "cal_pmt_events/times_of_flight"]
 
     pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
 

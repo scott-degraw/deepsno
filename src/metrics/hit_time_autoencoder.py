@@ -10,12 +10,17 @@ class TimeResidualLoss(nn.Module):
         self.mu = (mu - offset) / scale
         self.sigma = sigma / scale
 
+        self.offset = offset
+        self.scale = scale
+
     def forward(self, predict: dict, truth: dict):
-        times: torch.FloatTensor = predict["times_of_flight"]
+        times_of_flight: torch.FloatTensor = predict["times_of_flight"]
         not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
         uncal_hit_times: torch.FloatTensor = truth["uncal_hit_times"]
 
-        time_res = uncal_hit_times - times
+        time_res = uncal_hit_times - times_of_flight
+        unnorm_time_res = time_res * self.scale + self.offset
+        print(f"time residuals: {unnorm_time_res.mean()}, {unnorm_time_res.std()}")
         time_res = (time_res - self.mu) / self.sigma
 
         fraction = time_res / (self.a + self.b + time_res.square()).sqrt()
@@ -28,9 +33,9 @@ class VarianceLoss(nn.Module):
         super().__init__()
 
     def forward(self, predict: dict, truth: dict):
-        times: torch.FloatTensor = predict["times_of_flight"]
+        times_of_flight: torch.FloatTensor = predict["times_of_flight"]
         not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
-        residuals: torch.FloatTensor = not_padding_masks * (truth["uncal_hit_times"] - times)
+        residuals: torch.FloatTensor = not_padding_masks * (truth["uncal_hit_times"] - times_of_flight)
 
         n_hits = torch.sum(not_padding_masks, dim=-1, keepdims=True)
 
@@ -46,9 +51,9 @@ class TotalVarianceLoss(nn.Module):
         super().__init__()
 
     def forward(self, predict: dict, truth: torch.Tensor):
-        times: torch.FloatTensor = predict["predict"]
+        times_of_flight: torch.FloatTensor = predict["times_of_flight"]
         not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
-        residuals: torch.FloatTensor = not_padding_masks * (truth["uncal_hit_times"] - times)
+        residuals: torch.FloatTensor = not_padding_masks * (truth["uncal_hit_times"] - times_of_flight)
 
         total_nhits = torch.sum(not_padding_masks)
 
