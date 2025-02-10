@@ -114,7 +114,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--val_metric", type=Metric, required=True)
     train_parser.add_argument("--val_num_steps", type=int, required=False)
     train_parser.add_argument("--val_metric_is_inverted", action="store_true")
-    train_parser.add_argument("--metric_monitor", type=dict, required=False)
+    train_parser.add_argument("--metric_monitors", type=dict | Iterable[dict], required=False)
 
     train_parser.add_argument("--dry_run", action="store_true")
 
