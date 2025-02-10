@@ -23,8 +23,26 @@ class MetricMonitor(ABC):
     def compute(self):
         pass
 
+    @abstractmethod
     def reset(self):
         pass
+
+
+class MonitorCollection(MetricMonitor):
+    def __init__(self, monitors: Iterable[MetricMonitor]):
+        self.monitors = monitors
+
+    def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
+        for monitor in self.monitors:
+            monitor.update(predict, truth)
+
+    def reset(self) -> None:
+        for monitor in self.monitors:
+            monitor.reset()
+
+    def compute(self, global_step: int) -> None:
+        for monitor in self.monitors:
+            monitor.compute(global_step)
 
 
 class PositionMonitor(MetricMonitor):

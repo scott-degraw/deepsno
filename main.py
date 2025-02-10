@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 from warnings import warn
 
 import h5py
@@ -17,14 +18,15 @@ from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
 from src.loops import test, train
+from src.metrics.metric_monitor import MonitorCollection
 from src.metrics.metrics import Metric
 from src.utils.train import get_best_ckpt
 
 
 def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
-    if "class_path" not in cfg_obj[object_name]:
+    if "class_path" not in cfg_obj:
         raise KeyError(f"'class_path' not found in {object_name} config object")
-    if "init_args" not in cfg_obj[object_name]:
+    if "init_args" not in cfg_obj:
         raise KeyError(f"'init_args' not found in {object_name} config object")
 
 
@@ -44,7 +46,7 @@ def initialize_norm_dict(model_cfg: dict):
     if "norm_dict" in model_cfg["init_args"]:
         norm_dict_cfg = model_cfg["init_args"]["norm_dict"]
         if norm_dict_cfg is not None and "class_path" in norm_dict_cfg:
-            check_instantiate_keys(model_cfg["init_args"], "norm_dict")
+            check_instantiate_keys(model_cfg["init_args"]["norm_dict"], "norm_dict")
             norm_dict_class = get_class(norm_dict_cfg["class_path"])
             norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
             model_cfg["init_args"]["norm_dict"] = dict(norm_dict)
@@ -220,7 +222,7 @@ if __name__ == "__main__":
 
         # Instantiate the optimizer
 
-        check_instantiate_keys(cfg, "optimizer")
+        check_instantiate_keys(cfg["optimizer"], "optimizer")
         optimizer_class = get_class(cfg["optimizer"]["class_path"])
 
         optimizer: optim.Optimizer = optimizer_class(model.parameters(), **cfg["optimizer"]["init_args"])
@@ -228,7 +230,7 @@ if __name__ == "__main__":
         # Instantiate the scheduler
 
         if cfg["scheduler"] is not None:
-            check_instantiate_keys(cfg, "scheduler")
+            check_instantiate_keys(cfg["scheduler"], "scheduler")
             scheduler_class = get_class(cfg["scheduler"]["class_path"])
 
             scheduler: optim.lr_scheduler.LRScheduler = scheduler_class(optimizer, **cfg["scheduler"]["init_args"])
@@ -285,11 +287,21 @@ if __name__ == "__main__":
         writer.add_scalar("Number of training batches", len(train_dataloader))
 
         # Instantiate the metric monitor
-        if cfg["metric_monitor"] is not None:
-            check_instantiate_keys(cfg, "metric_monitor")
-            metric_monitor_class = get_class(cfg["metric_monitor"]["class_path"])
+        if isinstance(cfg["metric_monitors"], dict):
+            check_instantiate_keys(cfg["metric_monitors"], "metric_monitors")
+            metric_monitor_class = get_class(cfg["metric_monitors"]["class_path"])
+            metric_monitor = metric_monitor_class(writer, **cfg["metric_monitors"]["init_args"])
 
-            metric_monitor = metric_monitor_class(writer, **cfg["metric_monitor"]["init_args"])
+        elif isinstance(cfg["metric_monitors"], Iterable):
+            monitors = []
+            for monitor_dict in cfg["metric_monitors"]:
+                check_instantiate_keys(monitor_dict, "metric_monitors")
+                metric_monitor_class = get_class(monitor_dict["class_path"])
+                monitors.append(metric_monitor_class(writer, **monitor_dict["init_args"]))
+
+            metric_monitor = MonitorCollection(monitors)
+        else:
+            metric_monitor = None
 
         train(
             checkpoint_dir=model_save_dir / "ckpt",
