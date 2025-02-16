@@ -19,8 +19,6 @@ class TimeResidualLoss(nn.Module):
         uncal_hit_times: torch.FloatTensor = truth["uncal_hit_times"]
 
         time_res = uncal_hit_times - times_of_flight
-        unnorm_time_res = time_res * self.scale + self.offset
-        print(f"time residuals: {unnorm_time_res.mean()}, {unnorm_time_res.std()}")
         time_res = (time_res - self.mu) / self.sigma
 
         fraction = time_res / (self.a + self.b + time_res.square()).sqrt()
