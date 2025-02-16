@@ -132,16 +132,15 @@ class TimeResidualMonitor(MetricMonitor):
     def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
         predict = pytree.tree_map(lambda x: x.cpu().numpy(), predict)
         truth = pytree.tree_map(lambda x: x.cpu().numpy(), truth)
+        not_padding_mask = truth["pmt_ids"] != 0
         predicted_time_residuals = truth["uncal_hit_times"] - predict["times_of_flight"]
+        predicted_time_residuals = predicted_time_residuals[not_padding_mask]
         predicted_time_residuals = predicted_time_residuals.ravel() * self.scale + self.offset
         self.predict_hist.fill(predicted_time_residuals)
 
-        times_of_flight = np.linalg.vector_norm(truth["positions"][..., None, :] - truth["pmt_positions"], axis=-1)
-        times_of_flight = times_of_flight / self.effective_c
-
-        # truth_time_residuals = truth["uncal_hit_times"] - times_of_flight - truth["event_times"][..., None]
-        # truth_time_residuals = truth["uncal_hit_times"] - (truth["times_of_flight"] + truth["event_times"])
-        # self.truth_hist.fill(truth_time_residuals)
+        truth_time_residuals = truth["uncal_hit_times"] - (truth["times_of_flight"] + truth["event_times"][..., None])
+        truth_time_residuals = truth_time_residuals[not_padding_mask]
+        self.truth_hist.fill(truth_time_residuals)
 
     def reset(self) -> None:
         self.truth_hist[:] = 0
