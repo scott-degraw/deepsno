@@ -127,6 +127,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
     Vector2D<UInt_t> cal_pmt_ids(all_evs, context_window, 0); // PMT id of 0 corresponds to PMT that does not exist
     Vector2D<Float_t> cal_pmt_times(all_evs, context_window, 0);
+    Vector2D<Float_t> cal_qhs(all_evs, context_window, 0);
     Vector2D<Float_t> mc_times_of_flight(all_evs, context_window, 0);
 
     std::size_t fPSUPSystemId = RAT::DU::Point3D::GetSystemId("innerPMT");
@@ -156,8 +157,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
             for (std::size_t i_pmt = 0; i_pmt < n_cal_pmts; i_pmt++) {
                 const RAT::DS::PMTCal &cal_pmt = cal_pmts.GetPMT(i_pmt);
                 cal_pmt_ids(evs_counter, i_pmt) = cal_pmt.GetID();
-                Float_t pmt_time = static_cast<Float_t>(cal_pmt.GetTime());
-                cal_pmt_times(evs_counter, i_pmt) = pmt_time;
+                cal_pmt_times(evs_counter, i_pmt) = static_cast<Float_t>(cal_pmt.GetTime());
+                cal_qhs(evs_counter, i_pmt) = static_cast<Float_t>(cal_pmt.GetQHS());
                 if (is_mc) {
                     RAT::DU::Point3D pmt_pos(fPSUPSystemId, pmt_info.GetPosition(cal_pmt.GetID()));
                     light_path_calculator.CalcByPosition(event_pos, pmt_pos);
@@ -192,6 +193,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
     cal_pmt_times_dset.write_raw(cal_pmt_times.data());
     auto cal_pmt_ids_dset = cal_pmt_events_group.createDataSet<UInt_t>("ids", cal_pmt_dataspace);
     cal_pmt_ids_dset.write_raw(cal_pmt_ids.data());
+    auto cal_qhs_dset = cal_pmt_events_group.createDataSet<Float_t>("QHS", cal_pmt_dataspace);
+    cal_qhs_dset.write_raw(cal_qhs.data());
     if (is_mc) {
         auto mc_tof_dset = cal_pmt_events_group.createDataSet<Float_t>("times_of_flight", cal_pmt_dataspace);
         mc_tof_dset.write_raw(mc_times_of_flight.data());
