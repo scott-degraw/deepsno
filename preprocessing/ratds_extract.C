@@ -129,6 +129,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
     Vector2D<Float_t> cal_pmt_times(all_evs, context_window, 0);
     Vector2D<Float_t> cal_qhs(all_evs, context_window, 0);
     Vector2D<Float_t> mc_times_of_flight(all_evs, context_window, 0);
+    Vector2D<Float_t> mc_hit_times(all_evs, context_window, 0);
 
     std::size_t fPSUPSystemId = RAT::DU::Point3D::GetSystemId("innerPMT");
 
@@ -153,6 +154,10 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
             const RAT::DS::EV &ev = entry.GetEV(i_evs);
             const RAT::DS::CalPMTs &cal_pmts = ev.GetCalPMTs();
+            const RAT::DS::MCHits *mc_hits = nullptr;
+            if (is_mc) 
+                mc_hits = &entry.GetMCEV(i_evs).GetMCHits();
+
             std::size_t n_cal_pmts = std::min(cal_pmts.GetCount(), context_window);
             for (std::size_t i_pmt = 0; i_pmt < n_cal_pmts; i_pmt++) {
                 const RAT::DS::PMTCal &cal_pmt = cal_pmts.GetPMT(i_pmt);
@@ -167,6 +172,9 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
                     Double_t water = light_path_calculator.GetDistInWater();
                     Float_t time_of_flight = static_cast<Float_t>(group_velocity.CalcByDistance(inner_av, av, water));
                     mc_times_of_flight(evs_counter, i_pmt) = time_of_flight;
+                    
+                    const RAT::DS::MCHit &mc_hit = mc_hits->GetPMT(i_pmt);
+                    mc_hit_times(evs_counter, i_pmt) = static_cast<Float_t>(mc_hit.GetTime());
                 }
             }
             evs_counter++;
@@ -198,5 +206,8 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
     if (is_mc) {
         auto mc_tof_dset = cal_pmt_events_group.createDataSet<Float_t>("times_of_flight", cal_pmt_dataspace);
         mc_tof_dset.write_raw(mc_times_of_flight.data());
+
+        auto mc_hit_times_dset = cal_pmt_events_group.createDataSet<Float_t>("mc_hit_times", cal_pmt_dataspace);
+        mc_hit_times_dset.write_raw(mc_hit_times.data());
     }
 }

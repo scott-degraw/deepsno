@@ -174,6 +174,7 @@ def merge_and_norm(
     max_hit_time: float,
     positions: List[str] = ["x", "y", "z"],
     block_size: int = 100_000,
+    n_blocks: int = None,
     seed: int = 487391,
     condor_transfer_input_files: bool = False,
     condor_transfer_output_files: bool = False,
@@ -181,6 +182,7 @@ def merge_and_norm(
     dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
     dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
     dataset_identifiers += ["mc_truth/global_trigger_time", "cal_pmt_events/times_of_flight"]
+    dataset_identifiers += ["cal_pmt_events/mc_hit_times"]
 
     pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
 
@@ -233,13 +235,16 @@ def merge_and_norm(
     with h5py.File(train_output_path, "r+") as train_h5:
         print("Finding hit time norms")
         find_norms(
-            train_h5["cal_pmt_events/hit_times"], block_size=block_size, pmt_id_dataset=train_h5["cal_pmt_events/ids"]
+            train_h5["cal_pmt_events/hit_times"],
+            block_size=block_size,
+            n_blocks=n_blocks,
+            pmt_id_dataset=train_h5["cal_pmt_events/ids"],
         )
         for c in positions:
             print(f"Finding {c} position norms")
-            find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
+            find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size, n_blocks=n_blocks)
         print("Finding event time norms")
-        find_norms(train_h5["mc_truth/global_trigger_time"], block_size=block_size)
+        find_norms(train_h5["mc_truth/global_trigger_time"], block_size=block_size, n_blocks=n_blocks)
 
     print("Merge test files")
     merge_h5(
