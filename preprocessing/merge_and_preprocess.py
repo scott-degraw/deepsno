@@ -29,22 +29,14 @@ def find_norms(
 ) -> None:
     # This function relies on masked values having a value of 0
     n_events = dataset.shape[0]
+    if block_size > n_events:
+        block_size = n_events
+
     max_n_blocks = n_events // block_size
 
-    if max_n_blocks == 0:
-        raise ValueError(
-            (
-                f"The value of 'block_size' ({block_size}) is too large. "
-                f"It is smaller than length of data dataset: {n_events}."
-            )
-        )
-    if n_blocks is None:
+    if n_blocks is None or n_blocks > max_n_blocks:
         # For ease of good numerical calculation of means I only consider evenly sized blocks
         n_blocks = max_n_blocks
-    if n_blocks > max_n_blocks:
-        raise ValueError(
-            f"The value of 'n_blocks' is {n_blocks}. The maximum value of 'n_blocks' for this dataset is {max_n_blocks}"
-        )
 
     block_means = np.full(n_blocks, dtype=np.float64, fill_value=np.nan)
 
