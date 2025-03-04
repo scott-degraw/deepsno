@@ -180,7 +180,7 @@ if __name__ == "__main__":
         git_hash = get_git_hash(raise_exception=True)
         if cfg["git_hash"] is not None and git_hash != cfg["git_hash"]:
             raise MismatchedGitHash(
-                f"Git hash '{cfg["git_hash"]}' does not match the git hash of the current working tree: '{git_hash}'"
+                f"Git hash '{cfg['git_hash']}' does not match the git hash of the current working tree: '{git_hash}'"
             )
 
     cfg["git_hash"] = git_hash
@@ -194,23 +194,24 @@ if __name__ == "__main__":
 
         torch.manual_seed(cfg["train"]["seed"])
 
-        datetime_string = datetime.now().strftime(r"%Y-%m-%d_%H-%M-%S")
+        date_string = datetime.now().strftime(r"%Y-%m-%d")
+        time_string = datetime.now().strftime(r"%H-%M-%S")
 
         if cfg["train"]["dry_run"]:
             cfg["train"]["num_epochs"] = None
             cfg["train"]["num_steps"] = 3
             cfg["train"]["val_num_steps"] = 2
             cfg["train"]["val_len"] = int(1.5 * cfg["train"]["val_batch_size"])
-            cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / f"dry_run_{datetime_string}"
+            cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / f"dry_run_{date_string}_{time_string}"
 
         # Create the model save directory
 
         model_save_dir: Path = Path(cfg["train"]["checkpoint_dir"])
         model_save_dir.mkdir(parents=True, exist_ok=True)
 
-        model_save_dir = model_save_dir / datetime_string
+        model_save_dir = model_save_dir / date_string / time_string
 
-        model_save_dir.mkdir()
+        model_save_dir.mkdir(parents=True)
 
         print(f"Saving model config and checkpoints to {str(model_save_dir.resolve())}")  # Instantiate the optimizer
 
