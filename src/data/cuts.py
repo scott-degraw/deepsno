@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 from pathlib import Path
 
 import h5py
@@ -29,6 +30,10 @@ def cuts(
     id_dset = h5_file["cal_pmt_events/ids"]
     pos_group = h5_file["mc_truth/position"]
     hit_time_dset = h5_file["cal_pmt_events/hit_times"]
+    if "cal_pmt_events/av_offset" in h5_file:
+        av_offset_dset = h5_file["cal_pmt_events/av_offset"]
+    else:
+        av_offset_dset = None
     dset_len = id_dset.shape[0]
 
     selector = np.zeros(dset_len, dtype=np.bool)
@@ -55,8 +60,11 @@ def cuts(
     for _ in trange(n_blocks, desc="Block number"):
         block_slice = slice(start_row, min(start_row + block_size, dset_len))
         id_block = id_dset[block_slice]
-        pos_block = np.stack([pos_group[c][block_slice] for c in ["x", "y", "z"]])
-        r_block = np.linalg.vector_norm(pos_block, axis=0)
+        pos_block = np.stack([pos_group[c][block_slice] for c in ["x", "y", "z"]], axis=-1)
+
+        if av_offset_dset is not None:
+            pos_block -= av_offset_dset[block_slice]
+        r_block = np.linalg.vector_norm(pos_block, axis=-1)
 
         if min_hit_time is not None or max_hit_time is not None:
             hit_time_block = hit_time_dset[block_slice]
