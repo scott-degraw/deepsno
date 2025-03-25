@@ -26,8 +26,6 @@ from src.utils.train import get_best_ckpt
 def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
     if "class_path" not in cfg_obj:
         raise KeyError(f"'class_path' not found in {object_name} config object")
-    if "init_args" not in cfg_obj:
-        raise KeyError(f"'init_args' not found in {object_name} config object")
 
 
 def get_class(class_path: str) -> type:
@@ -297,14 +295,21 @@ if __name__ == "__main__":
         if isinstance(cfg["metric_monitors"], dict):
             check_instantiate_keys(cfg["metric_monitors"], "metric_monitors")
             metric_monitor_class = get_class(cfg["metric_monitors"]["class_path"])
-            metric_monitor = metric_monitor_class(writer, **cfg["metric_monitors"]["init_args"])
+            if "init_args" in cfg["metric_monitors"]:
+                metric_monitor = metric_monitor_class(writer, **cfg["metric_monitors"]["init_args"])
+            else:
+                metric_monitor = metric_monitor_class(writer)
 
         elif isinstance(cfg["metric_monitors"], Iterable):
             monitors = []
             for monitor_dict in cfg["metric_monitors"]:
                 check_instantiate_keys(monitor_dict, "metric_monitors")
                 metric_monitor_class = get_class(monitor_dict["class_path"])
-                monitors.append(metric_monitor_class(writer, **monitor_dict["init_args"]))
+                if "init_args" in monitor_dict:
+                    metric_monitor = metric_monitor_class(writer, **monitor_dict["init_args"])
+                else:
+                    metric_monitor = metric_monitor_class(writer)
+                monitors.append(metric_monitor)
 
             metric_monitor = MonitorCollection(monitors)
         else:
