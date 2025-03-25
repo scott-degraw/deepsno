@@ -136,10 +136,12 @@ class TimeResidualMonitor(MetricMonitor):
         predicted_time_residuals = truth["uncal_hit_times"] - predict["times_of_flight"]
         predicted_time_residuals = predicted_time_residuals[not_padding_mask]
         predicted_time_residuals = predicted_time_residuals.ravel() * self.scale + self.offset
+        predicted_time_residuals = predicted_time_residuals - np.mean(predicted_time_residuals)
         self.predict_hist.fill(predicted_time_residuals)
 
         truth_time_residuals = truth["uncal_hit_times"] - (truth["times_of_flight"] + truth["event_times"][..., None])
         truth_time_residuals = truth_time_residuals[not_padding_mask]
+        truth_time_residuals -= np.mean(truth_time_residuals)
         self.truth_hist.fill(truth_time_residuals)
 
     def reset(self) -> None:
