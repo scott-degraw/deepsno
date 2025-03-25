@@ -1,8 +1,10 @@
 #!/usr/bin/env -S python3 -u
+import itertools
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -72,29 +74,10 @@ def find_norms(
     dataset.attrs["root_mean_square_deviation"] = rmsd
 
 
-def preprocess_hit_time(output_path: str, min_hit_time: float, max_hit_time: float, block_size: int):
-    if not isinstance(output_path, h5py.Group):
-        output_path = h5py.File(output_path, "r+")
-
-    hit_time_dset = output_path["cal_pmt_events/hit_times"]
-    id_dset = output_path["cal_pmt_events/ids"]
-
-    n_events = hit_time_dset.shape[0]
-    n_blocks = (n_events - 1) // block_size + 1
-    start_row = 0
-    for block_num in range(n_blocks):
-        print(f"Block {block_num + 1}/{n_blocks}")
-        block_slice = slice(start_row, min(start_row + block_size, n_events))
-        hit_time_block = hit_time_dset[block_slice]
-        id_block = id_dset[block_slice]
-
-        selector = (hit_time_block > max_hit_time) | (hit_time_block < min_hit_time)
-        hit_time_block[selector] = 0.0
-        id_block[selector] = 0
-
-        hit_time_dset[block_slice] = hit_time_block
-        id_dset[block_slice] = id_block
-        start_row += block_size
+def preprocess_hit_time(dset: np.ndarray, pmt_id_dset: np.ndarray, min_hit_time: float, max_hit_time: float):
+    selector = (dset > max_hit_time) | (dset < min_hit_time)
+    dset[selector] = 0.0
+    pmt_id_dset[selector] = 0
 
 
 def merge_h5(
@@ -128,7 +111,6 @@ def merge_h5(
 
             start_row_i: int = 0
             for input_file_num, input_path in enumerate(input_paths):
-                print(f"Merging {dataset_identifier} for file {input_file_num + 1}/{len(input_paths)}")
                 with h5py.File(input_path) as input_h5:
                     dataset = input_h5[dataset_identifier]
                     merged_dataset[start_row_i : start_row_i + dataset.shape[0]] = dataset[:]
@@ -165,7 +147,106 @@ def check_files(input_paths: List[str], dataset_identifiers: List[str], pmt_info
                     raise KeyError(f"PMT information identifier '{pmt_info_identifier}' not found in {input_path}")
 
 
-def merge_and_norm(
+@dataclass
+class GroupAndAttr:
+    group: str
+    attr: str
+    dest_group: str | None = None
+
+
+def merge_and_preprocess(
+    input_paths: str,
+    output_path: str,
+    dset_idents: Tuple[str],
+    pmt_id_ident: str,
+    pmt_info_idents: Tuple[str],
+    min_hit_time: float,
+    max_hit_time: float,
+    group_and_attrs: Tuple[GroupAndAttr],
+    per_event_group_and_attrs: Tuple[GroupAndAttr],
+):
+    all_input_h5 = [h5py.File(path) for path in input_paths]
+    total_n_events = 0
+    for input_h5 in all_input_h5:
+        total_n_events += input_h5.attrs["number_of_events"]
+    try:
+        with h5py.File(output_path, "w", libver="latest") as merged_h5:
+            for dset_ident in itertools.chain(dset_idents, [pmt_id_ident]):
+                dset_dtype = all_input_h5[0][dset_ident].dtype
+                dset_dims = []
+                for input_h5 in all_input_h5:
+                    dset_dims.append(input_h5[dset_ident].shape)
+
+                dset_dims = np.array(dset_dims)
+
+                if dset_dims.shape[1] > 1:
+                    assert np.all(dset_dims[0, 1:] == dset_dims[:, 1:]), (
+                        f"Dataset '{dset_ident}' dimensions are not compatible"
+                    )
+
+                n_events = dset_dims[:, 0].sum()
+                assert n_events == total_n_events, f"Number of events in datasets do not match for {dset_ident}"
+                other_dims = dset_dims[0, 1:]
+                merged_h5.create_dataset(dset_ident, shape=(total_n_events, *other_dims), dtype=dset_dtype)
+
+            input_h5 = all_input_h5[0]
+            for group_and_attr in group_and_attrs:
+                attr = input_h5[group_and_attr.group].attrs[group_and_attr.attr]
+                merged_h5.attrs[group_and_attr.attr] = attr
+            for group_and_attr in per_event_group_and_attrs:
+                attr = input_h5[group_and_attr.group].attrs[group_and_attr.attr]
+                merged_h5.create_dataset(
+                    group_and_attr.dest_group, shape=(total_n_events, *attr.shape), dtype=attr.dtype
+                )
+
+            start_row = 0
+            for input_file_num, input_h5 in enumerate(all_input_h5):
+                print(f"Merging file {input_file_num + 1}/{len(input_paths)}")
+                n_events = input_h5.attrs["number_of_events"]
+                for group_and_attr in group_and_attrs:
+                    attr = input_h5[group_and_attr.group].attrs[group_and_attr.attr]
+                    assert merged_h5.attrs[group_and_attr.attr] == attr, (
+                        f"Attribute '{group_and_attr.attr}' does not match between files"
+                    )
+                for group_and_attr in per_event_group_and_attrs:
+                    attr = input_h5[group_and_attr.group].attrs[group_and_attr.attr]
+                    attr = np.broadcast_to(attr, (n_events, *attr.shape))
+                    merged_h5[group_and_attr.dest_group][start_row : start_row + n_events] = attr
+
+                for dset_ident in dset_idents:
+                    dset = input_h5[dset_ident][:]
+                    pmt_id_dset = input_h5[pmt_id_ident][:]
+
+                    if dset_ident == "cal_pmt_events/hit_times":
+                        preprocess_hit_time(
+                            dset, pmt_id_dset=pmt_id_dset, min_hit_time=min_hit_time, max_hit_time=max_hit_time
+                        )
+
+                    merged_h5[dset_ident][start_row : start_row + dset.shape[0]] = dset
+                    merged_h5[pmt_id_ident][start_row : start_row + dset.shape[0]] = pmt_id_dset
+
+                start_row += dset.shape[0]
+
+            for pmt_info_ident in pmt_info_idents:
+                input_h5 = all_input_h5[0]
+                pmt_info_array = input_h5[pmt_info_ident][:]
+                base_fname = input_h5.filename
+                for input_h5 in all_input_h5:
+                    if np.all(pmt_info_array != input_h5[pmt_info_ident][:]):
+                        raise ValueError(
+                            (
+                                f"{pmt_info_ident} in {input_h5.filename} does not match corresponding entry in {base_fname}"
+                            )
+                        )
+
+                merged_h5.create_dataset(pmt_info_ident, data=pmt_info_array)
+
+    finally:
+        for h5_file in all_input_h5:
+            h5_file.close()
+
+
+def main(
     input_paths: List[str],
     train_output_path: str,
     test_output_path: str,
@@ -179,10 +260,20 @@ def merge_and_norm(
     condor_transfer_input_files: bool = False,
     condor_transfer_output_files: bool = False,
 ) -> None:
-    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/ids", "mc_truth/kinetic_energy"]
+    dataset_identifiers = ["cal_pmt_events/hit_times", "cal_pmt_events/QHS", "mc_truth/kinetic_energy"]
     dataset_identifiers += [f"mc_truth/position/{c}" for c in positions]
     dataset_identifiers += ["mc_truth/global_trigger_time", "cal_pmt_events/times_of_flight"]
     dataset_identifiers += ["cal_pmt_events/mc_hit_times"]
+    pmt_id_ident = "cal_pmt_events/ids"
+
+    group_and_attrs = [
+        GroupAndAttr("/", "inner_av_radius"),
+        GroupAndAttr("/", "av_thickness"),
+        GroupAndAttr("/", "is_mc"),
+    ]
+    per_event_group_and_attrs = [
+        GroupAndAttr("/", "av_offset", "cal_pmt_events/av_offset"),
+    ]
 
     pmt_info_identifiers = [f"pmt_info/position/{c}" for c in positions]
 
@@ -221,14 +312,18 @@ def merge_and_norm(
         raise RuntimeError(f"Not enough files. No test dataset for {train_test_split:.3g} train-test split.")
 
     print("Merge train files")
-    merge_h5(
+
+    merge_and_preprocess(
         input_paths=train_input_paths,
         output_path=train_output_path,
-        dataset_identifiers=dataset_identifiers,
-        pmt_info_identifiers=pmt_info_identifiers,
+        dset_idents=dataset_identifiers,
+        pmt_id_ident=pmt_id_ident,
+        pmt_info_idents=pmt_info_identifiers,
+        min_hit_time=min_hit_time,
+        max_hit_time=max_hit_time,
+        group_and_attrs=group_and_attrs,
+        per_event_group_and_attrs=per_event_group_and_attrs,
     )
-    print("Preprocess train dataset")
-    preprocess_hit_time(train_output_path, min_hit_time=min_hit_time, max_hit_time=max_hit_time, block_size=block_size)
 
     # Add in the mean and root mean square deviation normalization
 
@@ -247,15 +342,17 @@ def merge_and_norm(
         find_norms(train_h5["mc_truth/global_trigger_time"], block_size=block_size, n_blocks=n_blocks)
 
     print("Merge test files")
-    merge_h5(
+    merge_and_preprocess(
         input_paths=test_input_paths,
         output_path=test_output_path,
-        dataset_identifiers=dataset_identifiers,
-        pmt_info_identifiers=pmt_info_identifiers,
+        dset_idents=dataset_identifiers,
+        pmt_id_ident=pmt_id_ident,
+        pmt_info_idents=pmt_info_identifiers,
+        min_hit_time=min_hit_time,
+        max_hit_time=max_hit_time,
+        group_and_attrs=group_and_attrs,
+        per_event_group_and_attrs=per_event_group_and_attrs,
     )
-
-    print("Preprocess test dataset")
-    preprocess_hit_time(test_output_path, min_hit_time=min_hit_time, max_hit_time=max_hit_time, block_size=block_size)
 
     if condor_transfer_output_files:
         print("Transferring output files back")
@@ -266,4 +363,4 @@ def merge_and_norm(
 
 
 if __name__ == "__main__":
-    CLI(merge_and_norm, as_positional=False)
+    CLI(main, as_positional=False)
