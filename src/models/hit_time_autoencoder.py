@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Tuple
 
 import h5py
 import numpy as np
@@ -9,7 +10,7 @@ from src.utils.train import copy_if_tensor, get_best_ckpt
 
 
 class HitTimeAutoEncoderNorm(dict):
-    def __init__(self, train_file: str | Path, positions: tuple = ["x", "y", "z"]):
+    def __init__(self, train_file: str | Path, positions: Tuple = ["x", "y", "z"]):
         super().__init__()
 
         with h5py.File(train_file) as h5_file:
@@ -28,8 +29,10 @@ class HitTimeAutoEncoder(nn.Module):
         self,
         position_reconstructor: nn.Module,
         n_pmts: int,
-        effective_c: float = 100,
-        fix_effective_c: bool = False,
+        c_av: float,
+        c_water: float,
+        av_radius: float,
+        fix_c: bool = False,
         position_reconstructor_state_dict_path: str | Path | None = None,
         norm_dict: dict | None = None,
         positions: tuple = ["x", "y", "z"],
@@ -84,9 +87,13 @@ class HitTimeAutoEncoder(nn.Module):
             self.input_norm = False
             self.output_unnorm = False
 
-        c_eff = effective_c * self.hit_time_rmsd / self.position_rmsd
-        self.register_parameter("effective_c", nn.Parameter(c_eff))
-        self.effective_c.requires_grad = not fix_effective_c
+        self.register_parameter("c_av", nn.Parameter(c_av * self.hit_time_rmsd / self.position_rmsd))
+        self.register_parameter("c_water", nn.Parameter(c_water * self.hit_time_rmsd / self.position_rmsd))
+        self.c_av.requires_grad = not fix_c
+        self.c_water.requires_grad = not fix_c
+
+        self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
+
         self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
@@ -113,12 +120,53 @@ class HitTimeAutoEncoder(nn.Module):
             "positions": self.position_normalize(x["positions"]),
         }
 
+    def flight_time(
+        self,
+        event_positions: torch.FloatTensor,
+        pmt_positions: torch.FloatTensor,
+        av_offset: torch.FloatTensor | None = None,
+    ) -> torch.FloatTensor:
+        event_positions = event_positions[..., None, :]
+
+        event_2_pmt_vec = pmt_positions - event_positions
+
+        # put event positions in terms of av coordinates
+        if av_offset is not None:
+            event_positions = event_positions - av_offset[..., None, :]
+
+        dist_event_2_pmt = torch.linalg.vector_norm(event_2_pmt_vec, dim=-1)
+        norm_event_2_pmt_vec = event_2_pmt_vec / dist_event_2_pmt[..., None]
+
+        # Use line sphere intersection calculations (https://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection)
+        event_pos_projection = torch.sum(norm_event_2_pmt_vec * event_positions, dim=-1)
+        discriminant = event_pos_projection**2 - event_positions.square().sum(-1) + self.av_radius**2
+
+        dist_av = torch.zeros(pmt_positions.shape[:-1], device=pmt_positions.device)
+
+        line_passes_av = discriminant > 0
+        event_radius = torch.linalg.vector_norm(event_positions, dim=-1)
+        event_inside_av = line_passes_av * (event_radius < self.av_radius)
+        event_outside_av = line_passes_av * (event_radius >= self.av_radius)
+
+        dist_av[event_inside_av] = -event_pos_projection[event_inside_av] + torch.sqrt(discriminant[event_inside_av])
+        dist_av[event_outside_av] = 2 * torch.sqrt(discriminant[event_outside_av])
+
+        dist_water = dist_event_2_pmt - dist_av
+
+        return dist_av / self.c_av + dist_water / self.c_water
+
     def forward(
-        self, uncal_hit_times: torch.FloatTensor, pmt_ids: torch.IntTensor, pmt_positions: torch.FloatTensor
+        self,
+        uncal_hit_times: torch.FloatTensor,
+        pmt_ids: torch.IntTensor,
+        pmt_positions: torch.FloatTensor,
+        av_offset: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
         self.position_reconstructor.input_norm = self.input_norm
 
         pmt_positions = self.position_normalize(pmt_positions)
+        if av_offset is not None:
+            av_offset = self.position_normalize(av_offset)
 
         predict = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
         predict_positions = predict["positions"]
@@ -130,10 +178,13 @@ class HitTimeAutoEncoder(nn.Module):
         not_padding_masks = pmt_ids != 0
 
         # Masked pmt positions have positions of zero
-        times_of_flight = torch.linalg.vector_norm(predict_positions[..., None, :] - pmt_positions, dim=-1)
-
-        times_of_flight = times_of_flight / self.effective_c
+        times_of_flight = self.flight_time(
+            event_positions=predict_positions,
+            pmt_positions=pmt_positions,
+            av_offset=av_offset,
+        )
         times_of_flight = times_of_flight + self.cable_delays[pmt_ids]
+
         if "times" in predict:
             times_of_flight = times_of_flight + predict_times.unsqueeze(-1)
 
@@ -149,6 +200,9 @@ class HitTimeAutoEncoder(nn.Module):
             out["positions"] = self.position_unnormalize(out["positions"])
             if "times" in predict:
                 out["times"] = self.hit_time_unnormalize(out["times"])
+
+        out["c_av"] = self.c_av
+        out["c_water"] = self.c_water
 
         return out
 

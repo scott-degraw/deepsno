@@ -170,6 +170,11 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
             self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
             self._pmt_positions[0, i] = 0.0
 
+        if "cal_pmt_events/av_offset" in self._h5_file:
+            self._av_offset_dset = self._h5_file["cal_pmt_events/av_offset"]
+        else:
+            self._av_offset_dset = None
+
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
         inputs, truth = super().__getitem__(index)
 
@@ -180,5 +185,8 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
 
         truth["pmt_positions"] = inputs["pmt_positions"]
         truth["pmt_ids"] = inputs["pmt_ids"]
+
+        if self._av_offset_dset is not None:
+            inputs["av_offset"] = self._av_offset_dset[index]
 
         return inputs, truth

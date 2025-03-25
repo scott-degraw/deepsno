@@ -77,6 +77,17 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
     auto run_info = dsreader.GetRun();
     bool is_mc = run_info.GetMCFlag();
 
+    RAT::DB *db = RAT::DB::Get();
+
+    std::vector<Float_t> av_offset_vec = db->GetLink("GEO", "av")->GetFArrayFromD("position");
+    RAT::DBLinkPtr native_geo_dims_link = db->GetLink("NATIVE_GEO_DIMENSIONS", "natgeo_dimensions");
+    Double_t inner_av_radius = native_geo_dims_link->GetD("inner_av_radius");
+    Double_t av_thickness = native_geo_dims_link->GetD("av_thickness");
+
+    h5_file.createAttribute("inner_av_radius", inner_av_radius);
+    h5_file.createAttribute("av_thickness", av_thickness);
+    h5_file.createAttribute("av_offset", av_offset_vec);
+
     h5_file.createAttribute("is_mc", run_info.GetMCFlag());
 
     auto pmt_info_group = h5_file.createGroup("pmt_info");
