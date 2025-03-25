@@ -156,3 +156,24 @@ class TimeResidualMonitor(MetricMonitor):
         axis.set_xlabel("Time residual (ns)")
         axis.set_ylabel("Counts")
         self.writer.add_figure(f"{self.name_prefix}/time_residuals", fig, global_step=global_step)
+
+
+class EffectiveCMonitor(MetricMonitor):
+    def __init__(
+        self, writer: SummaryWriter, position_scale: float, time_scale: float, name_prefix="validation_metrics"
+    ):
+        self.writer = writer
+        self.name_prefix = name_prefix
+        self.position_scale = position_scale
+        self.time_scale = time_scale
+
+    def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
+        self.c_av = predict["c_av"].detach().item() * self.position_scale / self.time_scale
+        self.c_water = predict["c_water"].detach().item() * self.position_scale / self.time_scale
+
+    def reset(self) -> None:
+        pass
+
+    def compute(self, global_step: int) -> None:
+        self.writer.add_scalar(f"{self.name_prefix}/c_av", self.c_av, global_step=global_step)
+        self.writer.add_scalar(f"{self.name_prefix}/c_water", self.c_water, global_step=global_step)
