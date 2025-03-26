@@ -3,8 +3,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import h5py
-import jsonargparse
 import torch
 
 
@@ -87,14 +85,3 @@ def get_best_ckpt(checkpoint_dir: str | Path) -> Path:
         )
 
     return best_ckpt
-
-
-def write_config_to_h5(h5_group: h5py.Group, config_obj: dict):
-    for key, item in config_obj.items():
-        if isinstance(item, dict):
-            sub_group = h5_group.create_group(key)
-            write_config_to_h5(sub_group, item)
-        elif isinstance(item, jsonargparse.Path):
-            item = str(item)
-        elif item is not None:
-            h5_group.attrs[key] = item

@@ -1,6 +1,5 @@
 #!/usr/bin/env -S python3 -u
 
-import importlib
 import subprocess
 import tempfile
 from datetime import datetime
@@ -20,22 +19,8 @@ from torch.utils.tensorboard import SummaryWriter
 from src.loops import test, train
 from src.metrics.metric_monitor import MonitorCollection
 from src.metrics.metrics import Metric
+from src.utils.config_parse import check_instantiate_keys, get_class
 from src.utils.train import get_best_ckpt
-
-
-def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
-    if "class_path" not in cfg_obj:
-        raise KeyError(f"'class_path' not found in {object_name} config object")
-
-
-def get_class(class_path: str) -> type:
-    if "." in class_path:
-        module_path, class_str = class_path.rsplit(".", maxsplit=1)
-        module = importlib.import_module(module_path)
-    else:
-        module = importlib.import_module(__name__)
-
-    return getattr(module, class_str)
 
 
 def initialize_norm_dict(model_cfg: dict):
