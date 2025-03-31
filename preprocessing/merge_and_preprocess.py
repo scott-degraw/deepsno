@@ -80,6 +80,12 @@ def preprocess_hit_time(dset: np.ndarray, pmt_id_dset: np.ndarray, min_hit_time:
     pmt_id_dset[selector] = 0
 
 
+def preprocess_qhs(dset: np.ndarray, pmt_id_dset: np.ndarray, min_qhs: float, max_qhs: float):
+    selector = (dset > max_qhs) | (dset < min_qhs)
+    dset[selector] = 0.0
+    pmt_id_dset[selector] = 0
+
+
 def merge_h5(
     input_paths: List[str],
     output_path: str,
@@ -162,6 +168,8 @@ def merge_and_preprocess(
     pmt_info_idents: Tuple[str],
     min_hit_time: float,
     max_hit_time: float,
+    min_qhs: float,
+    max_qhs: float,
     group_and_attrs: Tuple[GroupAndAttr],
     per_event_group_and_attrs: Tuple[GroupAndAttr],
 ):
@@ -213,17 +221,23 @@ def merge_and_preprocess(
                     attr = np.broadcast_to(attr, (n_events, *attr.shape))
                     merged_h5[group_and_attr.dest_group][start_row : start_row + n_events] = attr
 
+                pmt_id_dset = input_h5[pmt_id_ident][:]
                 for dset_ident in dset_idents:
                     dset = input_h5[dset_ident][:]
-                    pmt_id_dset = input_h5[pmt_id_ident][:]
 
                     if dset_ident == "cal_pmt_events/hit_times":
                         preprocess_hit_time(
                             dset, pmt_id_dset=pmt_id_dset, min_hit_time=min_hit_time, max_hit_time=max_hit_time
                         )
+                    
+                    if dset_ident == "cal_pmt_events/QHS":
+                        preprocess_qhs(
+                            dset, pmt_id_dset=pmt_id_dset, min_qhs=min_qhs, max_qhs=max_qhs
+                        )
 
                     merged_h5[dset_ident][start_row : start_row + dset.shape[0]] = dset
-                    merged_h5[pmt_id_ident][start_row : start_row + dset.shape[0]] = pmt_id_dset
+
+                merged_h5[pmt_id_ident][start_row : start_row + dset.shape[0]] = pmt_id_dset
 
                 start_row += dset.shape[0]
 
@@ -253,6 +267,8 @@ def main(
     train_test_split: float,
     min_hit_time: float,
     max_hit_time: float,
+    min_qhs: float,
+    max_qhs: float,
     positions: List[str] = ["x", "y", "z"],
     block_size: int = 100_000,
     n_blocks: int = None,
@@ -321,6 +337,8 @@ def main(
         pmt_info_idents=pmt_info_identifiers,
         min_hit_time=min_hit_time,
         max_hit_time=max_hit_time,
+        min_qhs=min_qhs,
+        max_qhs=max_qhs,
         group_and_attrs=group_and_attrs,
         per_event_group_and_attrs=per_event_group_and_attrs,
     )
@@ -350,6 +368,8 @@ def main(
         pmt_info_idents=pmt_info_identifiers,
         min_hit_time=min_hit_time,
         max_hit_time=max_hit_time,
+        min_qhs=min_qhs,
+        max_qhs=max_qhs,
         group_and_attrs=group_and_attrs,
         per_event_group_and_attrs=per_event_group_and_attrs,
     )

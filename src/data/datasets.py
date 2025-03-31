@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import Hashable
-from warnings import warn
 
 import h5py
 import numpy as np
@@ -14,11 +13,9 @@ class PositionRecoDataset(Dataset):
         path: str | Path,
         context_len: int,
         cut_index_file: str | Path | None = None,
-        min_hit_time: float | None = None,
-        max_hit_time: float | None = None,
-        delays_file: str | Path = None,
         positions: list[str] = ["x", "y", "z"],
         trigger_offset: float = 0,
+        qhs: bool = False,
         seed=74819,
     ):
         super().__init__()
@@ -29,17 +26,12 @@ class PositionRecoDataset(Dataset):
         self.positions: list = positions
 
         self._hit_times_dset: h5py.Dataset = self._h5_file["cal_pmt_events/hit_times"]
+        if qhs and "cal_pmt_events/QHS" in self._h5_file:
+            self._qhs_dset: h5py.Dataset = self._h5_file["cal_pmt_events/QHS"]
+        else:
+            self._qhs_dset = None
         self._times_of_flight_dset = self._h5_file["cal_pmt_events/times_of_flight"]
         self.n_events = self._hit_times_dset.shape[0]
-        n_pmts = self._h5_file[f"pmt_info/position/{positions[0]}"].shape[0]
-
-        if delays_file is not None:
-            self.cable_delays = torch.from_numpy(np.loadtxt(delays_file, dtype=np.float32))
-            assert len(self.cable_delays) == n_pmts, (
-                f"Cable delays from {delays_file} is length {len(self.cable_delays)}, which does not match {n_pmts}"
-            )
-        else:
-            self.cable_delays = None
 
         if "global_trigger_time" in self._h5_file["mc_truth"]:
             self._trigger_time_dset: h5py.Dataset = self._h5_file["mc_truth/global_trigger_time"]
@@ -82,9 +74,6 @@ class PositionRecoDataset(Dataset):
         else:
             self.cut_indices = None
 
-        self.min_hit_time = min_hit_time
-        self.max_hit_time = max_hit_time
-
     def __len__(self) -> int:
         return self.n_events
 
@@ -94,28 +83,30 @@ class PositionRecoDataset(Dataset):
 
         pmt_ids = self._pmt_ids_dset[index]
         hit_times = self._hit_times_dset[index]
+        if self._qhs_dset is not None:
+            qhs = self._qhs_dset[index]
         times_of_flight = self._times_of_flight_dset[index]
-
-        if self.min_hit_time is not None:
-            pmt_ids[hit_times < self.min_hit_time] = 0
-        if self.max_hit_time is not None:
-            pmt_ids[hit_times > self.max_hit_time] = 0
 
         non_zero_pmt_indices = np.nonzero(pmt_ids)[0]
         if len(non_zero_pmt_indices) == 0:
-            warn("Input has no valid PMTs", UserWarning)
+            raise ValueError("Input has no valid PMTs")
 
         if len(non_zero_pmt_indices) > self.context_len:
             pmt_indices = np.sort(self.generator.choice(non_zero_pmt_indices, size=self.context_len, replace=False))
             pmt_ids = pmt_ids[pmt_indices]
             hit_times = hit_times[pmt_indices]
             times_of_flight = times_of_flight[pmt_indices]
+            if self._qhs_dset is not None:
+                qhs = qhs[pmt_indices]
         else:
             pmt_ids = pmt_ids[non_zero_pmt_indices]
             hit_times = hit_times[non_zero_pmt_indices]
             times_of_flight = times_of_flight[non_zero_pmt_indices]
             pmt_ids = np.pad(pmt_ids, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
             hit_times = np.pad(hit_times, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
+            if self._qhs_dset is not None:
+                qhs = qhs[non_zero_pmt_indices]
+                qhs = np.pad(qhs, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
             times_of_flight = np.pad(times_of_flight, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
 
         pmt_ids = torch.from_numpy(pmt_ids).long()
@@ -133,39 +124,18 @@ class PositionRecoDataset(Dataset):
         if self._trigger_time_dset is not None:
             truth["event_times"] = self.trigger_offset - self._trigger_time_dset[index]
 
-        if self.cable_delays is not None:
-            inputs["hit_times"] += self.cable_delays[inputs["pmt_ids"]]
+        if self._qhs_dset is not None:
+            inputs["qhs"] = torch.from_numpy(qhs)
 
         return inputs, truth
 
 
-class CableDelaysPositionRecoDataset(PositionRecoDataset):
-    def __init__(
-        self,
-        path: str | Path,
-        context_len: int,
-        min_hit_time: float | None = None,
-        max_hit_time: float | None = None,
-        delays_file: str | Path = None,
-        cut_index_file: str | Path = None,
-        trigger_offset: float = 0,
-        positions: list[str] = ["x", "y", "z"],
-        seed=74819,
-    ):
-        super().__init__(
-            path=path,
-            context_len=context_len,
-            min_hit_time=min_hit_time,
-            max_hit_time=max_hit_time,
-            delays_file=delays_file,
-            cut_index_file=cut_index_file,
-            trigger_offset=trigger_offset,
-            positions=positions,
-            seed=seed,
-        )
+class HitTimeAEDataset(PositionRecoDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-        n_pmts = self._h5_file[f"pmt_info/position/{positions[0]}"].shape[0]
-        self._pmt_positions = torch.zeros((n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
+        self.n_pmts = self._h5_file[f"pmt_info/position/{self.positions[0]}"].shape[0]
+        self._pmt_positions = torch.zeros((self.n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
         for i, c in enumerate(self.positions):
             self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
             self._pmt_positions[0, i] = 0.0
@@ -188,5 +158,69 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
 
         if self._av_offset_dset is not None:
             inputs["av_offset"] = self._av_offset_dset[index]
+
+        return inputs, truth
+
+
+class CableDelayDataset(HitTimeAEDataset):
+    def __init__(self, delays_file: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if delays_file is not None:
+            self.cable_delays = torch.from_numpy(np.loadtxt(delays_file, dtype=np.float32))
+            assert len(self.cable_delays) == self.n_pmts, (
+                f"Cable delays from {delays_file} is length {len(self.cable_delays)}, "
+                "which does not match {self.n_pmts}"
+            )
+        else:
+            self.cable_delays = None
+
+    def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
+        inputs, truth = super().__getitem__(index)
+
+        if self.cable_delays is not None:
+            inputs["uncal_hit_times"] += self.cable_delays[inputs["pmt_ids"]]
+
+        return inputs, truth
+
+
+class TimeWalkDataset(HitTimeAEDataset):
+    def __init__(
+        self,
+        a_mean: float = 0.0,
+        a_std: float = 3.0,
+        b_mean: float = 0.0,
+        b_std: float = 2.0,
+        c_mean: float = 50,
+        c_std: float = 10,
+        noise: float = 1.5,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+
+        self.add_noise = True
+
+        self.a = torch.from_numpy(self.generator.normal(a_mean, a_std, self.n_pmts))
+        self.b = torch.from_numpy(self.generator.normal(b_mean, b_std, self.n_pmts))
+        self.c = torch.from_numpy(self.generator.normal(c_mean, c_std, self.n_pmts))
+
+        self.a[0] = 0.0
+        self.b[0] = 0.0
+
+        self.noise = noise
+
+    def time_walk(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor):
+        times = self.a[pmt_ids] + self.b[pmt_ids] * torch.exp(-qhs / self.c[pmt_ids])
+
+        if self.add_noise:
+            times += torch.from_numpy(self.generator.normal(0, self.noise, times.shape))
+
+        return times
+
+    def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
+        inputs, truth = super().__getitem__(index)
+
+        inputs["uncal_hit_times"] += self.time_walk(pmt_ids=inputs["pmt_ids"], qhs=inputs["qhs"])
 
         return inputs, truth

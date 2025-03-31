@@ -24,10 +24,31 @@ class HitTimeAutoEncoderNorm(dict):
             self["position_rmsd"] = np.sqrt(np.mean(np.square(position_rmsds))).item()
 
 
+class ExpTimeWalk(nn.Module):
+    def __init__(self, n_pmts: int, a_init: float = 0.0, b_init: float = 1.0, c_init: float = 1.0):
+        super().__init__()
+        self.register_parameter("a", nn.Parameter(torch.full((n_pmts,), a_init)))
+        self.register_parameter("b", nn.Parameter(torch.full((n_pmts,), b_init)))
+        self.register_parameter("c", nn.Parameter(torch.full((n_pmts,), c_init)))
+
+    def forward(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor) -> torch.Tensor:
+        return self.a[pmt_ids] + self.b[pmt_ids] * torch.exp(-qhs / self.c[pmt_ids])
+
+
+class CableDelayTimeWalk(nn.Module):
+    def __init__(self, n_pmts: int, delay_init: float = 0.0):
+        super().__init__()
+        self.register_parameter("cable_delays", nn.Parameter(torch.full((n_pmts,), delay_init)))
+
+    def forward(self, pmt_ids: torch.LongTensor) -> torch.Tensor:
+        return self.cable_delays[pmt_ids]
+
+
 class HitTimeAutoEncoder(nn.Module):
     def __init__(
         self,
         position_reconstructor: nn.Module,
+        time_walk: nn.Module,
         n_pmts: int,
         c_av: float,
         c_water: float,
@@ -40,6 +61,7 @@ class HitTimeAutoEncoder(nn.Module):
         super().__init__()
 
         self.add_module("position_reconstructor", position_reconstructor)
+        self.add_module("time_walk", time_walk)
 
         if position_reconstructor_state_dict_path is not None:
             state_dict_path = Path(position_reconstructor_state_dict_path)
@@ -81,6 +103,10 @@ class HitTimeAutoEncoder(nn.Module):
                 output_unnorm=False,
             )
 
+            if "qhs_mean" in norm_dict:
+                self.register_buffer("qhs_mean", copy_if_tensor(norm_dict["qhs_mean"]))
+                self.register_buffer("qhs_rmsd", copy_if_tensor(norm_dict["qhs_rmsd"]))
+
             self.input_norm = True
             self.output_unnorm = False
         else:
@@ -94,8 +120,6 @@ class HitTimeAutoEncoder(nn.Module):
 
         self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
 
-        self.register_parameter("cable_delays", nn.Parameter(torch.zeros(n_pmts)))
-
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.position_normalize(positions)
 
@@ -107,6 +131,12 @@ class HitTimeAutoEncoder(nn.Module):
 
     def hit_time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
         return hit_times * self.hit_time_rmsd + self.hit_time_mean
+
+    def qhs_normalize(self, qhs: torch.FloatTensor) -> torch.FloatTensor:
+        return (qhs - self.qhs_mean) / self.qhs_rmsd
+
+    def qhs_unnormalize(self, qhs: torch.FloatTensor) -> torch.FloatTensor:
+        return qhs * self.qhs_rmsd + self.qhs_mean
 
     def output_unnormalize(self, x: dict) -> dict:
         return {
@@ -161,6 +191,7 @@ class HitTimeAutoEncoder(nn.Module):
         pmt_ids: torch.IntTensor,
         pmt_positions: torch.FloatTensor,
         av_offset: torch.FloatTensor | None = None,
+        qhs: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
         self.position_reconstructor.input_norm = self.input_norm
 
@@ -183,7 +214,11 @@ class HitTimeAutoEncoder(nn.Module):
             pmt_positions=pmt_positions,
             av_offset=av_offset,
         )
-        times_of_flight = times_of_flight + self.cable_delays[pmt_ids]
+        if qhs is None:
+            times_of_flight = times_of_flight + self.time_walk(pmt_ids=pmt_ids)
+        else:
+            qhs = self.qhs_normalize(qhs)
+            times_of_flight = times_of_flight + self.time_walk(pmt_ids=pmt_ids, qhs=qhs)
 
         if "times" in predict:
             times_of_flight = times_of_flight + predict_times.unsqueeze(-1)
