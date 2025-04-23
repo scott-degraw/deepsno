@@ -10,6 +10,10 @@
 #include <system_error>
 #include <vector>
 #include <limits>
+#include <memory>
+#include <TEntryList.h>
+#include <TFile.h>
+#include <TCut.h>
 
 namespace fs = std::filesystem;
 
@@ -57,17 +61,23 @@ void test_vector() {
     std::cout << x << "\n";
 }
 
-void ratds_extract(std::string input_filename, std::string output_filename, std::size_t context_window, 
-        std::size_t max_triggers = 1) {
+void check_file(fs::path path) {
+    if (fs::is_directory(path)) {
+        throw std::runtime_error("Path: " + path.string() + " is a directory");
+        
+    } else if (!fs::exists(path)) {
+        throw std::runtime_error("File: " + path.string() + " is not found");
+    }
+
+}
+
+void ratds_extract(std::string input_filename, std::string output_filename, std::size_t context_window,
+        std::string filter = "", bool eca_cal = false, std::size_t max_triggers = 1) {
     std::cout << "Extracting data from " << input_filename << " into " << output_filename << "\n";
 
     fs::path path(input_filename);
 
-    if (fs::is_directory(path)) {
-        std::cerr << "Error: " << path << " is a directory." << "\n";
-    } else if (!fs::exists(path)) {
-        std::cerr << "Error: " << path << " not found." << "\n";
-    }
+    check_file(path);
 
     HF::File h5_file(output_filename, HF::File::ReadWrite | HF::File::Create | HF::File::Truncate);
 
@@ -119,8 +129,40 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
     std::size_t n_entries = dsreader.GetEntryCount();
 
+    // Perform the cuts from the ntuple
+
+    std::size_t n_selected = n_entries;
+    std::vector<std::size_t> entry_indices;
+
+    if (filter != "") {
+        std::cout << "Applying filter: " << filter << '\n';
+        fs::path ntuple_path(path);
+        ntuple_path.replace_extension(".ntuple.root");
+        if (!fs::exists(ntuple_path)) {
+            throw std::runtime_error("A filter was given but there is no corresponding ntuple to " + path.string());
+        }
+        TFile* ntuple_file = TFile::Open(ntuple_path.c_str(), "READ");
+        TTree* ntuple = (TTree*)ntuple_file->Get("output;1");   
+
+        ntuple->Draw(">>entry_list", filter.c_str(), "entrylist");
+        TEntryList * entry_list = (TEntryList*) gDirectory->Get("entry_list");
+
+        n_selected = entry_list->GetN();
+        std::cout << "Selected " << n_selected << " events out of " << n_entries << "\n";
+
+        entry_indices.resize(n_selected);
+        for (std::size_t i = 0; i < n_selected; i++) {
+            entry_indices[i] = entry_list->Next();
+        }
+
+        ntuple_file->Close();
+    } else {
+        entry_indices.resize(n_selected);
+        std::iota(entry_indices.begin(), entry_indices.end(), 0);
+    }
+
     std::size_t all_evs = 0;
-    for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
+    for (std::size_t i_entry : entry_indices) {
         const RAT::DS::Entry &entry = dsreader.GetEntry(i_entry);
         std::size_t n_evs = std::min(max_triggers, entry.GetEVCount());
         all_evs += n_evs;
@@ -141,11 +183,12 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
     Vector2D<Float_t> cal_qhs(all_evs, context_window, 0);
     Vector2D<Float_t> mc_times_of_flight(all_evs, context_window, 0);
     Vector2D<Float_t> mc_hit_times(all_evs, context_window, 0);
+    Vector2D<Float_t> eca_pmt_times(all_evs, context_window, 0);
 
     std::size_t fPSUPSystemId = RAT::DU::Point3D::GetSystemId("innerPMT");
 
     std::size_t evs_counter = 0;
-    for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
+    for (std::size_t i_entry : entry_indices) {
         const RAT::DS::Entry &entry = dsreader.GetEntry(i_entry);
         std::size_t n_evs = std::min(max_triggers, entry.GetEVCount());
         for (std::size_t i_evs = 0; i_evs < n_evs; i_evs++) {
@@ -165,9 +208,15 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
             const RAT::DS::EV &ev = entry.GetEV(i_evs);
             const RAT::DS::CalPMTs &cal_pmts = ev.GetCalPMTs();
-            const RAT::DS::MCHits *mc_hits = nullptr;
+            RAT::DS::MCHits const * mc_hits = nullptr;
+            RAT::DS::CalPMTs const * partial_cal_pmts = nullptr;
+
             if (is_mc) 
                 mc_hits = &entry.GetMCEV(i_evs).GetMCHits();
+            if (eca_cal) {
+                // 1 corresponds to the ECA calibrated PMTs
+                partial_cal_pmts = &ev.GetPartialCalPMTs(1);
+            }
 
             std::size_t n_cal_pmts = std::min(cal_pmts.GetCount(), context_window);
             for (std::size_t i_pmt = 0; i_pmt < n_cal_pmts; i_pmt++) {
@@ -186,6 +235,10 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
                     
                     const RAT::DS::MCHit &mc_hit = mc_hits->GetPMT(i_pmt);
                     mc_hit_times(evs_counter, i_pmt) = static_cast<Float_t>(mc_hit.GetTime());
+                }
+                if (eca_cal) {
+                    const RAT::DS::PMTCal &eca_cal_pmt = partial_cal_pmts->GetPMT(i_pmt);
+                    eca_pmt_times(evs_counter, i_pmt) = eca_cal_pmt.GetTime();
                 }
             }
             evs_counter++;
@@ -212,7 +265,7 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
     cal_pmt_times_dset.write_raw(cal_pmt_times.data());
     auto cal_pmt_ids_dset = cal_pmt_events_group.createDataSet<UInt_t>("ids", cal_pmt_dataspace);
     cal_pmt_ids_dset.write_raw(cal_pmt_ids.data());
-    auto cal_qhs_dset = cal_pmt_events_group.createDataSet<Float_t>("QHS", cal_pmt_dataspace);
+    auto cal_qhs_dset = cal_pmt_events_group.createDataSet<Float_t>("qhs", cal_pmt_dataspace);
     cal_qhs_dset.write_raw(cal_qhs.data());
     if (is_mc) {
         auto mc_tof_dset = cal_pmt_events_group.createDataSet<Float_t>("times_of_flight", cal_pmt_dataspace);
@@ -220,5 +273,11 @@ void ratds_extract(std::string input_filename, std::string output_filename, std:
 
         auto mc_hit_times_dset = cal_pmt_events_group.createDataSet<Float_t>("mc_hit_times", cal_pmt_dataspace);
         mc_hit_times_dset.write_raw(mc_hit_times.data());
+    }
+
+    auto eca_pmt_events_group = h5_file.createGroup("eca_pmt_events");
+    if (eca_cal) {
+        auto eca_pmt_times_dset = eca_pmt_events_group .createDataSet<Float_t>("hit_times", cal_pmt_dataspace);
+        eca_pmt_times_dset.write_raw(eca_pmt_times.data());
     }
 }
