@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from src.utils.train import copy_if_tensor
+from deepsno.utils.train import copy_if_tensor
 
 
 class PositionRecoNorm(dict):

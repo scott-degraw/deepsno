@@ -3,7 +3,7 @@ import time
 from torch import cuda
 from torch.utils.tensorboard import SummaryWriter
 
-from src.utils.train import convert_time_units
+from deepsno.utils.train import convert_time_units
 
 
 class LoopProfiler:

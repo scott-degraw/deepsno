@@ -16,11 +16,11 @@ from torch import nn, optim
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from src.loops import test, train
-from src.metrics.metric_monitor import MonitorCollection
-from src.metrics.metrics import Metric
-from src.utils.config_parse import check_instantiate_keys, get_class
-from src.utils.train import get_best_ckpt
+from deepsno.loops import test, train
+from deepsno.metrics.metric_monitor import MonitorCollection
+from deepsno.metrics.metrics import Metric
+from deepsno.utils.config_parse import check_instantiate_keys, get_class
+from deepsno.utils.train import get_best_ckpt
 
 
 def initialize_norm_dict(model_cfg: dict):

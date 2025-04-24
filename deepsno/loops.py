@@ -7,9 +7,9 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from src.metrics.metric_monitor import MetricMonitor
-from src.utils.profiling import LoopProfiler
-from src.utils.train import convert_byte_units
+from deepsno.metrics.metric_monitor import MetricMonitor
+from deepsno.utils.profiling import LoopProfiler
+from deepsno.utils.train import convert_byte_units
 
 
 @torch.inference_mode()
