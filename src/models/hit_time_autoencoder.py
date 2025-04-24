@@ -199,7 +199,12 @@ class HitTimeAutoEncoder(nn.Module):
         if av_offset is not None:
             av_offset = self.position_normalize(av_offset)
 
-        predict = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
+        if qhs is not None:
+            cal_hit_times = uncal_hit_times - self.time_walk(pmt_ids=pmt_ids, qhs=qhs)
+            predict = self.position_reconstructor(hit_times=cal_hit_times, pmt_ids=pmt_ids)
+        else:
+            predict = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
+
         predict_positions = predict["positions"]
         if "times" in predict:
             predict_times = predict["times"]
