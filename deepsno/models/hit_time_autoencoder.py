@@ -169,17 +169,18 @@ class HitTimeAutoEncoder(nn.Module):
 
         # Use line sphere intersection calculations (https://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection)
         event_pos_projection = torch.sum(norm_event_2_pmt_vec * event_positions, dim=-1)
-        discriminant = event_pos_projection**2 - event_positions.square().sum(-1) + self.av_radius**2
-
-        dist_av = torch.zeros(pmt_positions.shape[:-1], device=pmt_positions.device)
+        discriminant = event_pos_projection.square() - event_positions.square().sum(-1) + self.av_radius.square()
 
         line_passes_av = discriminant > 0
         event_radius = torch.linalg.vector_norm(event_positions, dim=-1)
         event_inside_av = line_passes_av * (event_radius < self.av_radius)
         event_outside_av = line_passes_av * (event_radius >= self.av_radius)
 
-        dist_av[event_inside_av] = -event_pos_projection[event_inside_av] + torch.sqrt(discriminant[event_inside_av])
-        dist_av[event_outside_av] = 2 * torch.sqrt(discriminant[event_outside_av])
+        sqrt_discriminant = torch.sqrt(nn.functional.relu(discriminant))
+
+        dist_av = torch.zeros(pmt_positions.shape[:-1], device=pmt_positions.device)
+        dist_av = dist_av + torch.where(event_inside_av, -event_pos_projection + sqrt_discriminant, 0)
+        dist_av = dist_av + torch.where(event_outside_av, 2 * sqrt_discriminant, 0)
 
         dist_water = dist_event_2_pmt - dist_av
 
