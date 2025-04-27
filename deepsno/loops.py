@@ -197,7 +197,7 @@ def train(
             profiler.start("loss_calc")
             loss = loss_fn(predict, truth)
             profiler.stop("loss_calc")
-            writer.add_scalar("Loss/train", loss.item(), step_num, new_style=True)
+            writer.add_scalar("Loss/train", loss.detach().item(), step_num, new_style=True)
 
             profiler.start("backward_pass")
             loss.backward()
