@@ -103,8 +103,7 @@ class PositionReco(nn.Module):
             encoder_layer, num_layers=num_layers, enable_nested_tensor=False
         )
 
-        pmt_id_embeddings = nn.Linear(n_pmts, d_model, bias=False).weight.T.contiguous()
-        self.register_parameter("pmt_id_embeddings", nn.Parameter(pmt_id_embeddings))
+        pmt_id_embeddings = nn.Embedding(n_pmts, d_model)
 
         self.hit_time_embedder = nn.Sequential(
             nn.Linear(1, hit_time_embedding_dim),
@@ -131,7 +130,7 @@ class PositionReco(nn.Module):
 
         pmt_masks = pmt_ids == 0
 
-        x = self.pmt_id_embeddings[pmt_ids] + self.hit_time_embedder(hit_times.unsqueeze(-1))
+        x = self.pmt_id_embeddings(pmt_ids) + self.hit_time_embedder(hit_times.unsqueeze(-1))
 
         x = self.transformer_encoder(x, src_key_padding_mask=pmt_masks)
 
