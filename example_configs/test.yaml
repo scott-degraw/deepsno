@@ -3,7 +3,7 @@ train:
     checkpoint_dir: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/
     device: &device cuda 
     dataset: 
-        class_path: &dataset_class_path src.data.datasets.PositionRecoDataset
+        class_path: &dataset_class_path deepsno.data.datasets.PositionRecoDataset
         init_args: 
             path: &train_path /data/snoplus3/degraw/uniform_electron_energy/train_dset.h5 
 
@@ -30,7 +30,7 @@ train:
             # total_steps: 3000 # this did well
 
     val_loss_fn:
-        class_path: src.metrics.position_reco.ResolutionLoss
+        class_path: deepsno.metrics.position_reco.ResolutionLoss
     val_loss_is_inverted: false
     val_num_steps: 200
 
@@ -51,7 +51,7 @@ predict:
 
 # TODO: Need to put in context window size somewhere. Maybe in h5 files.
 model: 
-    class_path: src.models.position_reco.PositionReco
+    class_path: deepsno.models.position_reco.PositionReco
     init_args:
         n_pmts: 9728 
         d_model: &d_model 64
@@ -61,6 +61,6 @@ model:
         dropout: 0.1
         hit_time_embedding_dim: 512
         norm_dict:
-            class_path: src.models.position_reco.PositionRecoNorm
+            class_path: deepsno.models.position_reco.PositionRecoNorm
             init_args: 
                 train_file: *train_path

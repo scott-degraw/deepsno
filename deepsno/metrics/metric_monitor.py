@@ -8,7 +8,7 @@ import torch
 from torch.utils import _pytree as pytree
 from torch.utils.tensorboard import SummaryWriter
 
-from src.metrics.eval import fwhm
+from deepsno.metrics.eval import fwhm
 
 
 class MetricMonitor(ABC):

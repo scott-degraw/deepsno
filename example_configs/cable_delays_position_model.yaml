@@ -1,13 +1,13 @@
 model: 
-    class_path: src.models.hit_time_autoencoder.PositionRecoFromHitTimeAutoEncoder
+    class_path: deepsno.models.hit_time_autoencoder.PositionRecoFromHitTimeAutoEncoder
     init_args:
         n_pmts: &n_pmts 9728
         norm_dict:
-            class_path: src.models.hit_time_autoencoder.HitTimeAutoEncoderNorm
+            class_path: deepsno.models.hit_time_autoencoder.HitTimeAutoEncoderNorm
             init_args: 
                 train_file: &train_path /data/snoplus3/degraw/uniform_electron_energy/train_dset.h5 
         position_reconstructor:
-            class_path: src.models.position_reco.PositionReco
+            class_path: deepsno.models.position_reco.PositionReco
             init_args:
                 n_pmts: *n_pmts 
                 d_model: &d_model 64
@@ -23,7 +23,7 @@ predict:
     output_file: /data/snoplus3/degraw/uniform_electron_energy/cable_delays_checkpoints/2024-12-18_22-14-47/test_result.h5
     device: cuda
     dataset: 
-        class_path: src.data.datasets.PositionRecoDataset
+        class_path: deepsno.data.datasets.PositionRecoDataset
         init_args:
             path: /data/snoplus3/degraw/uniform_electron_energy/test_dset.h5
     

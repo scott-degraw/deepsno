@@ -1,14 +1,14 @@
 # TODO: Need to put in context window size somewhere. Maybe in h5 files.
 model: 
-    class_path: src.models.hit_time_autoencoder.HitTimeAutoEncoder
+    class_path: deepsno.models.hit_time_autoencoder.HitTimeAutoEncoder
     init_args:
         n_pmts: &n_pmts 9728
         norm_dict:
-            class_path: src.models.hit_time_autoencoder.HitTimeAutoEncoderNorm
+            class_path: deepsno.models.hit_time_autoencoder.HitTimeAutoEncoderNorm
             init_args: 
                 train_file: &train_path /data/snoplus3/degraw/uniform_electron_energy/train_dset.h5 
         position_reconstructor:
-            class_path: src.models.position_reco.PositionReco
+            class_path: deepsno.models.position_reco.PositionReco
             init_args:
                 n_pmts: *n_pmts 
                 d_model: &d_model 64
@@ -22,7 +22,7 @@ train:
     checkpoint_dir: /data/snoplus3/degraw/uniform_electron_energy/cable_delays_checkpoints/
     device: &device cuda 
     dataset: 
-        class_path: &dataset_class_path src.data.datasets.CableDelaysPositionRecoDataset
+        class_path: &dataset_class_path deepsno.data.datasets.CableDelaysPositionRecoDataset
         init_args: 
             path: *train_path
             std_delay: 3
@@ -44,7 +44,7 @@ train:
             betas: [0.9, 0.98]
             eps: 1e-9
     loss_fn:
-        class_path: &train_loss_fn src.metrics.hit_time_autoencoder.VarianceLoss 
+        class_path: &train_loss_fn deepsno.metrics.hit_time_autoencoder.VarianceLoss 
     scheduler: 
         class_path: torch.optim.lr_scheduler.OneCycleLR
         init_args: 
