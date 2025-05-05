@@ -2,6 +2,7 @@ from pathlib import Path
 
 import h5py
 import torch
+import tqdm
 from torch import nn
 from torch.utils import _pytree as pytree
 from torch.utils import data
@@ -10,6 +11,12 @@ from torch.utils.tensorboard import SummaryWriter
 from deepsno.metrics.metric_monitor import MetricMonitor
 from deepsno.utils.profiling import LoopProfiler
 from deepsno.utils.train import convert_byte_units
+
+TQDM_KWARGS = {
+    "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar:80}]{r_bar}",
+    "ascii": " =",
+    "unit": "batch",
+}
 
 
 @torch.inference_mode()
@@ -38,11 +45,8 @@ def test(
 
     predict_dset = group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
 
-    num_batches = (dataset_len - 1) // batch_size + 1
-
     start_row = 0
-    for batch_num, (inputs, truth) in enumerate(dataloader):
-        print(f"Batch: {batch_num + 1}/{num_batches}")
+    for inputs, truth in tqdm.tqdm(dataloader, desc="Test", **TQDM_KWARGS):
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
         predicts = model(**inputs)
         if predict_key is not None:
@@ -76,9 +80,8 @@ def validate(
         metric_monitor.reset()
 
     metric.reset()
-    print("Validating")
-    for batch_num, (inputs, truth) in enumerate(dataloader):
-        print(f"Validation batch: {batch_num + 1}/{len(dataloader)}")
+
+    for inputs, truth in tqdm.tqdm(dataloader, desc="Validation", leave=False, **TQDM_KWARGS):
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
         truth = pytree.tree_map(lambda x: x.to(device), truth)
 
@@ -156,106 +159,106 @@ def train(
             new_style=True,
         )
 
-    step_num = 0
     sub_epoch = 0
     stop_training = False
-    for epoch_num in range(num_epochs):
-        profiler.start("step_total")
-        profiler.start("train_data_load")
-        for batch_num, (inputs, truth) in enumerate(train_dataloader):
-            profiler.stop("train_data_load")
-
-            if num_steps is not None and step_num == num_steps:
-                stop_training = True
+    step_num = 0
+    with tqdm.tqdm(desc="Train", total=num_steps, **TQDM_KWARGS) as progress_bar:
+        for _ in range(num_epochs):
+            if stop_training:
                 break
 
-            print(f"Epoch: {epoch_num + 1}, Training batch: {batch_num + 1}/{len(train_dataloader)}")
-
-            if "cuda" in device.type:
-                writer.add_scalar(
-                    "GPU/memory_allocated-MiB",
-                    convert_byte_units(torch.cuda.max_memory_reserved(), memory_unit),
-                    step_num,
-                    new_style=True,
-                )
-                torch.cuda.reset_peak_memory_stats()
-
-            optimizer.zero_grad()
-
-            profiler.start("data_to_device")
-            inputs = pytree.tree_map(lambda x: x.to(device), inputs)
-            truth = pytree.tree_map(lambda x: x.to(device), truth)
-            profiler.stop("data_to_device")
-
-            if not model.output_unnorm:
-                truth = model.output_normalize(truth)
-
-            profiler.start("forward_pass")
-            predict = model(**inputs)
-            profiler.stop("forward_pass")
-
-            profiler.start("loss_calc")
-            loss = loss_fn(predict, truth)
-            profiler.stop("loss_calc")
-            writer.add_scalar("Loss/train", loss.detach().item(), step_num, new_style=True)
-
-            profiler.start("backward_pass")
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
-            optimizer.step()
-            profiler.stop("backward_pass")
-
-            if scheduler is not None:
-                scheduler.step()
-                writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], step_num, new_style=True)
-
-            profiler.stop("step_total")
-
-            step_num += 1
-
-            if step_num % val_num_steps == 0:
-                del inputs, truth, predict, loss
-                profiler.start("validation")
-                val_loss = validate(
-                    val_dataloader,
-                    device=device,
-                    model=model,
-                    metric=val_metric,
-                    global_step=step_num,
-                    metric_monitor=metric_monitor,
-                    val_norm=val_norm,
-                )
-                profiler.stop("validation")
-
-                model.train()
-                model.output_unnorm = train_unnorm
-
-                writer.add_scalar("Loss/val", val_loss, step_num, new_style=True)
-
-                if val_metric_is_inverted:
-                    val_loss = -val_loss
-
-                profiler.start("model_save")
-                state_dict = {
-                    "sub_epoch": sub_epoch,
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                }
-
-                state_dict["scheduler"] = None if scheduler is None else scheduler.state_dict()
-
-                filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
-
-                torch.save(state_dict, checkpoint_dir / filename)
-                profiler.stop("model_save")
-
-                sub_epoch += 1
-
-            profiler.log_all(step_num)
             profiler.start("step_total")
             profiler.start("train_data_load")
+            for inputs, truth in train_dataloader:
+                progress_bar.update()
+                profiler.stop("train_data_load")
 
-        if stop_training:
-            break
+                if num_steps is not None and step_num == num_steps:
+                    stop_training = True
+                    break
+
+                if "cuda" in device.type:
+                    writer.add_scalar(
+                        "GPU/memory_allocated-MiB",
+                        convert_byte_units(torch.cuda.max_memory_reserved(), memory_unit),
+                        step_num,
+                        new_style=True,
+                    )
+                    torch.cuda.reset_peak_memory_stats()
+
+                optimizer.zero_grad()
+
+                profiler.start("data_to_device")
+                inputs = pytree.tree_map(lambda x: x.to(device), inputs)
+                truth = pytree.tree_map(lambda x: x.to(device), truth)
+                profiler.stop("data_to_device")
+
+                if not model.output_unnorm:
+                    truth = model.output_normalize(truth)
+
+                profiler.start("forward_pass")
+                predict = model(**inputs)
+                profiler.stop("forward_pass")
+
+                profiler.start("loss_calc")
+                loss = loss_fn(predict, truth)
+                profiler.stop("loss_calc")
+                writer.add_scalar("Loss/train", loss.detach().item(), step_num, new_style=True)
+
+                profiler.start("backward_pass")
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                optimizer.step()
+                profiler.stop("backward_pass")
+
+                if scheduler is not None:
+                    scheduler.step()
+                    writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], step_num, new_style=True)
+
+                profiler.stop("step_total")
+
+                step_num += 1
+
+                if step_num % val_num_steps == 0:
+                    del inputs, truth, predict, loss
+                    profiler.start("validation")
+                    val_loss = validate(
+                        val_dataloader,
+                        device=device,
+                        model=model,
+                        metric=val_metric,
+                        global_step=step_num,
+                        metric_monitor=metric_monitor,
+                        val_norm=val_norm,
+                    )
+                    profiler.stop("validation")
+
+                    model.train()
+                    model.output_unnorm = train_unnorm
+
+                    writer.add_scalar("Loss/val", val_loss, step_num, new_style=True)
+
+                    if val_metric_is_inverted:
+                        val_loss = -val_loss
+
+                    profiler.start("model_save")
+                    state_dict = {
+                        "sub_epoch": sub_epoch,
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                    }
+
+                    state_dict["scheduler"] = None if scheduler is None else scheduler.state_dict()
+
+                    filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
+
+                    torch.save(state_dict, checkpoint_dir / filename)
+                    profiler.stop("model_save")
+
+                    sub_epoch += 1
+
+                profiler.log_all(step_num)
+                profiler.start("step_total")
+                profiler.start("train_data_load")
 
     print("Training completed")
