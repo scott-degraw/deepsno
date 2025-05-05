@@ -116,7 +116,6 @@ if __name__ == "__main__":
     parser = ArgumentParser(prog="app", description="")
     parser.add_argument("-c", "--config", action="config")
     parser.add_argument("--model", type=nn.Module, required=True)
-    parser.add_argument("--compile", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
         "--git_hash", type=str, required=False, help="If given, will check if current repository matches this hash."
@@ -168,7 +167,7 @@ if __name__ == "__main__":
 
     cfg["git_hash"] = git_hash
     # These are the keys for the config that will be used for all subcommands
-    cfg_keys = ["model", "force", "git_hash", "compile"]
+    cfg_keys = ["model", "force", "git_hash"]
 
     if cfg["subcommand"] == "train":
         cfg_keys.append("train")
@@ -205,8 +204,6 @@ if __name__ == "__main__":
         save_cfg: dict = cfg
         cfg: Namespace = parser.instantiate_classes(cfg)
         model: nn.Module = cfg["model"]
-        if cfg["compile"]:
-            model = torch.compile(model)
 
         cfg: Namespace = cfg["train"]
 
@@ -237,6 +234,7 @@ if __name__ == "__main__":
             ckpt_keys = cfg["ckpt_keys"]
             if "model" in ckpt_keys:
                 model.load_state_dict(state_dict["model"], strict=True)
+                model.to(cfg["device"])
             if "optimizer" in ckpt_keys:
                 optimizer.load_state_dict(state_dict["optimizer"])
             if "scheduler" in ckpt_keys:
@@ -333,9 +331,6 @@ if __name__ == "__main__":
         cfg: jsonargparse.Namespace = parser.instantiate_classes(cfg)
 
         model = cfg.model
-
-        if cfg["compile"]:
-            model = torch.compile(model)
 
         ckpt_path: Path = Path(cfg.predict.ckpt)
 
