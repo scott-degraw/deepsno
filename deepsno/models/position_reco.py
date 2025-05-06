@@ -112,8 +112,25 @@ class PositionReco(nn.Module):
         )
 
         self.predict_time = predict_time
-        output_dim: int = 4 if predict_time else 3
-        self.position_predictor = nn.Linear(d_model, output_dim)
+        if predict_time:
+
+            class PosAndTime(nn.Module):
+                # Class that adds a bias to the position prediction but not the time prediction
+                def __init__(self):
+                    super().__init__()
+                    self.linear = nn.Linear(d_model, 4, bias=False)
+                    # Mask is to stop gradients flowing into the time bias value
+                    self.mask = nn.Buffer(torch.tensor([0.0, 1.0, 1.0, 1.0]))
+                    bias = self.mask * nn.Linear(1, 4, bias=True).bias.contiguous()
+                    self.bias = nn.Parameter(bias)
+
+                def forward(self, input: torch.Tensor):
+                    return self.linear(input) + self.mask * self.bias
+
+            self.position_predictor = PosAndTime()
+
+        else:
+            self.position_predictor = nn.Linear(d_model, 3)
 
         if norm_dict is not None:
             if "input_norms" in norm_dict:
