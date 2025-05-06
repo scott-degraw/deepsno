@@ -142,6 +142,7 @@ class PositionReco(nn.Module):
             self.output_unnorm = False
 
     def forward(self, hit_times: torch.FloatTensor, pmt_ids: torch.LongTensor) -> torch.FloatTensor:
+        hit_times = hit_times - torch.median(hit_times, dim=-1, keepdim=True)
         if self.input_norm:
             hit_times = self.input_normalize(hit_times)
 
