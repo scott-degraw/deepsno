@@ -103,7 +103,7 @@ class PositionReco(nn.Module):
             encoder_layer, num_layers=num_layers, enable_nested_tensor=False
         )
 
-        pmt_id_embeddings = nn.Embedding(n_pmts, d_model)
+        self.pmt_id_embeddings = nn.Embedding(n_pmts, d_model)
 
         self.hit_time_embedder = nn.Sequential(
             nn.Linear(1, hit_time_embedding_dim),
