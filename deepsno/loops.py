@@ -148,6 +148,8 @@ def train(
     if num_steps is not None:
         num_epochs = (num_steps - 1) // len(train_dataloader) + 1
 
+    print(f"Performing {num_epochs} epochs through the training dataset", flush=True)
+
     model.to(device)
     model.train()
     model.output_unnorm = train_unnorm
