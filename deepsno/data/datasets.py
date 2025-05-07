@@ -4,7 +4,25 @@ from typing import Hashable
 import h5py
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
+
+
+class BlockedRandomSampler(Sampler[int]):
+    def __init__(self, data_source: Dataset, block_size: int = 10_000):
+        self.data_source = data_source
+        block_indices = torch.arange(0, len(data_source), block_size)
+        block_indices = torch.concat([block_indices, torch.tensor([len(data_source) - 1])])
+        self.ranges = torch.concat([block_indices[:-1].unsqueeze(1), block_indices[1:].unsqueeze(1)], dim=1)
+
+    def __len__(self) -> int:
+        return len(self.data_source)
+
+    def __iter__(self) -> Iterator[int]:
+        for block_num in torch.randperm(self.ranges.shape[0]):
+            block_size = self.ranges[block_num, 1] - self.ranges[block_num, 0]
+            perm_indices = self.ranges[block_num, 0] + torch.randperm(block_size)
+            for index in perm_indices:
+                yield index.item()
 
 
 class PositionRecoDataset(Dataset):

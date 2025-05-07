@@ -16,6 +16,7 @@ from torch import nn, optim
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
+from deepsno.data.datasets import BlockedRandomSampler
 from deepsno.loops import test, train
 from deepsno.metrics.metric_monitor import MonitorCollection
 from deepsno.metrics.metrics import Metric
@@ -254,8 +255,14 @@ if __name__ == "__main__":
 
         train_set, val_set = data.random_split(cfg["dataset"], lengths)
 
+        print(f"Training set size: {len(train_set)}")
+        print(f"Validation set size: {len(val_set)}")
+
         train_dataloader = data.DataLoader(
-            train_set, batch_size=cfg["batch_size"], shuffle=cfg["shuffle"], num_workers=cfg["num_workers"]
+            train_set,
+            batch_size=cfg["batch_size"],
+            num_workers=cfg["num_workers"],
+            sampler=BlockedRandomSampler(train_set),
         )
         val_dataloader = data.DataLoader(
             val_set, batch_size=cfg["val_batch_size"], shuffle=False, num_workers=cfg["num_workers"]
