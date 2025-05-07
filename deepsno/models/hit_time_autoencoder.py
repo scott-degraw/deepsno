@@ -25,14 +25,17 @@ class HitTimeAutoEncoderNorm(dict):
 
 
 class ExpTimeWalk(nn.Module):
-    def __init__(self, n_pmts: int, a_init: float = 0.0, b_init: float = 1.0, c_init: float = 1.0):
+    def __init__(self, n_pmts: int, a_init: float = 0.1, b_init: float = 0.1, c_init: float = 0.0, d_init: float = 0.0):
         super().__init__()
-        self.register_parameter("a", nn.Parameter(torch.full((n_pmts,), a_init)))
-        self.register_parameter("b", nn.Parameter(torch.full((n_pmts,), b_init)))
-        self.register_parameter("c", nn.Parameter(torch.full((n_pmts,), c_init)))
+        self.a = nn.Parameter(torch.full((n_pmts,), a_init))
+        self.b = nn.Parameter(torch.full((n_pmts,), b_init))
+        self.c = nn.Parameter(torch.full((n_pmts,), c_init))
+        self.d = nn.Parameter(torch.full((n_pmts,), d_init))
 
     def forward(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor) -> torch.Tensor:
-        return self.a[pmt_ids] + self.b[pmt_ids] * torch.exp(-qhs / self.c[pmt_ids])
+        b_soft = torch.log(1 + torch.exp(self.b[pmt_ids]))
+        return self.a[pmt_ids] * torch.exp(-qhs / b_soft) + self.c[pmt_ids] * qhs + self.d[pmt_ids]
+        
 
 
 class CableDelayTimeWalk(nn.Module):
