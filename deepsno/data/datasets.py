@@ -125,22 +125,12 @@ class PositionRecoDataset(Dataset):
             if self._qhs_dset is not None:
                 qhs = qhs[non_zero_pmt_indices]
                 qhs = np.pad(qhs, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
-            times_of_flight = np.pad(times_of_flight, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
+        hit_times -= np.median(hit_times)
 
         pmt_ids = torch.from_numpy(pmt_ids).long()
         hit_times = torch.from_numpy(hit_times)
-        times_of_flight = torch.from_numpy(times_of_flight)
-
-        truth_position = np.zeros(len(self.positions), dtype=self.position_numpy_dtype)
-        for i, c in enumerate(self.positions):
-            self._mc_truth_pos_group[c].read_direct(truth_position, index, i)
-        truth_position = torch.from_numpy(truth_position)
 
         inputs = {"hit_times": hit_times, "pmt_ids": pmt_ids}
-        truth = {"positions": truth_position, "times_of_flight": times_of_flight}
-
-        if self._trigger_time_dset is not None:
-            truth["event_times"] = self.trigger_offset - self._trigger_time_dset[index]
 
         if self._qhs_dset is not None:
             inputs["qhs"] = torch.from_numpy(qhs)
