@@ -47,6 +47,7 @@ class CableDelayTimeWalk(nn.Module):
         return self.cable_delays[pmt_ids]
 
 
+@torch.compile(dynamic=False, fullgraph=True)
 class HitTimeAutoEncoder(nn.Module):
     def __init__(
         self,
