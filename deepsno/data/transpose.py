@@ -30,26 +30,14 @@ def count_pmt_ids(id_block: np.ndarray, id_counts: np.ndarray) -> None:
 
 def transpose(
     h5_path: str | Path,
-    save_path: str | Path,
     block_size: int = 1_000_000,
-    dset_keys: Iterable[str] | None = None,
-    exclude_dset_keys: Iterable[str] | None = None,
+    groups: Iterable[str] = ["cal"],
 ):
-    with h5py.File(h5_path, mode="r") as h5_file:
-        id_dset = h5_file["cal_pmt_events/ids"]
-
-        if dset_keys is None:
-            dset_keys = h5_file["cal_pmt_events"].keys()
-
-        if exclude_dset_keys is not None:
-            dset_keys = set(dset_keys) - set(exclude_dset_keys)
-
-        dset_keys = set(dset_keys) - set(["ids"])
-
-        dset_dtypes: list[np.dtype] = [h5_file[f"cal_pmt_events/{dset_key}"].dtype for dset_key in dset_keys]
+    with h5py.File(h5_path, mode="r+") as h5_file:
+        id_dset = h5_file["cal/pmt_ids"]
 
         dset_len = id_dset.shape[0]
-        n_pmts = h5_file["pmt_info/position/x"].shape[0]
+        n_pmts = h5_file["pmt_info/pos"].shape[0]
 
         n_blocks = (dset_len - 1) // block_size + 1
 
@@ -57,38 +45,43 @@ def transpose(
 
         start_row = 0
         for _ in trange(n_blocks, desc="Finding number of events per PMT"):
-            id_block = id_dset[start_row : min(start_row + block_size, dset_len)].ravel()
+            id_block = np.concat(id_dset[start_row : min(start_row + block_size, dset_len)])
             count_pmt_ids(id_block=id_block, id_counts=id_counts)
 
             start_row += block_size
 
         id_counts[0] = 0
 
-        with h5py.File(save_path, mode="w") as output_h5:
-            for dset_key, dset_dtype in zip(dset_keys, dset_dtypes, strict=True):
-                output_h5.create_group(dset_key)
+        transpose_group = h5_file.create_group("transpose")
+        for group in groups:
+            h5_group = h5_file[group]
+            output_h5_group = transpose_group.create_group(group)
+
+            dset_buffers = []
+            for dset_key in h5_group.keys():
+                dset_group = output_h5_group.create_group(dset_key)
+                dset_dtype = h5_group[dset_key][0].dtype
                 for pmt_id in range(n_pmts):
-                    output_h5[dset_key].create_dataset(
+                    dset_group.create_dataset(
                         str(pmt_id),
                         shape=(id_counts[pmt_id],),
                         dtype=dset_dtype,
                     )
-
-            dset_buffers = [np.zeros((n_pmts, block_size), dtype=dset_dtype) for dset_dtype in dset_dtypes]
+                dset_buffers.append(np.zeros((n_pmts, block_size), dtype=dset_dtype))
 
             start_row = 0
             per_id_start_row = np.zeros(n_pmts, dtype=np.int64)
-            for _ in trange(n_blocks, desc="Transposing data"):
-                id_block = id_dset[start_row : min(start_row + block_size, dset_len)].ravel()
-                for dset_key, dset_buffer in zip(dset_keys, dset_buffers, strict=True):
-                    dset_block = h5_file[f"cal_pmt_events/{dset_key}"][start_row : min(start_row + block_size, dset_len)].ravel()
+            for _ in trange(n_blocks, desc=f"Transposing {group}"):
+                id_block = np.concat(id_dset[start_row : min(start_row + block_size, dset_len)])
+                for dset_key, dset_buffer in zip(h5_group.keys(), dset_buffers, strict=True):
+                    dset_block = np.concat(h5_group[dset_key][start_row : min(start_row + block_size, dset_len)])
 
                     per_id_end = transpose_block(id_block=id_block, dset_block=dset_block, dset_buffer=dset_buffer)
 
                     for pmt_id in range(n_pmts):
                         end = per_id_end[pmt_id]
                         start = per_id_start_row[pmt_id]
-                        output_h5[dset_key][str(pmt_id)][start : start + end] = dset_buffer[pmt_id, :end]
+                        output_h5_group[dset_key][str(pmt_id)][start : start + end] = dset_buffer[pmt_id, :end]
 
                 per_id_start_row += per_id_end
                 start_row += block_size

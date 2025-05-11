@@ -60,7 +60,6 @@ class HitTimeAutoEncoder(nn.Module):
         fix_c: bool = False,
         position_reconstructor_state_dict_path: str | Path | None = None,
         norm_dict: dict | None = None,
-        positions: tuple = ["x", "y", "z"],
     ):
         super().__init__()
 

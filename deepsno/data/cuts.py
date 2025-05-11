@@ -27,7 +27,7 @@ def cuts(
 
     h5_file = h5py.File(h5_path)
 
-    id_dset = h5_file["cal_pmt_events/ids"]
+    id_dset = h5_file["cal/pmt_ids"]
     pos_group = h5_file["mc_truth/position"]
     hit_time_dset = h5_file["cal_pmt_events/hit_times"]
     if "cal_pmt_events/av_offset" in h5_file:
@@ -44,10 +44,10 @@ def cuts(
         save_name = save_name + f"_nhits>={min_nhits}"
     if max_nhits is not None:
         save_name = save_name + f"_nhits<={max_nhits}"
-    if min_radius is not None:
-        save_name = save_name + f"_r>={min_radius}"
-    if max_radius is not None:
-        save_name = save_name + f"_r<={max_radius}"
+    # if min_radius is not None:
+    #     save_name = save_name + f"_r>={min_radius}"
+    # if max_radius is not None:
+    #     save_name = save_name + f"_r<={max_radius}"
     if min_hit_time is not None:
         save_name = save_name + f"_hit_time>={min_hit_time}"
     if max_hit_time is not None:
@@ -55,7 +55,7 @@ def cuts(
 
     start_row = 0
 
-    n_blocks = (dset_len - 1) // block_size
+    n_blocks = (dset_len - 1) // block_size + 1
 
     for _ in trange(n_blocks, desc="Block number"):
         block_slice = slice(start_row, min(start_row + block_size, dset_len))

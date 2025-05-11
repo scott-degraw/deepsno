@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Hashable
+from typing import Hashable, Iterator
 
 import h5py
 import numpy as np
@@ -30,67 +30,51 @@ class PositionRecoDataset(Dataset):
         self,
         path: str | Path,
         context_len: int,
+        checkpoint_dir: str | Path = None,
         cut_index_file: str | Path | None = None,
-        positions: list[str] = ["x", "y", "z"],
         trigger_offset: float = 0,
         qhs: bool = False,
         seed=74819,
     ):
         super().__init__()
-        self._path = Path(path)
+        self._path = str(path)
         self.context_len = context_len
-        self._h5_file = h5py.File(path)
-
-        self.positions: list = positions
-
-        self._hit_times_dset: h5py.Dataset = self._h5_file["cal_pmt_events/hit_times"]
-        if qhs and "cal_pmt_events/QHS" in self._h5_file:
-            self._qhs_dset: h5py.Dataset = self._h5_file["cal_pmt_events/QHS"]
-        else:
-            self._qhs_dset = None
-        self._times_of_flight_dset = self._h5_file["cal_pmt_events/times_of_flight"]
-        self.n_events = self._hit_times_dset.shape[0]
-
-        if "global_trigger_time" in self._h5_file["mc_truth"]:
-            self._trigger_time_dset: h5py.Dataset = self._h5_file["mc_truth/global_trigger_time"]
-            self.trigger_offset = trigger_offset
-        else:
-            self._trigger_time_dset = None
-            self.trigger_offset = None
-
-        if "mean" in self._hit_times_dset.attrs:
-            self.hit_time_mean = self._hit_times_dset.attrs["mean"]
-        else:
-            self.hit_time_mean = None
-        if "root_mean_square_deviation" in self._hit_times_dset.attrs:
-            self.hit_time_rmsd = self._hit_times_dset.attrs["root_mean_square_deviation"]
-        else:
-            self.hit_time_rmsd = None
-
-        self._pmt_ids_dset: h5py.Dataset = self._h5_file["cal_pmt_events/ids"]
-        self._mc_truth_pos_group: h5py.Group = self._h5_file["mc_truth/position"]
-
-        self.position_numpy_dtype = self._mc_truth_pos_group[self.positions[0]].dtype
-        self.position_torch_dtype = torch.from_numpy(self._mc_truth_pos_group[self.positions[0]][0:1]).dtype
-
-        self.position_means = torch.empty(len(self.positions), dtype=self.position_torch_dtype)
-        self.position_rmsds = torch.empty(len(self.positions), dtype=self.position_torch_dtype)
-        for i, c in enumerate(self.positions):
-            mc_pos_dset = self._mc_truth_pos_group[c]
-            if "mean" in mc_pos_dset.attrs:
-                self.position_means[i] = mc_pos_dset.attrs["mean"].item()
-            if "root_mean_square_deviation" in mc_pos_dset.attrs:
-                self.position_rmsds[i] = mc_pos_dset.attrs["root_mean_square_deviation"].item()
 
         self.generator = np.random.default_rng(seed)
-        self.available_indices = np.arange(0, self._hit_times_dset.shape[1])
+
+        with h5py.File(path) as h5_file:
+            self.read_qhs = qhs and "cal/qhs" in h5_file
+            self.n_events = h5_file["cal/pmt_ids"].shape[0]
+            self.pmt_statuses = h5_file["pmt_info/statuses"][:]
+
+        if checkpoint_dir is not None:
+            checkpoint_dir = Path(checkpoint_dir)
+            np.savetxt(checkpoint_dir / "pmt_statuses.txt", self.pmt_statuses, fmt="%d")
 
         if cut_index_file is not None:
             with h5py.File(cut_index_file) as cut_index_h5:
-                self.cut_indices = torch.from_numpy(cut_index_h5["cut_indices"][:])
+                self.cut_indices = cut_index_h5["cut_indices"][:]
                 self.n_events = len(self.cut_indices)
         else:
             self.cut_indices = None
+
+        self.h5_file = None
+
+        # if "global_trigger_time" in self._h5_file["mc_truth"]:
+        #     self._trigger_time_dset: h5py.Dataset = self._h5_file["mc_truth/global_trigger_time"]
+        #     self.trigger_offset = trigger_offset
+        # else:
+        #     self._trigger_time_dset = None
+        #     self.trigger_offset = None
+
+        # if "mc_truth/position" in self._h5_file:
+        #     self._mc_truth_pos_group: h5py.Group = self._h5_file["mc_truth/position"]
+        #     self.position_numpy_dtype = self._mc_truth_pos_group[self.positions[0]].dtype
+        #     self.position_torch_dtype = torch.from_numpy(self._mc_truth_pos_group[self.positions[0]][0:1]).dtype
+        # else:
+        #     self._mc_truth_pos_group: h5py.Group = None
+        #     self.position_numpy_dtype = None
+        #     self.position_torch_dtype = None
 
     def __len__(self) -> int:
         return self.n_events
@@ -99,11 +83,22 @@ class PositionRecoDataset(Dataset):
         if self.cut_indices is not None:
             index = self.cut_indices[index].item()
 
-        pmt_ids = self._pmt_ids_dset[index]
-        hit_times = self._hit_times_dset[index]
-        if self._qhs_dset is not None:
-            qhs = self._qhs_dset[index]
-        times_of_flight = self._times_of_flight_dset[index]
+        if self.h5_file is None:
+            self.h5_file = h5py.File(self._path)
+            self.pmt_ids_dset = self.h5_file["cal/pmt_ids"]
+            # self.hit_times_dset = self.h5_file["cal_pmt_events/hit_times"]
+            self.hit_times_dset = self.h5_file["eca/hit_times"]
+            if self.read_qhs:
+                self.qhs_dset = self.h5_file["cal/qhs"]
+
+        pmt_ids = self.pmt_ids_dset[index]
+        pmt_ids *= self.pmt_statuses[pmt_ids]
+        hit_times = self.hit_times_dset[index]
+        if self.read_qhs:
+            qhs = self.qhs_dset[index]
+
+        # if self._times_of_flight_dset is not None:
+        #     times_of_flight = self._times_of_flight_dset[index]
 
         non_zero_pmt_indices = np.nonzero(pmt_ids)[0]
         if len(non_zero_pmt_indices) == 0:
@@ -113,18 +108,33 @@ class PositionRecoDataset(Dataset):
             pmt_indices = np.sort(self.generator.choice(non_zero_pmt_indices, size=self.context_len, replace=False))
             pmt_ids = pmt_ids[pmt_indices]
             hit_times = hit_times[pmt_indices]
-            times_of_flight = times_of_flight[pmt_indices]
-            if self._qhs_dset is not None:
+            # times_of_flight = times_of_flight[pmt_indices]
+            if self.read_qhs is not None:
                 qhs = qhs[pmt_indices]
         else:
             pmt_ids = pmt_ids[non_zero_pmt_indices]
             hit_times = hit_times[non_zero_pmt_indices]
-            times_of_flight = times_of_flight[non_zero_pmt_indices]
+            # times_of_flight = times_of_flight[non_zero_pmt_indices]
             pmt_ids = np.pad(pmt_ids, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
             hit_times = np.pad(hit_times, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
-            if self._qhs_dset is not None:
+            if self.read_qhs:
                 qhs = qhs[non_zero_pmt_indices]
                 qhs = np.pad(qhs, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
+        # times_of_flight = np.pad(times_of_flight, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
+
+        # times_of_flight = torch.from_numpy(times_of_flight)
+
+        # truth_position = np.zeros(len(self.positions), dtype=self.position_numpy_dtype)
+        # for i, c in enumerate(self.positions):
+        #     self._mc_truth_pos_group[c].read_direct(truth_position, index, i)
+        # truth_position = torch.from_numpy(truth_position)
+
+        # truth = {"positions": truth_position, "times_of_flight": times_of_flight}
+        truth = {}
+
+        # if self._trigger_time_dset is not None:
+        #     truth["event_times"] = self.trigger_offset - self._trigger_time_dset[index]
+
         hit_times -= np.median(hit_times)
 
         pmt_ids = torch.from_numpy(pmt_ids).long()
@@ -132,7 +142,7 @@ class PositionRecoDataset(Dataset):
 
         inputs = {"hit_times": hit_times, "pmt_ids": pmt_ids}
 
-        if self._qhs_dset is not None:
+        if self.read_qhs:
             inputs["qhs"] = torch.from_numpy(qhs)
 
         return inputs, truth
@@ -142,19 +152,19 @@ class HitTimeAEDataset(PositionRecoDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.n_pmts = self._h5_file[f"pmt_info/position/{self.positions[0]}"].shape[0]
-        self._pmt_positions = torch.zeros((self.n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
-        for i, c in enumerate(self.positions):
-            self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
-            self._pmt_positions[0, i] = 0.0
+        with h5py.File(self._path) as h5_file:
+            self.n_pmts = h5_file["pmt_info/pos"].shape[0]
+            position_dtype = torch.from_numpy(h5_file["pmt_info/pos"][0]).dtype
+            self._pmt_positions = torch.zeros((self.n_pmts, 3), dtype=position_dtype)
+            self._pmt_positions = torch.from_numpy(h5_file["pmt_info/pos"][:])
 
-        if "cal_pmt_events/av_offset" in self._h5_file:
-            self._av_offset_dset = self._h5_file["cal_pmt_events/av_offset"]
-        else:
-            self._av_offset_dset = None
+        self._av_offset_dset = None
 
     def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
         inputs, truth = super().__getitem__(index)
+
+        if self._av_offset_dset is None and "event/av_offset" in self.h5_file:
+            self._av_offset_dset = self.h5_file["event/av_offset"]
 
         inputs["pmt_positions"] = self._pmt_positions[inputs["pmt_ids"]]
 
