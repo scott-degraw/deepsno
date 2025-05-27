@@ -16,6 +16,7 @@ class LoopProfiler:
         profiling_unit: str = "ms",
         cuda_sync: bool = True,
         profiling_name: str = "Profiling",
+        disable: bool = False,
     ):
         self._writer: SummaryWriter = writer
         self._profiling_unit = profiling_unit
@@ -28,14 +29,19 @@ class LoopProfiler:
         self._profile_times = {profile: None for profile in profiles}
 
         self.cuda_sync = cuda_sync
+        self.disable = disable
 
     def start(self, profile: str):
+        if self.disable:
+            return
         if self.cuda_sync:
             cuda.synchronize()
 
         self._profile_start_times[profile] = time.perf_counter()
 
     def stop(self, profile: str):
+        if self.disable:
+            return
         if self.cuda_sync:
             cuda.synchronize()
 
@@ -43,6 +49,8 @@ class LoopProfiler:
         self._profile_times[profile] = elapsed_time
 
     def log_all(self, step_num: int):
+        if self.disable:
+            return
         if self.cuda_sync:
             cuda.synchronize()
 

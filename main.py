@@ -102,6 +102,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--metric_monitors", type=dict | Iterable[dict], required=False)
 
     train_parser.add_argument("--dry_run", action="store_true")
+    train_parser.add_argument("--profile", action="store_true")
 
     predict_parser = ArgumentParser()
     predict_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=True)
@@ -324,6 +325,7 @@ if __name__ == "__main__":
             val_num_steps=cfg["val_num_steps"],
             max_grad_norm=cfg["max_grad_norm"],
             metric_monitor=metric_monitor,
+            profile=cfg["profile"],
         )
 
     elif cfg["subcommand"] == "predict":

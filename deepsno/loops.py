@@ -117,6 +117,7 @@ def train(
     val_norm: bool = False,
     max_grad_norm: float = 0.0,
     memory_unit: str = "MiB",
+    profile: bool = False,
     profiling_unit: str = "ms",
     metric_monitor: MetricMonitor | None = None,
 ):
@@ -138,6 +139,7 @@ def train(
         ],
         cuda_sync="cuda" in device.type,
         profiling_unit=profiling_unit,
+        disable=not profile,
     )
 
     if (num_epochs is not None) and (num_steps is not None):
