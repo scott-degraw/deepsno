@@ -30,6 +30,7 @@ class PositionRecoDataset(Dataset):
         self,
         path: str | Path,
         context_len: int,
+        scratch_path: str | Path = None,
         checkpoint_dir: str | Path = None,
         cut_index_file: str | Path | None = None,
         trigger_offset: float = 0,
@@ -37,7 +38,11 @@ class PositionRecoDataset(Dataset):
         seed=74819,
     ):
         super().__init__()
-        self._path = str(path)
+        if scratch_path is not None:
+            self._path = str(scratch_path)
+        else:
+            self._path = str(path)
+
         self.context_len = context_len
 
         self.generator = np.random.default_rng(seed)
