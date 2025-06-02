@@ -2,6 +2,11 @@
 #include <RAT/DS/PMT.hh>
 #include <RAT/DU/DSReader.hh>
 #include <RAT/DU/Utility.hh>
+#include <RAT/PMTSelector.hh>
+#include <RAT/PMTSelectorFactory.hh>
+#include <RAT/FitterPMT.hh>
+#include <RAT/PMTCalib.hh>
+#include <cassert>
 #include <algorithm>
 #include <numeric>
 #include <iostream>
@@ -25,26 +30,21 @@ struct Event {
     Event() : av_offset(3) {}
 };
 
-struct CalEvent {
-    std::vector<UInt_t> pmt_ids;
-    std::vector<Float_t> hit_times;
+struct PmtEvent {
+    std::vector<UInt_t> id;
+    std::vector<Float_t> hit_time;
     std::vector<Float_t> qhs;
 };
 
 struct PmtInfo {
-    std::vector<Float_t> pmt_pos;
+    std::vector<Float_t> position;
 };
 
 struct McEvent {
     std::vector<Float_t> times_of_flight;
-    std::vector<Float_t> hit_times;
     std::vector<Float_t> event_pos;
     Float_t global_trigger_time = kFloatNaN;
     Float_t kinetic_energy = kFloatNaN;
-};
-
-struct EcaEvent {
-    std::vector<Float_t> hit_times;
 };
 
 
@@ -80,17 +80,14 @@ void ratds_extract(std::string input_filename, std::string output_filename,
     param_av_thickness.Write();
 
     Event event;
-    CalEvent cal_event;
-    EcaEvent eca_event;
+    PmtEvent pmt_event;
     McEvent mc_event;
+    mc_event.event_pos.resize(3);
 
     event_tree.Branch("event", &event);
     event.av_offset = av_offset_vec;
 
-    event_tree.Branch("cal", &cal_event);
-    if (eca_cal) {
-        event_tree.Branch("eca", &eca_event);
-    }
+    event_tree.Branch("pmt", &pmt_event);
     if (is_mc) {
         event_tree.Branch("mc", &mc_event);
     }
@@ -132,6 +129,9 @@ void ratds_extract(std::string input_filename, std::string output_filename,
         TFile* ntuple_file = TFile::Open(ntuple_fname.c_str(), "READ");
         TTree* ntuple = (TTree*)ntuple_file->Get("output;1");   
 
+        if (is_mc) 
+            filter += " && (evIndex == 0)"; // Ignore the other triggered events
+            std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
         ntuple->Draw(">>entry_list", filter.c_str(), "entrylist");
         TEntryList * entry_list = (TEntryList*) gDirectory->Get("entry_list");
 
@@ -142,24 +142,47 @@ void ratds_extract(std::string input_filename, std::string output_filename,
         for (std::size_t i = 0; i < n_selected; i++) {
             entry_indices[i] = entry_list->Next();
         }
+    
+        if (is_mc) {
+            Int_t mc_index;
+            ntuple->SetBranchAddress("mcIndex", &mc_index);
+            for (std::size_t i = 0; i < entry_indices.size(); i++) {
+                ntuple->GetEntry(entry_indices[i]);
+                entry_indices[i] = mc_index;
+            }
+        }
 
         ntuple_file->Close();
     } else {
         entry_indices.resize(n_entries);
         std::cout << n_entries << " entries in the dataset\n";
         std::iota(entry_indices.begin(), entry_indices.end(), 0);
-        std::cout << entry_indices[0] << " " << entry_indices[n_entries-1] << "\n";
     }
 
+    auto *pmt_selector = RAT::PMTSelectors::PMTSelectorFactory::Get()->GetPMTSelector("PMTCalSelector");
+    RAT::DS::FitVertex dummy_vertex;
 
     std::size_t fPSUPSystemId = RAT::DU::Point3D::GetSystemId("innerPMT");
 
     RAT::DU::Point3D event_pos(fPSUPSystemId);
     std::size_t n_selected_final = n_selected;
+    bool valid_entry;
     for (std::size_t i_select_entry = 0; i_select_entry < entry_indices.size(); i_select_entry++) {
-        bool valid_entry = false;
-        std::cout << "\rProcessing entry " << i_select_entry + 1 << " / " << n_selected << std::flush;
-        const RAT::DS::Entry &entry = dsreader.GetEntry(entry_indices[i_select_entry]);
+        valid_entry = false;
+        // std::cout << "\rProcessing entry " << i_select_entry + 1 << " / " << n_selected << std::flush;
+        std::cout << "Processing entry " << i_select_entry + 1 << " / " << n_selected << std::endl;
+        
+        std::size_t entry_index = entry_indices[i_select_entry];
+        assert((entry_index < n_entries) && "Trying to access entry with index that doesn't exist");
+        std::cout << entry_index << " " << n_entries << std::endl;
+        const RAT::DS::Entry &entry = dsreader.GetEntry(entry_index);
+        // In MC, some entries may not have triggered events.
+        if (entry.GetEVCount() == 0) {
+            if (!is_mc) {
+                throw std::runtime_error("Data is not MC and no EVs in entry " + std::to_string(i_select_entry));
+            }
+            continue;
+        }
         if (is_mc) {
             const RAT::DS::MC &mc_entry = entry.GetMC();
             const RAT::DS::MCParticle &mc_pcle = mc_entry.GetMCParticle(0);
@@ -174,62 +197,62 @@ void ratds_extract(std::string input_filename, std::string output_filename,
         }
 
         const RAT::DS::EV &ev = entry.GetEV(0);
-        const RAT::DS::CalPMTs &cal_pmts = ev.GetCalPMTs();
+
+        RAT::DS::CalPMTs const * pmts = nullptr;
+
         RAT::DS::MCHits const * mc_hits = nullptr;
-        RAT::DS::CalPMTs const * partial_cal_pmts = nullptr;
 
         if (is_mc) 
             mc_hits = &entry.GetMCEV(0).GetMCHits();
         if (eca_cal) {
-            // 1 corresponds to the ECA calibrated PMTs
-            partial_cal_pmts = &ev.GetPartialCalPMTs(1);
+            auto types = ev.GetPartialPMTCalTypes();
+            if (std::find(types.begin(), types.end(), RAT::PMTCalib::ECA) == types.end()) {
+                std::cout << "\nECA PMTCal not found in event " << i_select_entry + 1 << " / " << n_selected << "\n";
+            } else {
+                pmts = &ev.GetPartialCalPMTs(RAT::PMTCalib::ECA);
+            }
+        } else {
+            pmts = &ev.GetCalPMTs();
         }
 
-        std::size_t n_cal_pmts = cal_pmts.GetCount();
-        cal_event.pmt_ids.resize(0);
-        cal_event.hit_times.resize(0);
-        cal_event.qhs.resize(0);
-        if (eca_cal) 
-            eca_event.hit_times.resize(0);
-        if (is_mc)
+        std::vector<RAT::FitterPMT> fitter_pmts;
+        if (pmts != nullptr) {
+            for (size_t i_pmt = 0; i_pmt < pmts->GetCount(); i_pmt++)
+                fitter_pmts.push_back(RAT::FitterPMT(pmts->GetPMT(i_pmt)));
+        } // Don't fill fitter_pmts if there are no PMTs in the event.
+
+        // Additionally select pmtData so it *only* contains PMTs which pass the PMTCal groups recommended selector cuts.
+        fitter_pmts = pmt_selector->GetSelectedPMTs(fitter_pmts, dummy_vertex);
+
+        pmt_event.id.resize(0);
+        pmt_event.hit_time.resize(0);
+        pmt_event.qhs.resize(0);
+        if (is_mc) {
             mc_event.times_of_flight.resize(0);
-            mc_event.hit_times.resize(0);
-        for (std::size_t i_pmt = 0; i_pmt < n_cal_pmts; i_pmt++) {
-            const RAT::DS::PMTCal &cal_pmt = cal_pmts.GetPMT(i_pmt);
-            Float_t cht = static_cast<Float_t>(cal_pmt.GetTime());
-            Float_t qhs = static_cast<Float_t>(cal_pmt.GetQHS());
+        }
 
-            bool valid_hit = (qhs >= min_qhs) && (qhs <= max_qhs);
+        for (const RAT::FitterPMT &fitter_pmt : fitter_pmts) {
+            Float_t cht = static_cast<Float_t>(fitter_pmt.GetTime());
+            Float_t qhs = static_cast<Float_t>(fitter_pmt.GetQHS());
 
-            if (eca_cal) {
-                const RAT::DS::PMTCal &eca_cal_pmt = partial_cal_pmts->GetPMT(i_pmt);
-                Float_t eca_hit_time = static_cast<Float_t>(eca_cal_pmt.GetTime());
-
-                valid_hit = valid_hit && (eca_hit_time >= min_ht) && (eca_hit_time <= max_ht);
-                if (valid_hit)
-                    eca_event.hit_times.push_back(eca_hit_time);
-            } else {
-                valid_hit = valid_hit && (cht >= min_ht) && (cht <= max_ht);
-            }
+            bool valid_hit = (qhs >= min_qhs) && (qhs <= max_qhs) && (cht >= min_ht) && (cht <= max_ht);
 
             if (valid_hit) {
-                cal_event.pmt_ids.push_back(cal_pmt.GetID());
-                cal_event.hit_times.push_back(cht);
-                cal_event.qhs.push_back(qhs);
+                pmt_event.id.push_back(fitter_pmt.GetID());
+                pmt_event.hit_time.push_back(cht);
+                pmt_event.qhs.push_back(qhs);
             }
             
             valid_entry = valid_entry || valid_hit;
 
             if (is_mc && valid_hit) {
-                RAT::DU::Point3D pmt_pos(fPSUPSystemId, pmt_info.GetPosition(cal_pmt.GetID()));
+                RAT::DU::Point3D pmt_pos(fPSUPSystemId, pmt_info.GetPosition(fitter_pmt.GetID()));
                 light_path_calculator.CalcByPosition(event_pos, pmt_pos);
                 Double_t inner_av = light_path_calculator.GetDistInInnerAV();
                 Double_t av = light_path_calculator.GetDistInAV();
                 Double_t water = light_path_calculator.GetDistInWater();
                 Float_t time_of_flight = static_cast<Float_t>(group_velocity.CalcByDistance(inner_av, av, water));
                 
-                const RAT::DS::MCHit &mc_hit = mc_hits->GetPMT(i_pmt);
-                mc_event.hit_times.push_back(static_cast<Float_t>(mc_hit.GetTime()));
                 mc_event.times_of_flight.push_back(time_of_flight);
             }
         }
@@ -239,7 +262,7 @@ void ratds_extract(std::string input_filename, std::string output_filename,
             n_selected_final--;
     }
     std::cout << std::endl;
-    std::cout << "Removed " << n_selected - n_selected_final << " events due to bad PMT hits\n";
+    std::cout << "Removed " << n_selected - n_selected_final << "\n";
     std::cout << "Writing output file " << output_filename << "\n";
     
     output_file.Write();
