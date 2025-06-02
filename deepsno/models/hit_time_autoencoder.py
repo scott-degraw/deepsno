@@ -121,6 +121,9 @@ class HitTimeAutoEncoder(nn.Module):
         self.c_av.requires_grad = not fix_c
         self.c_water.requires_grad = not fix_c
 
+        self.c_av_gradient = nn.Parameter(torch.tensor(0.0))
+        self.c_water_gradient = nn.Parameter(torch.tensor(0.0))
+
         self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
@@ -187,7 +190,9 @@ class HitTimeAutoEncoder(nn.Module):
 
         dist_water = dist_event_2_pmt - dist_av
 
-        return dist_av / self.c_av + dist_water / self.c_water
+        return dist_av / (self.c_av + self.c_av_gradient * dist_av) + dist_water / (
+            self.c_water + self.c_water_gradient * dist_water
+        )
 
     def forward(
         self,
