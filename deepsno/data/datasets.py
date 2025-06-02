@@ -35,6 +35,7 @@ class PositionRecoDataset(Dataset):
         cut_index_file: str | Path | None = None,
         trigger_offset: float = 0,
         qhs: bool = False,
+        status_mask: int = 0xFFFFFFFF,
         seed=74819,
     ):
         super().__init__()
@@ -50,11 +51,10 @@ class PositionRecoDataset(Dataset):
         with h5py.File(path) as h5_file:
             self.read_qhs = qhs and "pmt/qhs" in h5_file
             self.n_events = h5_file["pmt/id"].shape[0]
-            self.pmt_statuses = h5_file["pmt_info/statuses"][:]
-
-        if checkpoint_dir is not None:
-            checkpoint_dir = Path(checkpoint_dir)
-            np.savetxt(checkpoint_dir / "pmt_statuses.txt", self.pmt_statuses, fmt="%d")
+            status = h5_file["pmt_info/status"][:]
+            # Convert these status masks into bools
+            valid_pmts = ~(status_mask & status)
+            self.pmt_statuses = valid_pmts.astype(np.bool)
 
         if cut_index_file is not None:
             with h5py.File(cut_index_file) as cut_index_h5:

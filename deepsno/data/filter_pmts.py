@@ -21,20 +21,24 @@ def filter_pmts(h5_path: str, min_occupancy: float, max_occupancy: float):
 
         occupancy = id_counts / np.sum(id_counts)
 
-        statuses = np.zeros(len(occupancy), dtype=np.bool)
-        statuses[(occupancy >= min_occupancy) & (occupancy <= max_occupancy)] = True
+        valid_pmts = np.zeros(len(occupancy), dtype=np.bool)
+        valid_pmts[(occupancy >= min_occupancy) & (occupancy <= max_occupancy)] = True
 
-        print(f"{statuses.sum()} PMTs left after occupancy cut")
+        print(f"{valid_pmts.sum()} PMTs left after occupancy cut")
 
         for pmt_id in trans_qhs_group.keys():
-            statuses[int(pmt_id)] *= np.std(trans_qhs_group[pmt_id][:]) > 0
+            valid_pmts[int(pmt_id)] *= np.std(trans_qhs_group[pmt_id][:]) > 0
 
-        print(f"{statuses.sum()} PMTs left after bad QHS cut")
+        print(f"{valid_pmts.sum()} PMTs left after bad QHS cut")
 
-        if "statuses" not in h5_file["pmt_info"]:
-            h5_file["pmt_info"].create_dataset("statuses", data=statuses)
-
-        h5_file["pmt_info/statuses"][:] = statuses
+        # Convert these bools to 32 bit int words
+        all_pass = np.uint32(0x0)
+        all_fail = np.uint32(0xffffffff)
+        status = np.where(valid_pmts, all_pass, all_fail)
+        if "status" not in h5_file["pmt_info"]:
+            h5_file["pmt_info"].create_dataset("status", data=status)
+        else:
+            h5_file["pmt_info/status"][:] = status
 
 
 if __name__ == "__main__":
