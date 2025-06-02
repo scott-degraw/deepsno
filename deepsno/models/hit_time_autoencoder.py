@@ -57,6 +57,7 @@ class HitTimeAutoEncoder(nn.Module):
         c_av: float,
         c_water: float,
         av_radius: float,
+        dset: str | Path,
         fix_c: bool = False,
         position_reconstructor_state_dict_path: str | Path | None = None,
         norm_dict: dict | None = None,
@@ -125,6 +126,9 @@ class HitTimeAutoEncoder(nn.Module):
         self.c_water_gradient = nn.Parameter(torch.tensor(0.0))
 
         self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
+
+        with h5py.File(dset, "r") as h5_file:
+            self.register_buffer("status", copy_if_tensor(h5_file["pmt_info/status"][:]))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.position_normalize(positions)
