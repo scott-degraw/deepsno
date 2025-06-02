@@ -169,12 +169,10 @@ void ratds_extract(std::string input_filename, std::string output_filename,
     bool valid_entry;
     for (std::size_t i_select_entry = 0; i_select_entry < entry_indices.size(); i_select_entry++) {
         valid_entry = false;
-        // std::cout << "\rProcessing entry " << i_select_entry + 1 << " / " << n_selected << std::flush;
         std::cout << "Processing entry " << i_select_entry + 1 << " / " << n_selected << std::endl;
         
         std::size_t entry_index = entry_indices[i_select_entry];
         assert((entry_index < n_entries) && "Trying to access entry with index that doesn't exist");
-        std::cout << entry_index << " " << n_entries << std::endl;
         const RAT::DS::Entry &entry = dsreader.GetEntry(entry_index);
         // In MC, some entries may not have triggered events.
         if (entry.GetEVCount() == 0) {
