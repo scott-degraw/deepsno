@@ -43,8 +43,8 @@ class PositionRecoDataset(Dataset):
         self.generator = np.random.default_rng(seed)
 
         with h5py.File(path) as h5_file:
-            self.read_qhs = qhs and "cal/qhs" in h5_file
-            self.n_events = h5_file["cal/pmt_ids"].shape[0]
+            self.read_qhs = qhs and "pmt/qhs" in h5_file
+            self.n_events = h5_file["pmt/id"].shape[0]
             self.pmt_statuses = h5_file["pmt_info/statuses"][:]
 
         if checkpoint_dir is not None:
@@ -85,11 +85,10 @@ class PositionRecoDataset(Dataset):
 
         if self.h5_file is None:
             self.h5_file = h5py.File(self._path)
-            self.pmt_ids_dset = self.h5_file["cal/pmt_ids"]
-            # self.hit_times_dset = self.h5_file["cal_pmt_events/hit_times"]
-            self.hit_times_dset = self.h5_file["eca/hit_times"]
+            self.pmt_ids_dset = self.h5_file["pmt/id"]
+            self.hit_times_dset = self.h5_file["pmt/hit_time"]
             if self.read_qhs:
-                self.qhs_dset = self.h5_file["cal/qhs"]
+                self.qhs_dset = self.h5_file["pmt/qhs"]
 
         pmt_ids = self.pmt_ids_dset[index]
         pmt_ids *= self.pmt_statuses[pmt_ids]

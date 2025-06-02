@@ -9,10 +9,13 @@ import h5py
 import numpy as np
 import tqdm
 import uproot as ur
+from filter_pmts import filter_pmts
 from jsonargparse import CLI
+from transpose import transpose
 
 
 def str_from_many_paths(paths: tuple[str], n=3) -> str:
+    paths = sorted(paths)
     if len(paths) > n:
         paths = paths[: n - 1] + paths[n - 1 :]
 
@@ -101,12 +104,14 @@ def main(
     train_output_path: str,
     test_output_path: str,
     train_test_split: float,
+    min_occupancy: float = 0.0,
+    max_occupancy: float = 1.0,
     seed: int = 487391,
     condor_transfer_input_files: bool = False,
     condor_transfer_output_files: bool = False,
 ) -> None:
-    groups = ["eca", "cal", "event"]
-    pmt_idents = ["hit_times", "qhs", "pmt_ids"]
+    groups = ["pmt", "event"]
+    pmt_idents = ["hit_time", "qhs", "id"]
     parameters = ["inner_av_radius", "av_thickness"]
 
     pmt_info_idents = ["pos"]
@@ -118,9 +123,8 @@ def main(
     if condor_transfer_input_files:
         condor_scratch_dir = Path(os.environ["_CONDOR_SCRATCH_DIR"])
         print("Copying files to Condor scratch disk")
-        for file_num, path in enumerate(input_paths):
-            print(f"File {file_num + 1}/{len(input_paths)}")
-            shutil.copy(path, condor_scratch_dir)
+        for i in tqdm.trange(len(input_paths)):
+            shutil.copy(input_paths[i], condor_scratch_dir)
 
         final_train_output_path = train_output_path
         final_test_output_path = test_output_path
@@ -168,6 +172,13 @@ def main(
             parameters=parameters,
             pmt_info_idents=pmt_info_idents,
         )
+
+    print("Transpose train files")
+    transpose(train_output_path)
+
+    print("Filter PMTs")
+
+    filter_pmts(h5_path=train_output_path, min_occupancy=min_occupancy, max_occupancy=max_occupancy)
 
     if condor_transfer_output_files:
         print("Transferring output files back")
