@@ -1,4 +1,5 @@
 #!/usr/bin/env -S python3 -u
+import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -12,6 +13,14 @@ import uproot as ur
 from filter_pmts import filter_pmts
 from jsonargparse import CLI
 from transpose import transpose
+
+
+def hash_file(file_path: str) -> str:
+    hasher = hashlib.md5()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(8192):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def str_from_many_paths(paths: tuple[str], n=3) -> str:
@@ -179,6 +188,13 @@ def main(
     print("Filter PMTs")
 
     filter_pmts(h5_path=train_output_path, min_occupancy=min_occupancy, max_occupancy=max_occupancy)
+
+    print("Hashing files")
+    paths = [train_output_path] + ([test_output_path] if train_test_split < 1.0 else [])
+    for path in paths:
+        train_hash = hash_file(path)
+        with h5py.File(path, "r+") as h5_file:
+            h5_file.attrs["hash"] = train_hash
 
     if condor_transfer_output_files:
         print("Transferring output files back")
