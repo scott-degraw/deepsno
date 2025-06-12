@@ -1,6 +1,7 @@
 #!/usr/bin/env -S python3 -u
 import hashlib
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Iterable, List
@@ -58,6 +59,17 @@ def merge(
     parameters: Iterable[str] = None,
     pmt_info_idents: Iterable[str] = None,
 ) -> None:
+    runs = []
+    for path in input_paths:
+        match = re.search(r"(?<=_r)(\d+)", str(path))
+        if match:
+            runs.append(int(match.group(0)))
+        else:
+            raise ValueError(f"Could not find run number in {path}")
+
+    min_run = min(runs)
+    max_run = max(runs)
+
     total_n_events = 0
     group = groups[0]
     for input_path in input_paths:
@@ -65,6 +77,9 @@ def merge(
             total_n_events += events_tree.num_entries
 
     with h5py.File(output_path, "w") as h5_file:
+        h5_file.attrs["min_run"] = min_run
+        h5_file.attrs["max_run"] = max_run
+
         if parameters is not None:
             with ur.open(input_paths[0]) as input_file:
                 for parameter in parameters:
@@ -111,8 +126,8 @@ def merge(
 def main(
     input_paths: List[str],
     train_output_path: str,
-    test_output_path: str,
-    train_test_split: float,
+    train_test_split: float = 1.0,
+    test_output_path: str | None = None,
     min_occupancy: float = 0.0,
     max_occupancy: float = 1.0,
     seed: int = 487391,
@@ -129,6 +144,8 @@ def main(
     check_files(input_paths, groups)
     print("Checking successful")
 
+    create_test_set = train_test_split < 1.0 and test_output_path is not None
+
     if condor_transfer_input_files:
         condor_scratch_dir = Path(os.environ["_CONDOR_SCRATCH_DIR"])
         print("Copying files to Condor scratch disk")
@@ -136,13 +153,15 @@ def main(
             shutil.copy(input_paths[i], condor_scratch_dir)
 
         final_train_output_path = train_output_path
-        final_test_output_path = test_output_path
+        if create_test_set:
+            final_test_output_path = test_output_path
 
         input_paths = [condor_scratch_dir / Path(path).name for path in input_paths]
 
     if condor_transfer_output_files:
         train_output_path = condor_scratch_dir / Path(train_output_path).name
-        test_output_path = condor_scratch_dir / Path(test_output_path).name
+        if create_test_set:
+            test_output_path = condor_scratch_dir / Path(test_output_path).name
 
     generator = np.random.default_rng(seed)
     input_path_indices = generator.choice(np.arange(len(input_paths)), size=len(input_paths), replace=False)
@@ -170,17 +189,18 @@ def main(
         pmt_info_idents=pmt_info_idents,
     )
 
-    print("Merge test files")
-    if train_test_split < 1.0:
+    if test_output_path is not None:
         print("Merge test files")
-        merge(
-            input_paths=test_input_paths,
-            output_path=test_output_path,
-            groups=groups,
-            pmt_idents=pmt_idents,
-            parameters=parameters,
-            pmt_info_idents=pmt_info_idents,
-        )
+        if train_test_split < 1.0 and test_output_path is not None:
+            print("Merge test files")
+            merge(
+                input_paths=test_input_paths,
+                output_path=test_output_path,
+                groups=groups,
+                pmt_idents=pmt_idents,
+                parameters=parameters,
+                pmt_info_idents=pmt_info_idents,
+            )
 
     print("Transpose train files")
     transpose(train_output_path)
@@ -190,7 +210,9 @@ def main(
     filter_pmts(h5_path=train_output_path, min_occupancy=min_occupancy, max_occupancy=max_occupancy)
 
     print("Hashing files")
-    paths = [train_output_path] + ([test_output_path] if train_test_split < 1.0 else [])
+    paths = [train_output_path] 
+    if test_output_path is not None:
+        paths.append(test_output_path)
     for path in paths:
         train_hash = hash_file(path)
         with h5py.File(path, "r+") as h5_file:
@@ -199,7 +221,7 @@ def main(
     if condor_transfer_output_files:
         print("Transferring output files back")
         shutil.copy(train_output_path, final_train_output_path)
-        if train_test_split < 1.0:
+        if create_test_set:
             shutil.copy(test_output_path, final_test_output_path)
 
     print("Finished merging and proprocessing")
