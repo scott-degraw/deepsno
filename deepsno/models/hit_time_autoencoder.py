@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import yaml
 from torch import nn
 
+from deepsno.utils.config_parse import instantiate
 from deepsno.utils.train import copy_if_tensor, get_best_ckpt
 
 
@@ -141,7 +142,10 @@ class HitTimeAutoEncoder(nn.Module):
         self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
 
         with h5py.File(dset, "r") as h5_file:
-            self.register_buffer("status", copy_if_tensor(h5_file["pmt_info/status"][:]))
+            status = h5_file["pmt_info/status"][:].astype(np.int32)
+            self.register_buffer("status", copy_if_tensor(status))
+            self.register_buffer("min_run", torch.tensor(h5_file.attrs["min_run"], dtype=torch.int64))
+            self.register_buffer("max_run", torch.tensor(h5_file.attrs["max_run"], dtype=torch.int64))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.position_normalize(positions)
@@ -271,6 +275,34 @@ class HitTimeAutoEncoder(nn.Module):
         out["c_water"] = self.c_water
 
         return out
+
+    @staticmethod
+    def time_walk_from_ckpt(ckpt: str | Path) -> dict:
+        ckpt = Path(ckpt)
+        if not ckpt.is_file():
+            raise ValueError(f"Checkpjkoint '{ckpt}' does not exist")
+
+        with open(ckpt.parent.parent / "config.yaml") as f:
+            config = yaml.safe_load(f)
+
+        ckpt = torch.load(ckpt, weights_only=True, map_location="cpu")
+
+        model = instantiate(config["model"])
+        model.load_state_dict(ckpt["model"], strict=True)
+
+        time_walk = model.time_walk
+
+        time_walk_params = {}
+        time_walk_params["intercept"] = (model.hit_time_rmsd * time_walk.d).detach().numpy()
+        time_walk_params["intercept"] -= np.median(time_walk_params["intercept"])
+        time_walk_params["gradient"] = (model.hit_time_rmsd / model.qhs_rmsd * time_walk.c).detach().numpy()
+        time_walk_params["qhs_scale"] = (model.qhs_rmsd * time_walk.b).detach().numpy()
+        time_walk_params["time_scale"] = (model.hit_time_rmsd * time_walk.a).detach().numpy()
+        time_walk_params["status"] = model.status.detach().numpy().astype(np.uint32)
+        time_walk_params["min_run"] = model.min_run.item()
+        time_walk_params["max_run"] = model.max_run.item()
+
+        return time_walk_params
 
 
 class CableDelayFineTune(HitTimeAutoEncoder):
