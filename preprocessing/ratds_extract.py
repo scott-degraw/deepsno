@@ -10,12 +10,6 @@ parser = argparse.ArgumentParser(description="Extract data from RATDS root files
 parser.add_argument("-m", "--macro", type=str, help="Path to ROOT macro", required=True)
 parser.add_argument("-i", "--input_files", type=Path, nargs="+", help="Paths to input ROOT file.", required=True)
 parser.add_argument("-o", "--output_files", type=Path, nargs="+", help="Paths to output h5 file.", required=True)
-parser.add_argument(
-    "--max_attempts",
-    type=int,
-    default=1,
-    help="Maximum number of attempts to extract data. Will reattempt if error is thrown by the macro.",
-)
 parser.add_argument("--min_ht", type=float, help="Min hit time", required=True)
 parser.add_argument("--max_ht", type=float, help="Max hit time", required=True)
 parser.add_argument("--min_qhs", type=float, help="Min QHS", required=True)
@@ -51,28 +45,14 @@ now = time()
 ROOT.gROOT.LoadMacro(args.macro + "+")
 print(f"Time to compile: {time() - now}")
 
-
-def exception_loop(input_path: Path, output_path: Path, max_attempts: int) -> None:
-    for attempt_num in range(max_attempts):
-        try:
-            ROOT.ratds_extract(
-                str(input_path.resolve()),
-                str(output_path.resolve()),
-                args.min_ht,
-                args.max_ht,
-                args.min_qhs,
-                args.max_qhs,
-                args.filter,
-                args.eca_cal,
-            )
-            break
-        except Exception as e:
-            print(f"An exception occurred: {e}")
-            if attempt_num >= max_attempts - 1:
-                raise RuntimeError("Maximum number of attempts has been reached")
-            print(f"Retrying. Attempt {attempt_num + 2}")
-            time.sleep(sleep_time)
-
-
 for input_path, output_path in zip(args.input_files, args.output_files):
-    exception_loop(input_path, output_path, max_attempts=args.max_attempts)
+    ROOT.ratds_extract(
+        str(input_path.resolve()),
+        str(output_path.resolve()),
+        args.min_ht,
+        args.max_ht,
+        args.min_qhs,
+        args.max_qhs,
+        args.filter,
+        args.eca_cal,
+    )
