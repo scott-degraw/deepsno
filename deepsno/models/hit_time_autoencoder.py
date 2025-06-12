@@ -4,6 +4,8 @@ from typing import Tuple
 import h5py
 import numpy as np
 import torch
+import torch.nn.functional as F
+import yaml
 from torch import nn
 
 from deepsno.utils.train import copy_if_tensor, get_best_ckpt
@@ -27,15 +29,27 @@ class HitTimeAutoEncoderNorm(dict):
 class ExpTimeWalk(nn.Module):
     def __init__(self, n_pmts: int, a_init: float = 0.1, b_init: float = 0.1, c_init: float = 0.0, d_init: float = 0.0):
         super().__init__()
+
+        assert b_init > 0, "'b_init' must be positive"
+        assert c_init < 0, "'c_init' must be negative"
+        b_init = np.log(np.exp(b_init) - 1)
+        c_init = np.log(np.exp(-c_init) - 1)
+
         self.a = nn.Parameter(torch.full((n_pmts,), a_init))
-        self.b = nn.Parameter(torch.full((n_pmts,), b_init))
-        self.c = nn.Parameter(torch.full((n_pmts,), c_init))
+        self.b_base = nn.Parameter(torch.full((n_pmts,), b_init))
+        self.c_base = nn.Parameter(torch.full((n_pmts,), c_init))
         self.d = nn.Parameter(torch.full((n_pmts,), d_init))
 
+    @property
+    def b(self):
+        return F.softplus(self.b_base, beta=1.0, threshold=20.0)
+
+    @property
+    def c(self):
+        return -F.softplus(self.c_base, beta=1.0, threshold=20.0)
+
     def forward(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor) -> torch.Tensor:
-        b_soft = torch.log(1 + torch.exp(self.b[pmt_ids]))
-        return self.a[pmt_ids] * torch.exp(-qhs / b_soft) + self.c[pmt_ids] * qhs + self.d[pmt_ids]
-        
+        return self.a[pmt_ids] * torch.exp(-qhs / self.b[pmt_ids]) + self.c[pmt_ids] * qhs + self.d[pmt_ids]
 
 
 class CableDelayTimeWalk(nn.Module):
@@ -53,7 +67,6 @@ class HitTimeAutoEncoder(nn.Module):
         self,
         position_reconstructor: nn.Module,
         time_walk: nn.Module,
-        n_pmts: int,
         c_av: float,
         c_water: float,
         av_radius: float,
