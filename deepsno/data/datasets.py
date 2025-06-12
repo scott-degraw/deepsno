@@ -40,13 +40,15 @@ class PositionRecoDataset(Dataset):
     ):
         super().__init__()
         if scratch_path is not None:
-            self._path = str(scratch_path)
+            self._path = scratch_path
         else:
-            self._path = str(path)
+            self._path = path
 
         self.context_len = context_len
 
         self.generator = np.random.default_rng(seed)
+
+        print(f"Loading dataset from {self._path} with context length {self.context_len}")
 
         with h5py.File(path) as h5_file:
             self.read_qhs = qhs and "pmt/qhs" in h5_file
