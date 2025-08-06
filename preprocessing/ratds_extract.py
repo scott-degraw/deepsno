@@ -9,6 +9,7 @@ sleep_time = 30  # seconds
 parser = argparse.ArgumentParser(description="Extract data from RATDS root files to an h5 file.")
 parser.add_argument("-m", "--macro", type=str, help="Path to ROOT macro", required=True)
 parser.add_argument("-i", "--input_files", type=Path, nargs="+", help="Paths to input ROOT file.", required=True)
+parser.add_argument("-n", "--ntuples", type=Path, nargs="+", help="Paths to input ntuple ROOT file.", required=False)
 parser.add_argument("-o", "--output_files", type=Path, nargs="+", help="Paths to output h5 file.", required=True)
 parser.add_argument("--min_ht", type=float, help="Min hit time", required=True)
 parser.add_argument("--max_ht", type=float, help="Max hit time", required=True)
@@ -45,9 +46,10 @@ now = time()
 ROOT.gROOT.LoadMacro(args.macro + "+")
 print(f"Time to compile: {time() - now}")
 
-for input_path, output_path in zip(args.input_files, args.output_files):
+for input_path, ntuple_path, output_path in zip(args.input_files, args.ntuples, args.output_files):
     ROOT.ratds_extract(
         str(input_path.resolve()),
+        str(ntuple_path.resolve()),
         str(output_path.resolve()),
         args.min_ht,
         args.max_ht,

@@ -19,16 +19,15 @@
 #include <TCut.h>
 #include <TSystem.h>
 #include <TParameter.h>
+#include <TVector3.h>
 
+std::vector<std::string> ntuple_branches = {
+    "runID", "eventID", "nhits", "fitValid", "posx", "posy", "posz", "posz_av", "energy", "time", 
+    "nhitsCleaned", "nearAV", "itr", "necknhits", 
+};
 
 constexpr Float_t kFloatNaN = std::numeric_limits<Float_t>::quiet_NaN();
 constexpr Double_t kDoubleNaN = std::numeric_limits<Double_t>::quiet_NaN();
-
-struct Event {
-    std::vector<Float_t> av_offset;
-
-    Event() : av_offset(3) {}
-};
 
 struct PmtEvent {
     std::vector<UInt_t> id;
@@ -48,16 +47,23 @@ struct McEvent {
 };
 
 
-void ratds_extract(std::string input_filename, std::string output_filename,
-        Float_t min_ht, Float_t max_ht, Float_t min_qhs, Float_t max_qhs,
+void ratds_extract(std::string input_fname, 
+        std::string ntuple_fname,
+        std::string output_fname,
+        Float_t min_ht, Float_t max_ht, Float_t min_qhs, Float_t max_qhs, 
         std::string filter = "", bool eca_cal = false) {
-    std::cout << "Extracting data from " << input_filename << " into " << output_filename << "\n";
+    std::cout << "Extracting data from " << input_fname << " into " << output_fname << "\n";
 
-    if (gSystem->AccessPathName(input_filename.c_str(), kFileExists) != 0) {
-        throw std::runtime_error("Input file " + input_filename + " does not exist");
-    } 
+    if (gSystem->AccessPathName(input_fname.c_str(), kFileExists) != 0) 
+        throw std::runtime_error("Input file " + input_fname + " does not exist");
+    if (gSystem->AccessPathName(ntuple_fname.c_str(), kFileExists) != 0) 
+        throw std::runtime_error("Ntuple file " + ntuple_fname + " does not exist");
 
-    RAT::DU::DSReader dsreader(input_filename);
+    TFile ntuple_file(ntuple_fname.c_str(), "READ");
+    TTree * ntuple = ntuple_file.Get<TTree>("output");
+
+    // Start the data reading 
+    RAT::DU::DSReader dsreader(input_fname);
     dsreader.BeginOfRun();
 
     auto run_info = dsreader.GetRun();
@@ -65,11 +71,29 @@ void ratds_extract(std::string input_filename, std::string output_filename,
 
     RAT::DB *db = RAT::DB::Get();
 
-    TFile output_file(output_filename.c_str(), "RECREATE");
+    TFile output_file(output_fname.c_str(), "RECREATE");
     TTree pmt_info_tree("pmt_info", "Contains PMT information");
-    TTree event_tree("events", "Contains event level data");
+
+    ntuple->SetBranchStatus("*", 0); // Disable all branches
+    for (const auto &branch : ntuple_branches) {
+        ntuple->SetBranchStatus(branch.c_str(), 1); // Enable only the branches we need
+    }
+    TTree * event_tree = ntuple->CloneTree(0);
+    event_tree->SetDirectory(&output_file);
+    event_tree->SetTitle("Contains event level data");
+    event_tree->SetName("event");
+
+    Int_t run_id;
+    Int_t event_id;
+    ntuple->BuildIndex("runID", "eventID");
 
     std::vector<Float_t> av_offset_vec = db->GetLink("GEO", "av")->GetFArrayFromD("position");
+    Float_t av_offset[3];
+    for (size_t i = 0; i < av_offset_vec.size(); i++) {
+        av_offset[i] = av_offset_vec[i];
+    }
+    event_tree->Branch("av_offset", av_offset, "av_offset[3]/F");
+
     RAT::DBLinkPtr native_geo_dims_link = db->GetLink("NATIVE_GEO_DIMENSIONS", "natgeo_dimensions");
     Double_t inner_av_radius = native_geo_dims_link->GetD("inner_av_radius");
     Float_t av_thickness = native_geo_dims_link->GetD("av_thickness");
@@ -79,17 +103,15 @@ void ratds_extract(std::string input_filename, std::string output_filename,
     param_inner_av_radius.Write();
     param_av_thickness.Write();
 
-    Event event;
     PmtEvent pmt_event;
     McEvent mc_event;
     mc_event.event_pos.resize(3);
 
-    event_tree.Branch("event", &event);
-    event.av_offset = av_offset_vec;
-
-    event_tree.Branch("pmt", &pmt_event);
+    event_tree->Branch("pmt_id", &pmt_event.id);
+    event_tree->Branch("pmt_hit_time", &pmt_event.hit_time);
+    event_tree->Branch("pmt_qhs", &pmt_event.qhs);
     if (is_mc) {
-        event_tree.Branch("mc", &mc_event);
+        event_tree->Branch("mc", &mc_event);
     }
 
     std::vector<Float_t> pmt_pos(3);
@@ -117,19 +139,9 @@ void ratds_extract(std::string input_filename, std::string output_filename,
     if (filter != "") {
         std::cout << "Applying filter: " << filter << '\n';
 
-        std::string ntuple_fname(input_filename);
-
-        unsigned last_dot = ntuple_fname.find_last_of('.');
-        ntuple_fname.erase(ntuple_fname.begin() + last_dot, ntuple_fname.end());
-        ntuple_fname += ".ntuple.root";
-
-        if (gSystem->AccessPathName(ntuple_fname.c_str(), kFileExists) != 0) {
-            throw std::runtime_error("A filter was given but there is no corresponding ntuple to " + input_filename);
-        }
-        TFile* ntuple_file = TFile::Open(ntuple_fname.c_str(), "READ");
-        TTree* ntuple = (TTree*)ntuple_file->Get("output;1");   
-
         if (is_mc) 
+            ntuple->SetBranchStatus("mcIndex", 1); 
+            ntuple->SetBranchStatus("evIndex", 1); 
             filter += " && (evIndex == 0)"; // Ignore the other triggered events
             std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
         ntuple->Draw(">>entry_list", filter.c_str(), "entrylist");
@@ -152,7 +164,6 @@ void ratds_extract(std::string input_filename, std::string output_filename,
             }
         }
 
-        ntuple_file->Close();
     } else {
         entry_indices.resize(n_entries);
         std::cout << n_entries << " entries in the dataset\n";
@@ -174,6 +185,7 @@ void ratds_extract(std::string input_filename, std::string output_filename,
         std::size_t entry_index = entry_indices[i_select_entry];
         assert((entry_index < n_entries) && "Trying to access entry with index that doesn't exist");
         const RAT::DS::Entry &entry = dsreader.GetEntry(entry_index);
+        run_id = entry.GetRunID();
         // In MC, some entries may not have triggered events.
         if (entry.GetEVCount() == 0) {
             if (!is_mc) {
@@ -195,6 +207,7 @@ void ratds_extract(std::string input_filename, std::string output_filename,
         }
 
         const RAT::DS::EV &ev = entry.GetEV(0);
+        event_id = ev.GetGTID();
 
         RAT::DS::CalPMTs const * pmts = nullptr;
 
@@ -254,15 +267,23 @@ void ratds_extract(std::string input_filename, std::string output_filename,
                 mc_event.times_of_flight.push_back(time_of_flight);
             }
         }
-        if (valid_entry)
-            event_tree.Fill();
+        if (valid_entry) {
+            Long_t ntuple_entry_num = ntuple->GetEntryNumberWithIndex(run_id, event_id);
+            if (ntuple_entry_num < 0) {
+                throw std::runtime_error("Could not find entry with runID " + std::to_string(run_id) + 
+                                         " and eventID " + std::to_string(event_id));
+            }
+            ntuple->GetEntry(ntuple_entry_num);
+            event_tree->Fill();
+        }
         else
             n_selected_final--;
     }
     std::cout << std::endl;
     std::cout << "Removed " << n_selected - n_selected_final << "\n";
-    std::cout << "Writing output file " << output_filename << "\n";
+    std::cout << "Writing output file " << output_fname << "\n";
     
     output_file.Write();
     output_file.Close();
+    ntuple_file.Close();
 }
