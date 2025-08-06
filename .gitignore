@@ -11,3 +11,5 @@ condor_logs/
 condor/
 configs/
 
+*.db
+
