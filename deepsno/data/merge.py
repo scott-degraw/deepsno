@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -u
-import hashlib
+import argparse
 import os
 import re
 import shutil
@@ -12,137 +12,109 @@ import numpy as np
 import tqdm
 import uproot as ur
 from filter_pmts import filter_pmts
-from jsonargparse import CLI
 from transpose import transpose
+from utils import checksum_file, str_from_many_paths
 
 
-def hash_file(file_path: str) -> str:
-    hasher = hashlib.md5()
-    with open(file_path, "rb") as f:
-        while chunk := f.read(8192):
-            hasher.update(chunk)
-    return hasher.hexdigest()
-
-
-def str_from_many_paths(paths: tuple[str], n=3) -> str:
-    paths = sorted(paths)
-    if len(paths) > n:
-        paths = paths[: n - 1] + paths[n - 1 :]
-
-    output_str = paths[0]
-    for path in paths[1 : n - 1]:
-        output_str = f"{output_str}, {path}"
-
-    if len(paths) > n:
-        output_str = f"{output_str}, ..."
-        output_str = f"{output_str}, {paths[-1]}"
-
-    return output_str
-
-
-def check_files(input_paths: Iterable[str], groups: Iterable[str]) -> None:
-    for input_path in input_paths:
-        with ur.open(f"{input_path}") as file:
-            if "events" not in file:
-                raise KeyError(f"Events tree not found in {input_path}")
-            tree = file["events"]
-            for group in groups:
-                if group not in tree:
-                    raise KeyError(f"Group '{group}' not found in {input_path}")
+def check_files(input_paths: Iterable[str], tree: str, branches: Iterable[str]) -> None:
+    for input_path in tqdm.tqdm(input_paths):
+        with ur.open(f"{input_path}:{tree}") as t:
+            for branch in branches:
+                if branch not in t:
+                    raise KeyError(f"Branch '{branch}' not found in {input_path}")
 
 
 def merge(
     input_paths: str,
     output_path: str,
-    groups: Iterable[str],
-    pmt_idents: Iterable[str],
+    branches: Iterable[str],
+    pmt_branches: Iterable[str],
+    cut: str = "",
+    pmt_info_branches: Iterable[str] = None,
     parameters: Iterable[str] = None,
-    pmt_info_idents: Iterable[str] = None,
 ) -> None:
-    runs = []
-    for path in input_paths:
-        match = re.search(r"(?<=_r)(\d+)", str(path))
-        if match:
-            runs.append(int(match.group(0)))
-        else:
-            raise ValueError(f"Could not find run number in {path}")
-
-    min_run = min(runs)
-    max_run = max(runs)
+    runs = set()
+    all_branches = branches + pmt_branches
 
     total_n_events = 0
-    group = groups[0]
     for input_path in input_paths:
-        with ur.open(f"{input_path}:events") as events_tree:
-            total_n_events += events_tree.num_entries
+        with ur.open(f"{input_path}:event") as events_tree:
+            arrays = events_tree.arrays("runID", cut=cut)
+            total_n_events += len(arrays)
+            runs.add(arrays[0]["runID"])
 
     with h5py.File(output_path, "w") as h5_file:
-        h5_file.attrs["min_run"] = min_run
-        h5_file.attrs["max_run"] = max_run
-
+        h5_file.attrs["run_range"] = [min(runs), max(runs)]
+        h5_file.attrs["cut"] = cut if cut else ""
+        event_group = h5_file.create_group("event")
+        pmt_group = h5_file.create_group("pmt")
         if parameters is not None:
             with ur.open(input_paths[0]) as input_file:
                 for parameter in parameters:
                     h5_file.attrs[parameter] = input_file[parameter].value
 
-        events_tree = ur.open(f"{input_paths[0]}:events")
-        for group in groups:
-            arrays = events_tree[group]
-            for dset_name in arrays.keys():
-                if dset_name in pmt_idents:
-                    dset = arrays[dset_name].array(library="np")
-                    dtype = h5py.vlen_dtype(dset[0].dtype)
-                    shape = (total_n_events,)
-                else:
-                    dset = ak.to_numpy(arrays[dset_name].array(library="ak"))
-                    dtype = dset.dtype
-                    shape = (total_n_events, dset.shape[1])
+        events_tree = ur.open(f"{input_paths[0]}:event")
+        arrays = events_tree.arrays(all_branches, library="np", entry_start=0, entry_stop=1)
+        for dset_name in branches:
+            dset = arrays[dset_name]
+            dtype = dset.dtype
+            if dset.ndim == 1:
+                shape = (total_n_events,)
+            elif dset.ndim == 2:
+                shape = (total_n_events, dset.shape[1])
+            else:
+                raise ValueError(f"Unexpected dimension {dset.ndim} for dataset '{dset_name}' in {input_paths[0]}")
 
-                h5_file.create_dataset(f"{group}/{dset_name}", shape=shape, dtype=dtype)
+            event_group.create_dataset(dset_name, shape=shape, dtype=dtype)
+
+        for pmt_branch in pmt_branches:
+            dset_name = pmt_branch.replace("pmt_", "")
+            dset = arrays[pmt_branch]
+            dtype = h5py.vlen_dtype(dset[0].dtype)
+            shape = (total_n_events,)
+            pmt_group.create_dataset(dset_name, shape=shape, dtype=dtype)
 
         start_row = 0
         for input_path in tqdm.tqdm(input_paths):
-            with ur.open(f"{input_path}:events") as events_tree:
-                for group in groups:
-                    arrays = events_tree[group]
-                    for dset_name in arrays.keys():
-                        if dset_name in pmt_idents:
-                            dset = arrays[dset_name].array(library="np")
-                        else:
-                            dset = ak.to_numpy(arrays[dset_name].array(library="ak"))
+            with ur.open(f"{input_path}:event") as events_tree:
+                arrays = events_tree.arrays(all_branches, library="np", cut=cut)
 
-                        block_size = dset.shape[0]
-                        h5_file[f"{group}/{dset_name}"][start_row : start_row + block_size] = dset
+                for dset_name, array in arrays.items():
+                    if dset_name.startswith("pmt_"):
+                        dset_name = dset_name.replace("pmt_", "")
+                        dset = pmt_group[dset_name]
+                    else:
+                        dset = event_group[dset_name]
+                    block_size = array.shape[0]
+                    dset[start_row : start_row + block_size] = array
             start_row += block_size
 
         input_path = input_paths[0]
         pmt_info_group = h5_file.create_group("pmt_info")
         with ur.open(f"{input_path}:pmt_info") as pmt_info_tree:
             dsets = pmt_info_tree.arrays(library="ak")
-            for pmt_info_ident in pmt_info_idents:
+            for pmt_info_ident in pmt_info_branches:
                 pmt_info_group.create_dataset(pmt_info_ident, data=ak.to_numpy(dsets[pmt_info_ident]))
 
 
 def main(
     input_paths: List[str],
     train_output_path: str,
+    cut: str = "",
     train_test_split: float = 1.0,
     test_output_path: str | None = None,
+    only_count: bool = True,
     min_occupancy: float = 0.0,
     max_occupancy: float = 1.0,
     seed: int = 487391,
     condor_transfer_input_files: bool = False,
     condor_transfer_output_files: bool = False,
 ) -> None:
-    groups = ["pmt", "event"]
-    pmt_idents = ["hit_time", "qhs", "id"]
+    pmt_branches = ["pmt_hit_time", "pmt_qhs", "pmt_id"]
+    branches = ["av_offset", "posx", "posy", "posz", "energy"]
     parameters = ["inner_av_radius", "av_thickness"]
 
     pmt_info_idents = ["pos"]
-
-    print("Checking files")
-    check_files(input_paths, groups)
-    print("Checking successful")
 
     create_test_set = train_test_split < 1.0 and test_output_path is not None
 
@@ -183,10 +155,11 @@ def main(
     merge(
         input_paths=train_input_paths,
         output_path=train_output_path,
-        groups=groups,
-        pmt_idents=pmt_idents,
+        cut=cut,
+        branches=branches,
+        pmt_branches=pmt_branches,
         parameters=parameters,
-        pmt_info_idents=pmt_info_idents,
+        pmt_info_branches=pmt_info_idents,
     )
 
     if test_output_path is not None:
@@ -196,27 +169,23 @@ def main(
             merge(
                 input_paths=test_input_paths,
                 output_path=test_output_path,
-                groups=groups,
-                pmt_idents=pmt_idents,
+                cut=cut,
+                branches=branches,
+                pmt_branches=pmt_branches,
                 parameters=parameters,
-                pmt_info_idents=pmt_info_idents,
+                pmt_info_branches=pmt_info_idents,
             )
 
     print("Transpose train files")
-    transpose(train_output_path)
+    transpose(train_output_path, only_count=only_count)
 
     print("Filter PMTs")
 
     filter_pmts(h5_path=train_output_path, min_occupancy=min_occupancy, max_occupancy=max_occupancy)
 
-    print("Hashing files")
-    paths = [train_output_path] 
     if test_output_path is not None:
-        paths.append(test_output_path)
-    for path in paths:
-        train_hash = hash_file(path)
-        with h5py.File(path, "r+") as h5_file:
-            h5_file.attrs["hash"] = train_hash
+        print("Hasing test dataset")
+        checksum_file(test_output_path)
 
     if condor_transfer_output_files:
         print("Transferring output files back")
@@ -228,4 +197,66 @@ def main(
 
 
 if __name__ == "__main__":
-    CLI(main, as_positional=False)
+    parser = argparse.ArgumentParser(description="Merge and preprocess DeepSNO data files.")
+
+    parser.add_argument("input_dir", type=Path)
+    parser.add_argument("min_run", type=int)
+    parser.add_argument("max_run", type=int)
+    parser.add_argument("dest", type=Path)
+    parser.add_argument("--min_occupancy", type=float, default=0.0)
+    parser.add_argument("--max_occupancy", type=float, default=1.0)
+    parser.add_argument("-t", "--transpose", action="store_true")
+    parser.add_argument("-c", "--cut", type=str)
+    parser.add_argument("--transfer", action="store_true")
+
+    args = parser.parse_args()
+
+    all_input_paths = args.input_dir.glob("**/*.pmt.root")
+
+    min_run = args.min_run
+    max_run = args.max_run
+    dest = args.dest
+
+    if dest.is_file():
+        raise ValueError(f"Destination {dest} is a file, but it should be a directory.")
+
+    input_paths = []
+    runs = set()
+    for input_path in all_input_paths:
+        match = re.search(r"(?<=_r)(\d+)", str(input_path))
+        if match:
+            run = int(match.group(0))
+            runs.add(run)
+            if min_run <= run <= max_run:
+                input_paths.append(str(input_path))
+        else:
+            raise ValueError(f"Could not find run number in {input_path}")
+
+    print(f"Found {len(input_paths)} input files in range [{min_run}, {max_run}]")
+
+    # with ur.recreate(args.dest) as output_file:
+    #     tree_created = False
+    #     for chunk in tqdm.tqdm(
+    #         ur.iterate(
+    #             {f: "event" for f in input_paths},
+    #             step_size="100 MB",
+    #             library="ak",
+    #             expressions=["av_offset", "pmt_hit_time"],
+    #         )
+    #     ):
+    #         if not tree_created:
+    #             output_file["event"] = {"event": chunk}
+    #             tree_created = True
+    #         else:
+    #             output_file["event"].extend({"event": chunk})
+
+    main(
+        input_paths=input_paths,
+        train_output_path=dest / f"train_dset_{min(runs)}-{max(runs)}.h5",
+        cut=args.cut,
+        only_count=not args.transpose,
+        min_occupancy=args.min_occupancy,
+        max_occupancy=args.max_occupancy,
+        condor_transfer_input_files=args.transfer,
+        condor_transfer_output_files=args.transfer,
+    )

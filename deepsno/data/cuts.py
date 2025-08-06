@@ -13,10 +13,10 @@ def cuts(
     save_prefix: str,
     min_nhits: int | None = None,
     max_nhits: int | None = None,
+    min_energy: float | None = None,
+    max_energy: float | None = None,
     min_radius: float | None = None,
     max_radius: float | None = None,
-    min_hit_time: float | None = None,
-    max_hit_time: float | None = None,
     block_size: int = 100_000,
 ):
     save_path = Path(save_path)
@@ -27,14 +27,8 @@ def cuts(
 
     h5_file = h5py.File(h5_path)
 
-    id_dset = h5_file["cal/pmt_ids"]
-    pos_group = h5_file["mc_truth/position"]
-    hit_time_dset = h5_file["cal_pmt_events/hit_times"]
-    if "cal_pmt_events/av_offset" in h5_file:
-        av_offset_dset = h5_file["cal_pmt_events/av_offset"]
-    else:
-        av_offset_dset = None
-    dset_len = id_dset.shape[0]
+    event = h5_file["event"]
+    dset_len = event["av_offset"].shape[0]
 
     selector = np.zeros(dset_len, dtype=np.bool)
 
@@ -44,14 +38,14 @@ def cuts(
         save_name = save_name + f"_nhits>={min_nhits}"
     if max_nhits is not None:
         save_name = save_name + f"_nhits<={max_nhits}"
-    # if min_radius is not None:
-    #     save_name = save_name + f"_r>={min_radius}"
-    # if max_radius is not None:
-    #     save_name = save_name + f"_r<={max_radius}"
-    if min_hit_time is not None:
-        save_name = save_name + f"_hit_time>={min_hit_time}"
-    if max_hit_time is not None:
-        save_name = save_name + f"_hit_time<={max_hit_time}"
+    if min_radius is not None:
+        save_name = save_name + f"_r>={min_radius}"
+    if max_radius is not None:
+        save_name = save_name + f"_r<={max_radius}"
+    if min_energy is not None:
+        save_name = save_name + f"_energy>={min_energy}"
+    if max_energy is not None:
+        save_name = save_name + f"_energy<{max_energy}"
 
     start_row = 0
 
@@ -59,31 +53,22 @@ def cuts(
 
     for _ in trange(n_blocks, desc="Block number"):
         block_slice = slice(start_row, min(start_row + block_size, dset_len))
-        id_block = id_dset[block_slice]
-        pos_block = np.stack([pos_group[c][block_slice] for c in ["x", "y", "z"]], axis=-1)
+        pos_block = np.stack([event["pos" + c][block_slice] for c in ["x", "y", "z"]], axis=-1)
+        energy_block = event["energy"][block_slice]
 
-        if av_offset_dset is not None:
-            pos_block -= av_offset_dset[block_slice]
+        pos_block -= event["av_offset"][block_slice]
         r_block = np.linalg.vector_norm(pos_block, axis=-1)
 
-        if min_hit_time is not None or max_hit_time is not None:
-            hit_time_block = hit_time_dset[block_slice]
-            if min_hit_time is not None:
-                id_block[hit_time_block < min_hit_time] = 0
-            if max_hit_time is not None:
-                id_block[hit_time_block > max_hit_time] = 0
-
-        block_nhits = np.count_nonzero(id_block, axis=1)
         block_selector = np.ones(block_slice.stop - block_slice.start, dtype=np.bool)
 
-        if min_nhits is not None:
-            block_selector &= block_nhits >= min_nhits
-        if max_nhits is not None:
-            block_selector &= block_nhits <= max_nhits
         if min_radius is not None:
             block_selector &= r_block >= min_radius
         if max_radius is not None:
-            block_selector &= r_block <= max_radius
+            block_selector &= r_block < max_radius
+        if min_energy is not None:
+            block_selector &= energy_block >= min_energy
+        if max_energy is not None:
+            block_selector &= energy_block < max_energy
 
         selector[block_slice] = block_selector
         start_row += block_size
@@ -94,6 +79,7 @@ def cuts(
     print(f"Length of original dataset: {dset_len}. Length of cut dataset: {len(cut_indices)}.")
 
     with h5py.File(save_path / save_name, "w") as h5_save:
+        h5_save.attrs["checksum"] = h5_file.attrs["checksum"]
         h5_save.create_dataset("cut_indices", data=cut_indices)
 
 

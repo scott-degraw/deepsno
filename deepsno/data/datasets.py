@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Hashable, Iterator
 
@@ -60,8 +61,10 @@ class PositionRecoDataset(Dataset):
         print(f"Loading dataset from {self._path} with context length {self.context_len}")
 
         with h5py.File(path) as h5_file:
+            self._checksum = h5_file.attrs["checksum"]
             self.read_qhs = qhs and "pmt/qhs" in h5_file
             self.n_events = h5_file["pmt/id"].shape[0]
+            print(f"Number of events in dataset: {self.n_events}")
             status = h5_file["pmt_info/status"][:]
             # Convert these status masks into bools
             valid_pmts = ~(status_mask & status)
@@ -69,6 +72,11 @@ class PositionRecoDataset(Dataset):
 
         if cut_index_file is not None:
             with h5py.File(cut_index_file) as cut_index_h5:
+                if cut_index_h5.attrs["checksum"] != self._checksum:
+                    raise ValueError(
+                        f"Checksum of {cut_index_file} does not match checksum of {self._path}. "
+                        "Please check that the datasets match."
+                    )
                 self.cut_indices = cut_index_h5["cut_indices"][:]
                 self.n_events = len(self.cut_indices)
         else:
