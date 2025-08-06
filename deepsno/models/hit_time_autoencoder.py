@@ -135,7 +135,6 @@ class HitTimeAutoEncoder(nn.Module):
         self.register_parameter("c_av", nn.Parameter(c_av * self.hit_time_rmsd / self.position_rmsd))
         self.c_av.requires_grad = not fix_c
         self.register_parameter("c_water", nn.Parameter(c_water * self.hit_time_rmsd / self.position_rmsd))
-        self.c_av.requires_grad = not fix_c
         self.c_water.requires_grad = not fix_c
 
         self.c_av_gradient = nn.Parameter(c_av_grad / self.hit_time_rmsd)
@@ -146,8 +145,7 @@ class HitTimeAutoEncoder(nn.Module):
         with h5py.File(dset, "r") as h5_file:
             status = h5_file["pmt_info/status"][:].astype(np.int32)
             self.register_buffer("status", copy_if_tensor(status))
-            self.register_buffer("min_run", torch.tensor(h5_file.attrs["min_run"], dtype=torch.int64))
-            self.register_buffer("max_run", torch.tensor(h5_file.attrs["max_run"], dtype=torch.int64))
+            self.register_buffer("run_range", copy_if_tensor(h5_file.attrs["run_range"]))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.position_normalize(positions)
@@ -280,7 +278,7 @@ class HitTimeAutoEncoder(nn.Module):
     def time_walk_from_ckpt(ckpt: str | Path) -> dict:
         ckpt = Path(ckpt)
         if not ckpt.is_file():
-            raise ValueError(f"Checkpjkoint '{ckpt}' does not exist")
+            raise ValueError(f"Checkpoint '{ckpt}' does not exist")
 
         with open(ckpt.parent.parent / "config.yaml") as f:
             config = yaml.safe_load(f)
@@ -300,8 +298,7 @@ class HitTimeAutoEncoder(nn.Module):
         time_walk_params["qhs_scale"] = (model.qhs_rmsd * time_walk.b).detach().numpy()
         time_walk_params["time_scale"] = (model.hit_time_rmsd * time_walk.a).detach().numpy()
         time_walk_params["status"] = model.status.detach().numpy().astype(np.uint32)
-        time_walk_params["min_run"] = model.min_run.item()
-        time_walk_params["max_run"] = model.max_run.item()
+        time_walk_params["run_range"] = model.run_range.tolist()
 
         return time_walk_params
 
