@@ -13,7 +13,7 @@ from deepsno.utils.profiling import LoopProfiler
 from deepsno.utils.train import convert_byte_units
 
 TQDM_KWARGS = {
-    "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar:80}]{r_bar}",
+    "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar:40}]{r_bar}",
     "ascii": " =",
     "unit": "batch",
 }
