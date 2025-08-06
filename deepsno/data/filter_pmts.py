@@ -1,6 +1,6 @@
 import h5py
 import numpy as np
-
+import utils
 
 def filter_pmts(h5_path: str, min_occupancy: float, max_occupancy: float):
     assert min_occupancy >= 0.0, "Minimum occupancy must be non-negative"
@@ -11,11 +11,7 @@ def filter_pmts(h5_path: str, min_occupancy: float, max_occupancy: float):
         print("No occupancy cut applied")
 
     with h5py.File(h5_path, "r+") as h5_file:
-        trans_qhs_group = h5_file["transpose/pmt/qhs"]
-        n_pmts = h5_file["pmt_info/pos"].shape[0]
-        id_counts = np.zeros(n_pmts, dtype=np.int64)
-        for pmt_id in trans_qhs_group.keys():
-            id_counts[int(pmt_id)] = trans_qhs_group[pmt_id].shape[0]
+        id_counts = h5_file["pmt_info/id_counts"]
 
         print(f"Starting with {len(id_counts)} PMTs")
 
@@ -26,6 +22,7 @@ def filter_pmts(h5_path: str, min_occupancy: float, max_occupancy: float):
 
         print(f"{valid_pmts.sum()} PMTs left after occupancy cut")
 
+        trans_qhs_group = h5_file["transpose/pmt/qhs"]
         for pmt_id in trans_qhs_group.keys():
             valid_pmts[int(pmt_id)] *= np.std(trans_qhs_group[pmt_id][:]) > 0
 
@@ -39,6 +36,9 @@ def filter_pmts(h5_path: str, min_occupancy: float, max_occupancy: float):
             h5_file["pmt_info"].create_dataset("status", data=status)
         else:
             h5_file["pmt_info/status"][:] = status
+        
+        print("Producing checksum")
+        utils.checksum_h5_file(h5_path)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,8 @@ def count_pmt_ids(id_block: np.ndarray, id_counts: np.ndarray) -> None:
 
 def transpose(
     h5_path: str | Path,
-    block_size: int = 1_000_000,
+    block_size: int = 10_000,
+    only_count: bool = True,
     groups: Iterable[str] = ["pmt"],
 ):
     with h5py.File(h5_path, mode="r+") as h5_file:
@@ -49,6 +50,14 @@ def transpose(
             count_pmt_ids(id_block=id_block, id_counts=id_counts)
 
             start_row += block_size
+        
+        if "id_counts" in h5_file["pmt_info"]:
+            h5_file["pmt_info/id_counts"][:] = id_counts
+        else:
+            h5_file["pmt_info"].create_dataset("id_counts", data=id_counts)
+
+        if only_count:
+            return
 
         id_counts[0] = 0
 
