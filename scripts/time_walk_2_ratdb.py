@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from models.hit_time_autoencoder import HitTimeAutoEncoder
-from utils.train import get_best_ckpt
+from deepsno.models.hit_time_autoencoder import HitTimeAutoEncoder
+from deepsno.utils.train import get_best_ckpt
 
 all_pass = np.uint32(0x0)
 all_fail = np.uint32(0xFFFFFFFF)
@@ -23,7 +23,7 @@ def convert_nans(l: list):
 invalid_value = -999_999.0
 
 
-def time_walk_2_ratdb(checkpoint: str, ratdb_output_name: str, config_file: str | None = None, min_run: int | None = None, max_run: int | None = None) -> None:
+def time_walk_2_ratdb(checkpoint: str, ratdb_output_name: str, config_file: str | None = None, run_range: list[int, int] | None = None) -> None:
     checkpoint = Path(checkpoint)
     if checkpoint.is_dir():
         if checkpoint.name != "ckpt":
@@ -43,15 +43,9 @@ def time_walk_2_ratdb(checkpoint: str, ratdb_output_name: str, config_file: str 
     tw["intercept"] -= np.median(tw["intercept"][~invalid_pmts])
     tw["intercept"][invalid_pmts] = invalid_value
 
-    run_range = [tw["min_run"], tw["max_run"]]
-    if min_run is not None:
-        run_range[0] = min_run
-    if max_run is not None:
-        run_range[1] = max_run
-
     ratdb_table = {
         "type": "PCA_TW",
-        "run_range": run_range,
+        "run_range": tw["run_range"],
         "version": 1,
         "pass": 0,
         "comment": "Exponential time walk parameters. Model used is: timewalk(q) = a * exp(-q / b) + c * q + d",
@@ -83,9 +77,8 @@ if __name__ == "__main__":
     parser.add_argument("checkpoint", type=str, help="Path to the checkpoint file")
     parser.add_argument("ratdb_output_name", type=str, help="Output RATDB file name")
     parser.add_argument("--config_file", type=str, default=None, help="Path to the config file")
-    parser.add_argument("--min_run", type=int, help="Minimum run number")
-    parser.add_argument("--max_run", type=int, help="Maximum run number")
+    parser.add_argument("--run_range", type=int, nargs=2, help="Minimum run number")
 
     args = parser.parse_args()
 
-    time_walk_2_ratdb(args.checkpoint, args.ratdb_output_name, args.config_file, min_run=args.min_run, max_run=args.max_run)
+    time_walk_2_ratdb(args.checkpoint, args.ratdb_output_name, args.config_file, run_range=args.run_range)
