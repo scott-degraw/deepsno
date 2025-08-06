@@ -293,8 +293,9 @@ class HitTimeAutoEncoder(nn.Module):
         time_walk = model.time_walk
 
         time_walk_params = {}
+        status = ~model.status.detach().numpy().astype(bool)
         time_walk_params["intercept"] = (model.hit_time_rmsd * time_walk.d).detach().numpy()
-        time_walk_params["intercept"] -= np.median(time_walk_params["intercept"])
+        time_walk_params["intercept"] -= np.median(time_walk_params["intercept"][status])
         time_walk_params["gradient"] = (model.hit_time_rmsd / model.qhs_rmsd * time_walk.c).detach().numpy()
         time_walk_params["qhs_scale"] = (model.qhs_rmsd * time_walk.b).detach().numpy()
         time_walk_params["time_scale"] = (model.hit_time_rmsd * time_walk.a).detach().numpy()
