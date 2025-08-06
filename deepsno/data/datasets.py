@@ -30,7 +30,7 @@ class PositionRecoDataset(Dataset):
         self,
         path: str | Path,
         context_len: int,
-        scratch_path: str | Path = None,
+        condor_scratch: bool = False,
         checkpoint_dir: str | Path = None,
         cut_index_file: str | Path | None = None,
         trigger_offset: float = 0,
@@ -39,8 +39,17 @@ class PositionRecoDataset(Dataset):
         seed=74819,
     ):
         super().__init__()
-        if scratch_path is not None:
-            self._path = scratch_path
+        if condor_scratch is not None:
+            condor_scratch_path = Path(os.environ["_CONDOR_SCRATCH_DIR"]) / Path(path).name
+            with h5py.File(condor_scratch_path, "r") as h5_file:
+                condor_scratch_checksum = h5_file.attrs["checksum"]
+            with h5py.File(path, "r") as h5_file:
+                if h5_file.attrs["checksum"] != condor_scratch_checksum:
+                    raise ValueError(
+                        f"Checksum of {path} does not match checksum of {condor_scratch_path}. "
+                        "Please check the datasets match."
+                    )
+            self._path = condor_scratch_path
         else:
             self._path = path
 
