@@ -69,6 +69,7 @@ class HitTimeAutoEncoder(nn.Module):
         position_reconstructor: nn.Module,
         time_walk: nn.Module,
         c_av: float,
+        c_av_grad: float,
         c_water: float,
         av_radius: float,
         dset: str | Path,
@@ -132,12 +133,13 @@ class HitTimeAutoEncoder(nn.Module):
             self.output_unnorm = False
 
         self.register_parameter("c_av", nn.Parameter(c_av * self.hit_time_rmsd / self.position_rmsd))
+        self.c_av.requires_grad = not fix_c
         self.register_parameter("c_water", nn.Parameter(c_water * self.hit_time_rmsd / self.position_rmsd))
         self.c_av.requires_grad = not fix_c
         self.c_water.requires_grad = not fix_c
 
-        self.c_av_gradient = nn.Parameter(torch.tensor(0.0))
-        self.c_water_gradient = nn.Parameter(torch.tensor(0.0))
+        self.c_av_gradient = nn.Parameter(c_av_grad / self.hit_time_rmsd)
+        self.c_av_gradient.requires_grad = not fix_c
 
         self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
 
@@ -211,9 +213,7 @@ class HitTimeAutoEncoder(nn.Module):
 
         dist_water = dist_event_2_pmt - dist_av
 
-        return dist_av / (self.c_av + self.c_av_gradient * dist_av) + dist_water / (
-            self.c_water + self.c_water_gradient * dist_water
-        )
+        return dist_av / (self.c_av + self.c_av_gradient * dist_av) + dist_water / self.c_water
 
     def forward(
         self,
