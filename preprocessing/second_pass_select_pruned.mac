@@ -1,0 +1,55 @@
+#  File:       second_pass_processing.mac
+#
+#  Date:       2022-10-07
+#  Contact:    V Lozza <vlozza@lip.pt>
+#
+#       2nd pass of first stage of processing (1st pass = first_pass_data_cleaning.mac
+#       to run the 1st pass of tpmuonfollowercut to identify muons). This pass then runs
+#       the full data cleaning including 2nd pass of the muon follower cut, and including
+#       the blindness processor. It also runs hit cleaning and PMTCalibrations, ECA and PCA
+#       The output is a rootfile that contains all events, including blinded ones.
+#       This output rootfile should be stored from official processing but not made available
+#       for analysis. The tagged source processor only runs on deployed calibration runs, and
+#       it fills the DS with whether the event was caused by the FECD tagged source.
+#
+#
+#  Prerequesites: None. The first pass of the data cleaning is run from the nearline.
+#                 However, you can run the first pass of the datacleaning and use the
+#                 local version of the RATDB tables instead.
+#
+
+/rat/physics_list/OmitAll true
+
+/rat/inzdab/load_default # a file parameter needs to be passed here
+
+# Load geo and set the scintillator optics
+/rat/db/set DETECTOR geo_file "geo/snoplusnative.geo"
+/rat/db/set GEO[inner_av] material "labppo_2p2_scintillator" # 2.2 g/L PPO
+
+/run/initialize
+
+/rat/proc/if runeventlist
+    /rat/procset file "eventlist.txt"
+
+    ##########EVENT LOOP############
+    /rat/proc calibratePMT
+    /rat/proc reconstructClocks
+    /rat/proc datacleaning
+    /rat/procset index "scintillator"
+    /rat/procset mask "default_apply"
+    /rat/procset add "neutrontag"
+    /rat/procset add "tpmuonfollowercut"
+    /rat/procset add "pedcut"
+
+    /rat/procset pass 2
+
+    /rat/proc prune
+    # Just keep the ECA PMTs
+    /rat/procset prune "ev.uncalPMTs,ev.calPMTs"
+    /rat/proclast outroot # a file parameter needs to be passed here
+/rat/proc/endif
+
+##########EVENT LOOP############
+/rat/inzdab/read
+
+exit
