@@ -20,10 +20,19 @@
 #include <TSystem.h>
 #include <TParameter.h>
 #include <TVector3.h>
+#include <ROOT/RDataFrame.hxx>
 
 std::vector<std::string> ntuple_branches = {
-    "runID", "eventID", "nhits", "fitValid", "posx", "posy", "posz", "posz_av", "energy", "time", 
+    "runID", "eventID", "nhits", "fitValid", "posx", "posy", "posz", "posz_av", "posr_av", "energy", "time", 
     "nhitsCleaned", "nearAV", "itr", "necknhits", 
+};
+
+std::vector<std::string> mc_ntuple_branches = {
+    "mcke1",
+    "mctime1",
+    "mcPosx",
+    "mcPosy",
+    "mcPosz",
 };
 
 constexpr Float_t kFloatNaN = std::numeric_limits<Float_t>::quiet_NaN();
@@ -41,9 +50,7 @@ struct PmtInfo {
 
 struct McEvent {
     std::vector<Float_t> times_of_flight;
-    std::vector<Float_t> event_pos;
     Float_t global_trigger_time = kFloatNaN;
-    Float_t kinetic_energy = kFloatNaN;
 };
 
 
@@ -78,6 +85,11 @@ void ratds_extract(std::string input_fname,
     for (const auto &branch : ntuple_branches) {
         ntuple->SetBranchStatus(branch.c_str(), 1); // Enable only the branches we need
     }
+    if (is_mc) {
+        for (const auto &branch : mc_ntuple_branches) {
+            ntuple->SetBranchStatus(branch.c_str(), 1); 
+        }
+    }
     TTree * event_tree = ntuple->CloneTree(0);
     event_tree->SetDirectory(&output_file);
     event_tree->SetTitle("Contains event level data");
@@ -105,7 +117,6 @@ void ratds_extract(std::string input_fname,
 
     PmtEvent pmt_event;
     McEvent mc_event;
-    mc_event.event_pos.resize(3);
 
     event_tree->Branch("pmt_id", &pmt_event.id);
     event_tree->Branch("pmt_hit_time", &pmt_event.hit_time);
@@ -133,42 +144,25 @@ void ratds_extract(std::string input_fname,
     std::size_t n_entries = dsreader.GetEntryCount();
 
     // Perform the cuts from the ntuple
-    std::size_t n_selected = n_entries;
-    std::vector<std::size_t> entry_indices;
+    if (is_mc) 
+        ntuple->SetBranchStatus("mcIndex", 1); 
+        ntuple->SetBranchStatus("evIndex", 1); 
+        filter += " && (evIndex == 0)"; // Ignore the other triggered events
+        std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
 
-    if (filter != "") {
+    ROOT::RDataFrame ntuple_df(*ntuple);
+
+    if (filter != "") 
         std::cout << "Applying filter: " << filter << '\n';
 
-        if (is_mc) 
-            ntuple->SetBranchStatus("mcIndex", 1); 
-            ntuple->SetBranchStatus("evIndex", 1); 
-            filter += " && (evIndex == 0)"; // Ignore the other triggered events
-            std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
-        ntuple->Draw(">>entry_list", filter.c_str(), "entrylist");
-        TEntryList * entry_list = (TEntryList*) gDirectory->Get("entry_list");
+    auto filtered_df = ntuple_df.Filter(filter);
+    Long_t n_selected = filtered_df.Count().GetValue();
 
-        n_selected = entry_list->GetN();
+    if (filter != "") 
         std::cout << "Selected " << n_selected << " events out of " << n_entries << "\n";
 
-        entry_indices.resize(n_selected);
-        for (std::size_t i = 0; i < n_selected; i++) {
-            entry_indices[i] = entry_list->Next();
-        }
-    
-        if (is_mc) {
-            Int_t mc_index;
-            ntuple->SetBranchAddress("mcIndex", &mc_index);
-            for (std::size_t i = 0; i < entry_indices.size(); i++) {
-                ntuple->GetEntry(entry_indices[i]);
-                entry_indices[i] = mc_index;
-            }
-        }
-
-    } else {
-        entry_indices.resize(n_entries);
-        std::cout << n_entries << " entries in the dataset\n";
-        std::iota(entry_indices.begin(), entry_indices.end(), 0);
-    }
+    auto run_ids = filtered_df.Take<Int_t>("runID");
+    auto event_ids = filtered_df.Take<Int_t>("eventID");
 
     auto *pmt_selector = RAT::PMTSelectors::PMTSelectorFactory::Get()->GetPMTSelector("PMTCalSelector");
     RAT::DS::FitVertex dummy_vertex;
@@ -178,36 +172,37 @@ void ratds_extract(std::string input_fname,
     RAT::DU::Point3D event_pos(fPSUPSystemId);
     std::size_t n_selected_final = n_selected;
     bool valid_entry;
-    for (std::size_t i_select_entry = 0; i_select_entry < entry_indices.size(); i_select_entry++) {
+    std::cout << '\n';
+
+    std::size_t run_event_i = 0; // This indexes the filtered run and event IDs
+    for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
+        if (run_event_i >= run_ids->size()) {
+            break;
+        }
+
         valid_entry = false;
-        std::cout << "Processing entry " << i_select_entry + 1 << " / " << n_selected << std::endl;
         
-        std::size_t entry_index = entry_indices[i_select_entry];
-        assert((entry_index < n_entries) && "Trying to access entry with index that doesn't exist");
-        const RAT::DS::Entry &entry = dsreader.GetEntry(entry_index);
+        const RAT::DS::Entry &entry = dsreader.GetEntry(i_entry);
         run_id = entry.GetRunID();
         // In MC, some entries may not have triggered events.
         if (entry.GetEVCount() == 0) {
             if (!is_mc) {
-                throw std::runtime_error("Data is not MC and no EVs in entry " + std::to_string(i_select_entry));
+                throw std::runtime_error("Data is not MC and no EVs in entry " + std::to_string(i_entry));
             }
             continue;
         }
-        if (is_mc) {
-            const RAT::DS::MC &mc_entry = entry.GetMC();
-            const RAT::DS::MCParticle &mc_pcle = mc_entry.GetMCParticle(0);
-            event_pos.SetXYZ(fPSUPSystemId, mc_pcle.GetPosition());
-            mc_event.event_pos.at(0) = event_pos.X();
-            mc_event.event_pos.at(1) = event_pos.Y();
-            mc_event.event_pos.at(2) = event_pos.Z();
-            mc_event.kinetic_energy = mc_pcle.GetKineticEnergy();
-
-            if (entry.GetMCEVCount() > 0)
-                mc_event.global_trigger_time = static_cast<Float_t>(entry.GetMCEV(0).GetGTTime());
-        }
-
         const RAT::DS::EV &ev = entry.GetEV(0);
         event_id = ev.GetGTID();
+
+        if (run_id != run_ids->at(run_event_i) || event_id != event_ids->at(run_event_i)) {
+            continue;
+        }
+        std::cout << "\rProcessing entry " << run_event_i + 1 << " / " << n_selected;
+        run_event_i++; // Move onto the next filtered event
+
+        if (is_mc && entry.GetMCEVCount() > 0) {
+            mc_event.global_trigger_time = static_cast<Float_t>(entry.GetMCEV(0).GetGTTime());
+        }
 
         RAT::DS::CalPMTs const * pmts = nullptr;
 
@@ -218,7 +213,7 @@ void ratds_extract(std::string input_fname,
         if (eca_cal) {
             auto types = ev.GetPartialPMTCalTypes();
             if (std::find(types.begin(), types.end(), RAT::PMTCalib::ECA) == types.end()) {
-                std::cout << "\nECA PMTCal not found in event " << i_select_entry + 1 << " / " << n_selected << "\n";
+                std::cout << "\nECA PMTCal not found in event " << i_entry + 1 << " / " << n_selected << "\n";
             } else {
                 pmts = &ev.GetPartialCalPMTs(RAT::PMTCalib::ECA);
             }
@@ -278,6 +273,9 @@ void ratds_extract(std::string input_fname,
         }
         else
             n_selected_final--;
+    }
+    if (run_event_i != run_ids->size()) {
+        throw std::runtime_error("Did not get through all filtered events");
     }
     std::cout << std::endl;
     std::cout << "Removed " << n_selected - n_selected_final << "\n";
