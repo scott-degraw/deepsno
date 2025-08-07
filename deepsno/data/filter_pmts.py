@@ -22,11 +22,11 @@ def filter_pmts(h5_path: str, min_occupancy: float, max_occupancy: float):
 
         print(f"{valid_pmts.sum()} PMTs left after occupancy cut")
 
-        trans_qhs_group = h5_file["transpose/pmt/qhs"]
-        for pmt_id in trans_qhs_group.keys():
-            valid_pmts[int(pmt_id)] *= np.std(trans_qhs_group[pmt_id][:]) > 0
-
-        print(f"{valid_pmts.sum()} PMTs left after bad QHS cut")
+        if "transpose/pmt/qhs" in h5_file:
+            trans_qhs_group = h5_file["transpose/pmt/qhs"]
+            for pmt_id in trans_qhs_group.keys():
+                valid_pmts[int(pmt_id)] *= np.std(trans_qhs_group[pmt_id][:]) > 0
+            print(f"{valid_pmts.sum()} PMTs left after bad QHS cut")
 
         # Convert these bools to 32 bit int words
         all_pass = np.uint32(0x0)
