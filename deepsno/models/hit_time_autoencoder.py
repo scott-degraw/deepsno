@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Tuple
 
-import h5py
+import uproot as ur
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -12,19 +12,11 @@ from deepsno.utils.config_parse import instantiate
 from deepsno.utils.train import copy_if_tensor, get_best_ckpt
 
 
-class HitTimeAutoEncoderNorm(dict):
-    def __init__(self, train_file: str | Path, positions: Tuple = ["x", "y", "z"]):
-        super().__init__()
 
-        with h5py.File(train_file) as h5_file:
-            self["hit_time_mean"] = h5_file["cal_pmt_events/hit_times"].attrs["mean"].item()
-            self["hit_time_rmsd"] = h5_file["cal_pmt_events/hit_times"].attrs["root_mean_square_deviation"].item()
-            position_means = [h5_file[f"mc_truth/position/{c}"].attrs["mean"].item() for c in positions]
-            self["position_mean"] = np.mean(position_means).item()
-            position_rmsds = np.array(
-                [h5_file[f"mc_truth/position/{c}"].attrs["root_mean_square_deviation"].item() for c in positions]
-            )
-            self["position_rmsd"] = np.sqrt(np.mean(np.square(position_rmsds))).item()
+def exp_time_walk(
+    q: torch.FloatTensor, a: torch.FloatTensor, b: torch.FloatTensor, c: torch.FloatTensor, d: torch.FloatTensor
+) -> torch.FloatTensor:
+    return a * torch.exp(-q / b) + c * q + d
 
 
 class ExpTimeWalk(nn.Module):
@@ -50,7 +42,7 @@ class ExpTimeWalk(nn.Module):
         return -F.softplus(self.c_base, beta=1.0, threshold=20.0)
 
     def forward(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor) -> torch.Tensor:
-        return self.a[pmt_ids] * torch.exp(-qhs / self.b[pmt_ids]) + self.c[pmt_ids] * qhs + self.d[pmt_ids]
+        return exp_time_walk(qhs, self.a[pmt_ids], self.b[pmt_ids], self.c[pmt_ids], self.d[pmt_ids])
 
 
 class CableDelayTimeWalk(nn.Module):
@@ -62,7 +54,7 @@ class CableDelayTimeWalk(nn.Module):
         return self.cable_delays[pmt_ids]
 
 
-@torch.compile(dynamic=False, fullgraph=True)
+# @torch.compile(dynamic=False, fullgraph=True)
 class HitTimeAutoEncoder(nn.Module):
     def __init__(
         self,
@@ -142,10 +134,12 @@ class HitTimeAutoEncoder(nn.Module):
 
         self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
 
-        with h5py.File(dset, "r") as h5_file:
-            status = h5_file["pmt_info/status"][:].astype(np.int32)
+        with ur.open({dset: "transpose"}) as transpose:
+            status = transpose["status"].array(library="np").astype(np.int32)
             self.register_buffer("status", copy_if_tensor(status))
-            self.register_buffer("run_range", copy_if_tensor(h5_file.attrs["run_range"]))
+
+        with ur.open({dset: "metadata"}) as metadata:
+            self.register_buffer("run_range", copy_if_tensor(metadata["run_range"].array(library="np")[0]))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.position_normalize(positions)
@@ -181,15 +175,14 @@ class HitTimeAutoEncoder(nn.Module):
         self,
         event_positions: torch.FloatTensor,
         pmt_positions: torch.FloatTensor,
-        av_offset: torch.FloatTensor | None = None,
+        av_offset: torch.FloatTensor,
     ) -> torch.FloatTensor:
         event_positions = event_positions[..., None, :]
 
         event_2_pmt_vec = pmt_positions - event_positions
 
         # put event positions in terms of av coordinates
-        if av_offset is not None:
-            event_positions = event_positions - av_offset[..., None, :]
+        event_positions = event_positions - av_offset[..., None, :]
 
         dist_event_2_pmt = torch.linalg.vector_norm(event_2_pmt_vec, dim=-1)
         norm_event_2_pmt_vec = event_2_pmt_vec / dist_event_2_pmt[..., None]
@@ -218,14 +211,13 @@ class HitTimeAutoEncoder(nn.Module):
         uncal_hit_times: torch.FloatTensor,
         pmt_ids: torch.IntTensor,
         pmt_positions: torch.FloatTensor,
-        av_offset: torch.FloatTensor | None = None,
+        av_offset: torch.FloatTensor,
         qhs: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
         self.position_reconstructor.input_norm = self.input_norm
 
         pmt_positions = self.position_normalize(pmt_positions)
-        if av_offset is not None:
-            av_offset = self.position_normalize(av_offset)
+        av_offset = self.position_normalize(av_offset)
 
         if qhs is not None:
             cal_hit_times = uncal_hit_times - self.time_walk(pmt_ids=pmt_ids, qhs=qhs)

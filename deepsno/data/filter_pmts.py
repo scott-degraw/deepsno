@@ -1,44 +1,30 @@
-import h5py
 import numpy as np
-import utils
+import uproot as ur
 
-def filter_pmts(h5_path: str, min_occupancy: float, max_occupancy: float):
-    assert min_occupancy >= 0.0, "Minimum occupancy must be non-negative"
-    assert max_occupancy <= 1.0, "Maximum occupancy must be at most 1.0"
-    assert min_occupancy < max_occupancy, "Minimum occupancy must be less than maximum occupancy"
+ALL_PASS = np.uint32(0x0)
+ALL_FAIL = np.uint32(0xFFFFFFFF)
 
-    if min_occupancy == 0.0 and max_occupancy == 1.0:
-        print("No occupancy cut applied")
 
-    with h5py.File(h5_path, "r+") as h5_file:
-        id_counts = h5_file["pmt_info/id_counts"]
+def filter_pmts(path: str, min_occupancy: float = 0.0, max_occupancy: float = 1.0):
+    if min_occupancy < 0.0:
+        raise ValueError("Minimum occupancy must be non-negative")
+    if max_occupancy > 1.0:
+        raise ValueError("Maximum occupancy must be at most 1.0")
+    if min_occupancy > max_occupancy:
+        raise ValueError("Minimum occupancy must be less than or equal to maximum occupancy")
 
-        print(f"Starting with {len(id_counts)} PMTs")
+    with ur.open({path: "transpose"}) as tree:
+        transpose_tree = {key: value.array() for key, value in tree.items()}
+        pmt_counts = transpose_tree["pmt_counts"]
 
-        occupancy = id_counts / np.sum(id_counts)
+    occupancy = pmt_counts / np.sum(pmt_counts)
+    valid = (occupancy > min_occupancy) & (occupancy <= max_occupancy)
+    status = np.where(valid, ALL_PASS, ALL_FAIL)
+    transpose_tree["status"] = status
 
-        valid_pmts = np.zeros(len(occupancy), dtype=np.bool)
-        valid_pmts[(occupancy >= min_occupancy) & (occupancy <= max_occupancy)] = True
-
-        print(f"{valid_pmts.sum()} PMTs left after occupancy cut")
-
-        if "transpose/pmt/qhs" in h5_file:
-            trans_qhs_group = h5_file["transpose/pmt/qhs"]
-            for pmt_id in trans_qhs_group.keys():
-                valid_pmts[int(pmt_id)] *= np.std(trans_qhs_group[pmt_id][:]) > 0
-            print(f"{valid_pmts.sum()} PMTs left after bad QHS cut")
-
-        # Convert these bools to 32 bit int words
-        all_pass = np.uint32(0x0)
-        all_fail = np.uint32(0xffffffff)
-        status = np.where(valid_pmts, all_pass, all_fail)
-        if "status" not in h5_file["pmt_info"]:
-            h5_file["pmt_info"].create_dataset("status", data=status)
-        else:
-            h5_file["pmt_info/status"][:] = status
-        
-        print("Producing checksum")
-        utils.checksum_h5_file(h5_path)
+    with ur.update(path) as direc:
+        del direc["transpose"]
+        direc["transpose"] = transpose_tree
 
 
 if __name__ == "__main__":
@@ -46,7 +32,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Filter bad PMTs")
 
-    parser.add_argument("h5_path", type=str, help="Path to the HDF5 file")
+    parser.add_argument("path", type=str, help="Path to the merged dataset")
     parser.add_argument(
         "--min_occupancy",
         type=float,
@@ -62,4 +48,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    filter_pmts(h5_path=args.h5_path, min_occupancy=args.min_occupancy, max_occupancy=args.max_occupancy)
+    filter_pmts(path=args.path, min_occupancy=args.min_occupancy, max_occupancy=args.max_occupancy)
