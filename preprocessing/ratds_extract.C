@@ -12,6 +12,7 @@
 #include <iostream>
 #include <system_error>
 #include <vector>
+#include <array>
 #include <limits>
 #include <memory>
 #include <TEntryList.h>
@@ -99,12 +100,14 @@ void ratds_extract(std::string input_fname,
     Int_t event_id;
     ntuple->BuildIndex("runID", "eventID");
 
-    std::vector<Float_t> av_offset_vec = db->GetLink("GEO", "av")->GetFArrayFromD("position");
-    Float_t av_offset[3];
-    for (size_t i = 0; i < av_offset_vec.size(); i++) {
-        av_offset[i] = av_offset_vec[i];
+    std::vector<Double_t> av_offset_vec = db->GetLink("GEO", "av")->GetDArray("position");
+    if (av_offset_vec.size() != 3) {
+        throw std::runtime_error("AV offset vector should have 3 elements, but has " + std::to_string(av_offset_vec.size()));
     }
-    event_tree->Branch("av_offset", av_offset, "av_offset[3]/F");
+    std::array<Double_t, 3> av_offset;
+    std::copy(av_offset_vec.begin(), av_offset_vec.end(), av_offset.begin());
+
+    event_tree->Branch("av_offset", &av_offset);
 
     RAT::DBLinkPtr native_geo_dims_link = db->GetLink("NATIVE_GEO_DIMENSIONS", "natgeo_dimensions");
     Double_t inner_av_radius = native_geo_dims_link->GetD("inner_av_radius");
@@ -125,7 +128,7 @@ void ratds_extract(std::string input_fname,
         event_tree->Branch("mc", &mc_event);
     }
 
-    std::vector<Float_t> pmt_pos(3);
+    std::array<Float_t, 3> pmt_pos;
     pmt_info_tree.Branch("pos", &pmt_pos);
 
     RAT::DU::Utility *rat_util = RAT::DU::Utility::Get();
@@ -136,8 +139,10 @@ void ratds_extract(std::string input_fname,
     std::size_t n_pmts = pmt_info.GetCount();
 
     for (UInt_t pmt_id = 0; pmt_id < n_pmts; pmt_id++) {
-        const TVector3 pos = pmt_info.GetPosition(pmt_id);
-        pos.GetXYZ(pmt_pos.data());
+        TVector3 pmt_pos_vec = pmt_info.GetPosition(pmt_id);
+        pmt_pos[0] = static_cast<Float_t>(pmt_pos_vec.X());
+        pmt_pos[1] = static_cast<Float_t>(pmt_pos_vec.Y());
+        pmt_pos[2] = static_cast<Float_t>(pmt_pos_vec.Z());
         pmt_info_tree.Fill();
     }
 
