@@ -2,7 +2,6 @@
 
 import subprocess
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 from warnings import warn
@@ -10,7 +9,7 @@ from warnings import warn
 import h5py
 import jsonargparse
 import torch
-from jsonargparse import ArgumentParser, Namespace
+from jsonargparse import ArgumentParser, Namespace, set_loader
 from jsonargparse import typing as ptyping
 from torch import nn, optim
 from torch.utils import data
@@ -20,8 +19,9 @@ from deepsno.data.datasets import BlockedRandomSampler
 from deepsno.loops import test, train
 from deepsno.metrics.metric_monitor import MonitorCollection
 from deepsno.metrics.metrics import Metric
-from deepsno.utils.config_parse import check_instantiate_keys, get_class
+from deepsno.utils import jinja as jinja_utils
 from deepsno.utils.train import get_best_ckpt
+from deepsno.utils.config_parse import check_instantiate_keys, get_class 
 
 
 def initialize_norm_dict(model_cfg: dict):
@@ -73,7 +73,9 @@ if __name__ == "__main__":
     # TODO: put this in the config
     torch.set_float32_matmul_precision("high")
 
-    train_parser = ArgumentParser(prog="DeepSNO")
+    loader = "jinja_yaml"
+    set_loader(loader, loader_fn=jinja_utils.jinja_yaml_loader, exceptions=jinja_utils.get_exceptions())
+    train_parser = ArgumentParser(parser_mode=loader)
     train_parser.add_argument("--seed", type=int, default=0)
     train_parser.add_argument("--checkpoint_dir", type=ptyping.Path_dc, required=True)
     train_parser.add_argument("--device", type=str, required=True)
@@ -104,7 +106,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--dry_run", action="store_true")
     train_parser.add_argument("--profile", action="store_true")
 
-    predict_parser = ArgumentParser()
+    predict_parser = ArgumentParser(parser_mode=loader)
     predict_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=True)
     predict_parser.add_argument("--ckpt_config", type=ptyping.Path_fr, required=False)
     predict_parser.add_argument("--output_path", type=ptyping.Path_fc, required=False)
@@ -115,7 +117,7 @@ if __name__ == "__main__":
     predict_parser.add_argument("--dataset_len", type=int, required=False)
     predict_parser.add_argument("--predict_key", type=str, required=False)
 
-    parser = ArgumentParser(prog="app", description="")
+    parser = ArgumentParser(prog="app", description="", parser_mode=loader)
     parser.add_argument("-c", "--config", action="config")
     parser.add_argument("--model", type=nn.Module, required=True)
     parser.add_argument("--force", action="store_true")
@@ -178,23 +180,16 @@ if __name__ == "__main__":
 
         torch.manual_seed(cfg["train"]["seed"])
 
-        date_string = datetime.now().strftime(r"%Y-%m-%d")
-        time_string = datetime.now().strftime(r"%H-%M-%S")
-
         if cfg["train"]["dry_run"]:
             cfg["train"]["num_epochs"] = None
             cfg["train"]["num_steps"] = 3
             cfg["train"]["val_num_steps"] = 2
             cfg["train"]["val_len"] = int(1.5 * cfg["train"]["val_batch_size"])
-            cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / f"dry_run_{date_string}_{time_string}"
+            cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / "dry_run"
 
         # Create the model save directory
 
-        model_save_dir: Path = Path(cfg["train"]["checkpoint_dir"])
-        model_save_dir.mkdir(parents=True, exist_ok=True)
-
-        model_save_dir = model_save_dir / date_string / time_string
-
+        model_save_dir = Path(jinja_utils.model_save_directory(cfg["train"]["checkpoint_dir"]))
         model_save_dir.mkdir(parents=True)
 
         print(f"Saving model config and checkpoints to {str(model_save_dir.resolve())}")  # Instantiate the optimizer
