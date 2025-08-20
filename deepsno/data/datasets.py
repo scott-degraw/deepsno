@@ -40,6 +40,7 @@ class PositionRecoDataset(Dataset):
         condor_scratch: bool = False,
         checkpoint_dir: str | Path = None,
         cut: str | None = None,
+        max_n_events: int | None = None,
         trigger_offset: float = 0,
         qhs: bool = False,
         status_mask: int = 0xFFFFFFFF,
@@ -70,7 +71,6 @@ class PositionRecoDataset(Dataset):
         with ur.open({path: "event"}) as event_tree:
             self.n_events = event_tree.num_entries
             self.read_qhs = qhs and "pmt_qhs" in event_tree
-            print(f"Number of events in dataset: {self.n_events}")
             if "mc/global_trigger_time" in event_tree:
                 self.expressions.append("mc/global_trigger_time")
             if "mc/times_of_flight" in event_tree:
@@ -79,7 +79,10 @@ class PositionRecoDataset(Dataset):
             if self.read_qhs:
                 self.expressions.append("pmt_qhs")
             print("Opening event tree with expressions:", self.expressions)
-            self.event_arrays = event_tree.arrays(self.expressions, cut=cut, library="np")
+            self.event_arrays = event_tree.arrays(self.expressions, cut=cut, library="np", entry_stop=max_n_events)
+            self.n_events = (
+                min(max_n_events, event_tree.num_entries) if max_n_events is not None else event_tree.num_entries
+            )
             if mc_pos_names < set(event_tree.keys()):
                 self.event_arrays["mc_pos"] = np.stack(
                     [event_tree[name].array(library="np") for name in ["mcPosx", "mcPosy", "mcPosz"]], axis=-1
