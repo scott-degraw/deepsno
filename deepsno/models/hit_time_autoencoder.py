@@ -66,7 +66,6 @@ class HitTimeAutoEncoder(nn.Module):
         av_radius: float,
         dset: str | Path,
         fix_c: bool = False,
-        position_reconstructor_state_dict_path: str | Path | None = None,
         norm_dict: dict | None = None,
     ):
         super().__init__()
@@ -74,49 +73,23 @@ class HitTimeAutoEncoder(nn.Module):
         self.add_module("position_reconstructor", position_reconstructor)
         self.add_module("time_walk", time_walk)
 
-        if position_reconstructor_state_dict_path is not None:
-            state_dict_path = Path(position_reconstructor_state_dict_path)
-            if state_dict_path.is_dir():
-                state_dict_path = get_best_ckpt(state_dict_path)
-            state_dict = torch.load(state_dict_path, map_location="cpu", weights_only=True)
-            self.position_reconstructor.load_state_dict(state_dict["model"], strict=True)
-
-            self.position_reconstructor.input_norm = True
-            self.position_reconstructor.output_unnorm = False
-
-            hit_time_mean = self.position_reconstructor.hit_time_mean
-            hit_time_rmsd = self.position_reconstructor.hit_time_rmsd
-            position_mean = self.position_reconstructor.position_means.mean()
-
-            position_rmsd = self.position_reconstructor.position_rmsds.square().mean().sqrt()
-
-            self.register_buffer("hit_time_mean", copy_if_tensor(hit_time_mean))
-            self.register_buffer("hit_time_rmsd", copy_if_tensor(hit_time_rmsd))
-            self.register_buffer("position_mean", copy_if_tensor(position_mean))
-            self.register_buffer("position_rmsd", copy_if_tensor(position_rmsd))
-
-            self.input_norm = True
-            self.output_unnorm = False
-        elif norm_dict is not None:
-            self.register_buffer("hit_time_mean", copy_if_tensor(norm_dict["hit_time_mean"]))
-            self.register_buffer("hit_time_rmsd", copy_if_tensor(norm_dict["hit_time_rmsd"]))
-            self.register_buffer("position_mean", copy_if_tensor(norm_dict["position_mean"]))
-            self.register_buffer("position_rmsd", copy_if_tensor(norm_dict["position_rmsd"]))
+        if norm_dict is not None:
+            self.register_buffer("time_scale", copy_if_tensor(norm_dict["time_scale"]))
+            self.register_buffer("position_scale", copy_if_tensor(norm_dict["position_scale"]))
 
             self.position_reconstructor.add_input_norm(
-                hit_time_mean=self.hit_time_mean,
-                hit_time_rmsd=self.hit_time_rmsd,
+                time_shift=0,
+                time_scale=self.time_scale,
                 input_norm=True,
             )
             self.position_reconstructor.add_output_unnorm(
-                position_means=self.position_mean.repeat(3),
-                position_rmsds=self.position_rmsd.repeat(3),
+                position_shifts=3 * [0.0],
+                position_scales=tuple(self.position_scale.repeat(3)),
                 output_unnorm=False,
             )
 
-            if "qhs_mean" in norm_dict:
-                self.register_buffer("qhs_mean", copy_if_tensor(norm_dict["qhs_mean"]))
-                self.register_buffer("qhs_rmsd", copy_if_tensor(norm_dict["qhs_rmsd"]))
+            if "qhs_scale" in norm_dict:
+                self.register_buffer("qhs_scale", copy_if_tensor(norm_dict["qhs_scale"]))
 
             self.input_norm = True
             self.output_unnorm = False
@@ -124,15 +97,15 @@ class HitTimeAutoEncoder(nn.Module):
             self.input_norm = False
             self.output_unnorm = False
 
-        self.register_parameter("c_av", nn.Parameter(c_av * self.hit_time_rmsd / self.position_rmsd))
+        self.register_parameter("c_av", nn.Parameter(c_av * self.time_scale / self.position_scale))
         self.c_av.requires_grad = not fix_c
-        self.register_parameter("c_water", nn.Parameter(c_water * self.hit_time_rmsd / self.position_rmsd))
+        self.register_parameter("c_water", nn.Parameter(c_water * self.time_scale / self.position_scale))
         self.c_water.requires_grad = not fix_c
 
-        self.c_av_gradient = nn.Parameter(c_av_grad / self.hit_time_rmsd)
+        self.c_av_gradient = nn.Parameter(c_av_grad / self.time_scale)
         self.c_av_gradient.requires_grad = not fix_c
 
-        self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_rmsd))
+        self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_scale))
 
         with ur.open({dset: "transpose"}) as transpose:
             status = transpose["status"].array(library="np").astype(np.int32)
@@ -147,29 +120,17 @@ class HitTimeAutoEncoder(nn.Module):
     def position_unnormalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.position_unnormalize(positions)
 
-    def hit_time_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return (hit_times - self.hit_time_mean) / self.hit_time_rmsd
+    def time_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return hit_times / self.time_scale
 
-    def hit_time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return hit_times * self.hit_time_rmsd + self.hit_time_mean
+    def time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return hit_times * self.time_scale
 
     def qhs_normalize(self, qhs: torch.FloatTensor) -> torch.FloatTensor:
-        return (qhs - self.qhs_mean) / self.qhs_rmsd
+        return qhs / self.qhs_scale
 
     def qhs_unnormalize(self, qhs: torch.FloatTensor) -> torch.FloatTensor:
-        return qhs * self.qhs_rmsd + self.qhs_mean
-
-    def output_unnormalize(self, x: dict) -> dict:
-        return {
-            "uncal_hit_times": self.hit_time_unnormalize(x["uncal_hit_times"]),
-            "positions": self.position_unnormalize(x["positions"]),
-        }
-
-    def output_normalize(self, x: dict) -> dict:
-        return {
-            "uncal_hit_times": self.hit_time_normalize(x["uncal_hit_times"]),
-            "positions": self.position_normalize(x["positions"]),
-        }
+        return qhs * self.qhs_scale
 
     def flight_time(
         self,
@@ -196,6 +157,9 @@ class HitTimeAutoEncoder(nn.Module):
         event_inside_av = line_passes_av * (event_radius < self.av_radius)
         event_outside_av = line_passes_av * (event_radius >= self.av_radius)
 
+        # If discriminant is negative then straight line path does not intersect AV
+        # In this case dist_av = 0
+        #TODO: This may be causing problems with gradients when discriminant is very close to zero  
         sqrt_discriminant = torch.sqrt(nn.functional.relu(discriminant))
 
         dist_av = torch.zeros(pmt_positions.shape[:-1], device=pmt_positions.device)
@@ -218,7 +182,7 @@ class HitTimeAutoEncoder(nn.Module):
 
         pmt_positions = self.position_normalize(pmt_positions)
         av_offset = self.position_normalize(av_offset)
-        uncal_hit_times = self.hit_time_normalize(uncal_hit_times)
+        uncal_hit_times = self.time_normalize(uncal_hit_times)
 
         if qhs is None:
             time_walk = self.time_walk(pmt_ids=pmt_ids)
@@ -250,10 +214,10 @@ class HitTimeAutoEncoder(nn.Module):
         }
 
         if self.output_unnorm:
-            out["time_residuals"] = self.hit_time_unnormalize(out["time_residuals"])
+            out["time_residuals"] = self.time_unnormalize(out["time_residuals"])
             out["positions"] = self.position_unnormalize(out["positions"])
             if "times" in predict:
-                out["times"] = self.hit_time_unnormalize(out["times"])
+                out["times"] = self.time_unnormalize(out["times"])
 
         out["c_av"] = self.c_av
         out["c_water"] = self.c_water
@@ -278,11 +242,11 @@ class HitTimeAutoEncoder(nn.Module):
 
         time_walk_params = {}
         status = ~model.status.detach().numpy().astype(bool)
-        time_walk_params["intercept"] = (model.hit_time_rmsd * time_walk.d).detach().numpy()
+        time_walk_params["intercept"] = (model.time_scale * time_walk.d).detach().numpy()
         time_walk_params["intercept"] -= np.median(time_walk_params["intercept"][status])
-        time_walk_params["gradient"] = (model.hit_time_rmsd / model.qhs_rmsd * time_walk.c).detach().numpy()
-        time_walk_params["qhs_scale"] = (model.qhs_rmsd * time_walk.b).detach().numpy()
-        time_walk_params["time_scale"] = (model.hit_time_rmsd * time_walk.a).detach().numpy()
+        time_walk_params["gradient"] = (model.time_scale / model.qhs_scale * time_walk.c).detach().numpy()
+        time_walk_params["qhs_scale"] = (model.qhs_scale * time_walk.b).detach().numpy()
+        time_walk_params["time_scale"] = (model.time_scale * time_walk.a).detach().numpy()
         time_walk_params["status"] = model.status.detach().numpy().astype(np.uint32)
         time_walk_params["run_range"] = model.run_range.tolist()
 
