@@ -218,16 +218,17 @@ class HitTimeAutoEncoder(nn.Module):
 
         pmt_positions = self.position_normalize(pmt_positions)
         av_offset = self.position_normalize(av_offset)
+        uncal_hit_times = self.hit_time_normalize(uncal_hit_times)
 
-        if qhs is not None:
-            cal_hit_times = uncal_hit_times - self.time_walk(pmt_ids=pmt_ids, qhs=qhs)
-            predict = self.position_reconstructor(hit_times=cal_hit_times, pmt_ids=pmt_ids)
+        if qhs is None:
+            time_walk = self.time_walk(pmt_ids=pmt_ids)
         else:
-            predict = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
+            qhs = self.qhs_normalize(qhs)
+            time_walk = self.time_walk(pmt_ids=pmt_ids, qhs=qhs)
 
-        predict_positions = predict["positions"]
-        if "times" in predict:
-            predict_times = predict["times"]
+        cal_hit_times = uncal_hit_times - time_walk
+
+        predict = self.position_reconstructor(hit_times=cal_hit_times, pmt_ids=pmt_ids)
 
         # Dims: (batch_size, context_window, ...)
 
@@ -235,28 +236,21 @@ class HitTimeAutoEncoder(nn.Module):
 
         # Masked pmt positions have positions of zero
         times_of_flight = self.flight_time(
-            event_positions=predict_positions,
+            event_positions=predict["positions"],
             pmt_positions=pmt_positions,
             av_offset=av_offset,
         )
-        if qhs is None:
-            times_of_flight = times_of_flight + self.time_walk(pmt_ids=pmt_ids)
-        else:
-            qhs = self.qhs_normalize(qhs)
-            times_of_flight = times_of_flight + self.time_walk(pmt_ids=pmt_ids, qhs=qhs)
+        time_residuals = not_padding_masks * (cal_hit_times - times_of_flight - predict["times"].unsqueeze(-1))
 
-        if "times" in predict:
-            times_of_flight = times_of_flight + predict_times.unsqueeze(-1)
-
-        times_of_flight = not_padding_masks * times_of_flight
-
-        out = {"times_of_flight": times_of_flight, "pad_masks": ~not_padding_masks, "positions": predict_positions}
-
-        if "times" in predict:
-            out["times"] = predict_times
+        out = {
+            "time_residuals": time_residuals,
+            "pad_masks": ~not_padding_masks,
+            "positions": predict["positions"],
+            "times": predict["times"],
+        }
 
         if self.output_unnorm:
-            out["times_of_flight"] = self.hit_time_unnormalize(out["times_of_flight"])
+            out["time_residuals"] = self.hit_time_unnormalize(out["time_residuals"])
             out["positions"] = self.position_unnormalize(out["positions"])
             if "times" in predict:
                 out["times"] = self.hit_time_unnormalize(out["times"])

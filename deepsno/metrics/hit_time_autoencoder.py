@@ -14,16 +14,19 @@ class TimeResidualLoss(nn.Module):
         self.scale = scale
 
     def forward(self, predict: dict, truth: dict):
-        times_of_flight: torch.FloatTensor = predict["times_of_flight"]
+        time_res: torch.FloatTensor = predict["time_residuals"]
         not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
-        uncal_hit_times: torch.FloatTensor = truth["uncal_hit_times"]
+        weights: torch.FloatTensor = truth.get("weights", torch.ones_like(time_res))
 
-        time_res = uncal_hit_times - times_of_flight
+        # Normalize the weights to the size of the input
+        weights = weights / torch.sum(not_padding_masks * weights)
+
         time_res = (time_res - self.mu) / self.sigma
 
         fraction = time_res / (self.a + self.b + time_res.square()).sqrt()
         log_likelihoods = (self.a + 0.5) * (1 + fraction).log() + (self.b + 0.5) * (1 - fraction).log()
-        return -(not_padding_masks * log_likelihoods).sum() / not_padding_masks.sum()
+        log_likelihoods = log_likelihoods * weights
+        return -(not_padding_masks * log_likelihoods).sum()
 
 
 class VarianceLoss(nn.Module):
