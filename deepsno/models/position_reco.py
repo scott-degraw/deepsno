@@ -1,77 +1,56 @@
-from pathlib import Path
-
-import h5py
-import numpy as np
 import torch
 from torch import nn
 
 from deepsno.utils.train import copy_if_tensor
 
 
-class PositionRecoNorm(dict):
-    def __init__(self, train_file: str | Path, positions: tuple = ["x", "y", "z"]):
-        super().__init__()
-
-        with h5py.File(train_file) as h5_file:
-            self["input_norms"] = {
-                "hit_time_mean": h5_file["cal_pmt_events/hit_times"].attrs["mean"].item(),
-                "hit_time_rmsd": h5_file["cal_pmt_events/hit_times"].attrs["root_mean_square_deviation"].item(),
-            }
-            position_means = [h5_file[f"mc_truth/position/{c}"].attrs["mean"].item() for c in positions]
-            position_mean = np.mean(position_means).item()
-            position_rmsds = np.array(
-                [h5_file[f"mc_truth/position/{c}"].attrs["root_mean_square_deviation"].item() for c in positions]
-            )
-            position_rmsd = np.sqrt(np.mean(np.square(position_rmsds))).item()
-            self["output_norms"] = {
-                "position_means": 3 * [position_mean],
-                "position_rmsds": 3 * [position_rmsd],
-            }
-
-
 class PositionReco(nn.Module):
     def add_input_norm(
         self,
-        hit_time_mean: float | torch.FloatTensor,
-        hit_time_rmsd: float | torch.FloatTensor,
+        time_shift: float = 0.0,
+        time_scale: float = 1.0,
         input_norm: bool = True,
     ):
-        self.register_buffer("hit_time_mean", copy_if_tensor(hit_time_mean))
-        self.register_buffer("hit_time_rmsd", copy_if_tensor(hit_time_rmsd))
-
+        self.register_buffer("time_shift", copy_if_tensor(time_shift))
+        self.register_buffer("time_scale", copy_if_tensor(time_scale))
         self.input_norm = input_norm
 
-    def add_output_unnorm(self, position_means: tuple, position_rmsds: tuple, output_unnorm: bool = True):
-        self.register_buffer("position_means", copy_if_tensor(position_means))
-        self.register_buffer("position_rmsds", copy_if_tensor(position_rmsds))
+    def add_output_unnorm(
+        self,
+        position_shifts: tuple[float, float, float],
+        position_scales: tuple[float, float, float],
+        output_unnorm: bool = True,
+    ):
+        self.register_buffer("position_shifts", copy_if_tensor(position_shifts))
+        self.register_buffer("position_scales", copy_if_tensor(position_scales))
 
         self.output_unnorm = output_unnorm
 
-    def hit_time_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return (hit_times - self.hit_time_mean) / self.hit_time_rmsd
+    def time_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return (hit_times - self.time_shift) / self.time_scale
 
-    def hit_time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return hit_times * self.hit_time_rmsd + self.hit_time_mean
+    def time_unnormalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
+        return hit_times * self.time_scale + self.time_shift
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
-        return (positions - self.position_means) / self.position_rmsds
+        return (positions - self.position_shifts) / self.position_scales
 
     def position_unnormalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
-        return positions * self.position_rmsds + self.position_means
+        return positions * self.position_scales + self.position_shifts
 
     def input_normalize(self, hit_times: torch.FloatTensor) -> torch.FloatTensor:
-        return self.hit_time_normalize(hit_times)
+        return self.time_normalize(hit_times)
 
     def output_unnormalize(self, predict: torch.FloatTensor) -> dict:
         out = {"positions": self.position_unnormalize(predict["positions"])}
         if "times" in predict:
-            out["times"] = self.hit_time_unnormalize(predict["times"])
+            out["times"] = self.time_unnormalize(predict["times"])
         return out
 
     def output_normalize(self, predict: torch.FloatTensor) -> dict:
         out = {"positions": self.position_normalize(predict["positions"])}
         if "times" in predict:
-            out["times"] = self.hit_time_normalize(predict["times"])
+            out["times"] = self.time_normalize(predict["times"])
         return out
 
     def __init__(
