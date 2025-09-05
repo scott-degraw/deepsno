@@ -5,6 +5,8 @@ from pathlib import Path
 import jinja2
 from jsonargparse._loaders_dumpers import get_loader_exceptions, yaml_load
 
+now = datetime.now()
+
 
 def get_exceptions():
     exceptions = get_loader_exceptions("yaml")
@@ -18,8 +20,8 @@ def get_exceptions():
 def model_save_directory(checkpoint_dir: str | Path) -> str:
     checkpoint_dir = Path(checkpoint_dir)
 
-    date_string = datetime.now().strftime(r"%Y-%m-%d")
-    time_string = datetime.now().strftime(r"%H-%M-%S")
+    date_string = now.strftime(r"%Y-%m-%d")
+    time_string = now.strftime(r"%H-%M-%S")
 
     return str(checkpoint_dir / date_string / time_string)
 
