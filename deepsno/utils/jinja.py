@@ -1,11 +1,11 @@
 from datetime import datetime
-from io import StringIO
 from pathlib import Path
 
 import jinja2
 from jsonargparse._loaders_dumpers import get_loader_exceptions, yaml_load
 
 now = datetime.now()
+env = jinja2.Environment()
 
 
 def get_exceptions():
@@ -17,6 +17,12 @@ def get_exceptions():
     return exceptions
 
 
+def add_filter(func, name: str | None = None) -> callable:
+    env.filters[name or func.__name__] = func
+    return func
+
+
+@add_filter
 def model_save_directory(checkpoint_dir: str | Path) -> str:
     checkpoint_dir = Path(checkpoint_dir)
 
@@ -26,8 +32,11 @@ def model_save_directory(checkpoint_dir: str | Path) -> str:
     return str(checkpoint_dir / date_string / time_string)
 
 
+@add_filter
+def path_join(paths) -> str:
+    return str(Path(*paths))
+
+
 def jinja_yaml_loader(stream):
-    env = jinja2.Environment()
-    env.filters["model_save_directory"] = model_save_directory
     rendered_yaml = env.from_string(stream).render()
     return yaml_load(rendered_yaml)
