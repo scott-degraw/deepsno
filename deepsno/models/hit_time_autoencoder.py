@@ -137,6 +137,7 @@ class HitTimeAutoEncoder(nn.Module):
         event_positions: torch.FloatTensor,
         pmt_positions: torch.FloatTensor,
         av_offset: torch.FloatTensor,
+        epsilon: float = 1e-9,
     ) -> torch.FloatTensor:
         event_positions = event_positions[..., None, :]
 
@@ -159,12 +160,14 @@ class HitTimeAutoEncoder(nn.Module):
 
         # If discriminant is negative then straight line path does not intersect AV
         # In this case dist_av = 0
-        #TODO: This may be causing problems with gradients when discriminant is very close to zero  
-        sqrt_discriminant = torch.sqrt(nn.functional.relu(discriminant))
+        sqrt_discriminant = torch.sqrt(line_passes_av * discriminant + epsilon)
 
         dist_av = torch.zeros(pmt_positions.shape[:-1], device=pmt_positions.device)
-        dist_av = dist_av + torch.where(event_inside_av, -event_pos_projection + sqrt_discriminant, 0)
-        dist_av = dist_av + torch.where(event_outside_av, 2 * sqrt_discriminant, 0)
+        dist_av = (
+            dist_av
+            + event_inside_av * (-event_pos_projection + sqrt_discriminant)
+            + event_outside_av * (2 * sqrt_discriminant)
+        )
 
         dist_water = dist_event_2_pmt - dist_av
 
