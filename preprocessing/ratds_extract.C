@@ -205,7 +205,8 @@ void ratds_extract(std::string input_fname,
         std::cout << "\rProcessing entry " << run_event_i + 1 << " / " << n_selected;
         run_event_i++; // Move onto the next filtered event
 
-        if (is_mc && entry.GetMCEVCount() > 0) {
+        bool mcev_exists = is_mc && entry.GetMCEVCount() > 0;
+        if ((mcev_exists) > 0) {
             mc_event.global_trigger_time = static_cast<Float_t>(entry.GetMCEV(0).GetGTTime());
         }
 
@@ -213,7 +214,7 @@ void ratds_extract(std::string input_fname,
 
         RAT::DS::MCHits const * mc_hits = nullptr;
 
-        if (is_mc) 
+        if (mcev_exists) 
             mc_hits = &entry.GetMCEV(0).GetMCHits();
         if (eca_cal) {
             auto types = ev.GetPartialPMTCalTypes();
