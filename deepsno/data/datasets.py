@@ -47,7 +47,7 @@ class PositionRecoDataset(Dataset):
         seed=74819,
     ):
         super().__init__()
-        if condor_scratch is not None:
+        if condor_scratch:
             condor_scratch_path = Path(os.environ["_CONDOR_SCRATCH_DIR"]) / Path(path).name
             if not condor_scratch_path.exists():
                 print(f"Copying dataset at {str(path)} to condor scratch directory...")
