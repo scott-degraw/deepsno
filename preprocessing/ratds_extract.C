@@ -152,7 +152,10 @@ void ratds_extract(std::string input_fname,
     if (is_mc) 
         ntuple->SetBranchStatus("mcIndex", 1); 
         ntuple->SetBranchStatus("evIndex", 1); 
-        filter += " && (evIndex == 0)"; // Ignore the other triggered events
+
+        if (filter != "")
+            filter += " && ";
+        filter = " (evIndex == 0)"; // Ignore the other triggered events
         std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
 
     ROOT::RDataFrame ntuple_df(*ntuple);
