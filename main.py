@@ -20,8 +20,8 @@ from deepsno.loops import test, train
 from deepsno.metrics.metric_monitor import MonitorCollection
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
+from deepsno.utils.config_parse import check_instantiate_keys, get_class
 from deepsno.utils.train import get_best_ckpt
-from deepsno.utils.config_parse import check_instantiate_keys, get_class 
 
 
 def initialize_norm_dict(model_cfg: dict):
@@ -209,6 +209,8 @@ if __name__ == "__main__":
         check_instantiate_keys(cfg["optimizer"], "optimizer")
         optimizer_class = get_class(cfg["optimizer"]["class_path"])
 
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Number of trainable parameters: {num_params}")
         optimizer: optim.Optimizer = optimizer_class(model.parameters(), **cfg["optimizer"]["init_args"])
 
         # Instantiate the scheduler
@@ -251,8 +253,8 @@ if __name__ == "__main__":
 
         train_set, val_set = data.random_split(cfg["dataset"], lengths)
 
-        print(f"Training set size: {len(train_set)}")
-        print(f"Validation set size: {len(val_set)}")
+        print(f"Training set size: {len(train_set):,}")
+        print(f"Validation set size: {len(val_set):,}")
 
         train_dataloader = data.DataLoader(
             train_set,
