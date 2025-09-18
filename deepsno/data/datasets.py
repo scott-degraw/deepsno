@@ -30,6 +30,10 @@ class BlockedRandomSampler(Sampler[int]):
                 yield index.item()
 
 
+def good_pmt_status(status: np.ndarray, status_mask: int) -> np.ndarray:
+    return ~(status_mask & status).astype(np.bool)
+
+
 class PositionRecoDataset(Dataset):
     expressions = ["pmt_id", "pmt_hit_time"]
 
@@ -65,8 +69,7 @@ class PositionRecoDataset(Dataset):
         with ur.open(path) as direc:
             transpose = direc["transpose"]
             status = transpose["status"].array(library="np")
-            valid_pmts = ~(status_mask & status)
-            self.pmt_statuses = valid_pmts.astype(np.bool)
+            self.pmt_statuses = good_pmt_status(status, status_mask)
 
         with ur.open({path: "event"}) as event_tree:
             self.n_events = event_tree.num_entries
