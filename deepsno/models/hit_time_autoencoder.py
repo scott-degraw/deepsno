@@ -181,7 +181,8 @@ class HitTimeAutoEncoder(nn.Module):
         av_offset: torch.FloatTensor,
         qhs: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
-        self.position_reconstructor.input_norm = self.input_norm
+        self.position_reconstructor.input_norm = False
+        self.position_reconstructor.output_unnorm = False
 
         pmt_positions = self.position_normalize(pmt_positions)
         av_offset = self.position_normalize(av_offset)
