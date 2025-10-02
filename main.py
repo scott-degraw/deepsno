@@ -128,9 +128,7 @@ if __name__ == "__main__":
     subcommands.add_subcommand("train", train_parser)
     subcommands.add_subcommand("predict", predict_parser)
 
-    cfg = parser.parse_args()
-
-    cfg: dict = jsonargparse.namespace_to_dict(cfg)
+    cfg = parser.parse_args().as_dict()
 
     if cfg["subcommand"] == "predict":
         ckpt = Path(cfg["predict"]["ckpt"]).resolve()
