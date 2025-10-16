@@ -68,6 +68,8 @@ void ratds_extract(std::string input_fname,
         if (gSystem->AccessPathName(ntuple_fname.c_str(), kFileExists) != 0) 
             throw std::runtime_error("Ntuple file " + ntuple_fname + " does not exist");
 
+        std::cout << "Using ntuple file " << ntuple_fname << "\n";
+
         TFile ntuple_file(ntuple_fname.c_str(), "READ");
         TTree * ntuple = ntuple_file.Get<TTree>("output");
 
@@ -160,7 +162,7 @@ void ratds_extract(std::string input_fname,
             std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
         }
 
-        ROOT::RDataFrame ntuple_df(*ntuple);
+        ROOT::RDataFrame ntuple_df("output", ntuple_fname);
 
         if (filter != "") 
             std::cout << "Applying filter: " << filter << '\n';
@@ -183,6 +185,7 @@ void ratds_extract(std::string input_fname,
         std::size_t n_selected_final = n_selected;
         bool valid_entry;
         std::cout << '\n';
+
 
         std::size_t run_event_i = 0; // This indexes the filtered run and event IDs
         for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
@@ -209,6 +212,10 @@ void ratds_extract(std::string input_fname,
             }
             std::cout << "\rProcessing entry " << run_event_i + 1 << " / " << n_selected;
             run_event_i++; // Move onto the next filtered event
+
+            if (is_mc) {
+                event_pos.SetXYZ(fPSUPSystemId, entry.GetMC().GetMCParticle(0).GetPosition());
+            }
 
             bool mcev_exists = is_mc && entry.GetMCEVCount() > 0;
             if ((mcev_exists) > 0) {
