@@ -13,9 +13,10 @@ from deepsno.utils.profiling import LoopProfiler
 from deepsno.utils.train import convert_byte_units
 
 TQDM_KWARGS = {
-    "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar:40}]{r_bar}",
+    "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar}]{r_bar}",
     "ascii": " =",
     "unit": "batch",
+    "dynamic_ncols": True,
 }
 
 
@@ -164,22 +165,20 @@ def train(
         )
 
     sub_epoch = 0
-    stop_training = False
+    training = True
     step_num = 0
     with tqdm.tqdm(desc="Train", total=num_steps, **TQDM_KWARGS) as progress_bar:
-        for _ in range(num_epochs):
-            if stop_training:
-                break
-
+        while training:
             profiler.start("step_total")
             profiler.start("train_data_load")
             for inputs, truth in train_dataloader:
-                progress_bar.update()
                 profiler.stop("train_data_load")
 
                 if num_steps is not None and step_num == num_steps:
-                    stop_training = True
+                    training = False
                     break
+
+                progress_bar.update()
 
                 if "cuda" in device.type:
                     writer.add_scalar(
