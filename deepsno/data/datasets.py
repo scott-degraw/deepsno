@@ -44,14 +44,7 @@ class PositionRecoDataset(Dataset):
         condor_scratch: bool = False,
         checkpoint_dir: str | Path = None,
         cut: str | None = None,
-        max_n_events: int | None = None,
-        trigger_offset: float = 0,
-        qhs: bool = False,
-        status_mask: int = 0xFFFFFFFF,
-        seed=74819,
-    ):
-        super().__init__()
-        if condor_scratch:
+        if condor_scratch and "_CONDOR_SCRATCH_DIR" in os.environ:
             condor_scratch_path = Path(os.environ["_CONDOR_SCRATCH_DIR"]) / Path(path).name
             if not condor_scratch_path.exists():
                 print(f"Copying dataset at {str(path)} to condor scratch directory...")
