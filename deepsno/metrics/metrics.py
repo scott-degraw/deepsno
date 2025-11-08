@@ -18,14 +18,13 @@ class Metric(ABC):
 
 
 class BatchedMetric(Metric):
-    def __init__(self, metric_fn: nn.Module, truth_key: str):
+    def __init__(self, metric_fn: nn.Module):
         self.metric_fn = metric_fn
         self.running_metric: float = 0
         self.n_points: int = 0
-        self.truth_key = truth_key
 
     def update(self, predict: dict, truth: dict) -> None:
-        batch_size = truth[self.truth_key].shape[0]
+        batch_size = len(next(iter(predict)))
         self.n_points += batch_size
 
         self.running_metric += batch_size * self.metric_fn(predict, truth).item()
