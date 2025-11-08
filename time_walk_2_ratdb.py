@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 
 from deepsno.models.hit_time_autoencoder import HitTimeAutoEncoder
-from deepsno.utils.train import get_best_ckpt
 
 all_pass = np.uint32(0x0)
 all_fail = np.uint32(0xFFFFFFFF)
@@ -23,12 +22,15 @@ def convert_nans(l: list):
 invalid_value = -999_999.0
 
 
-def time_walk_2_ratdb(checkpoint: str, ratdb_output_name: str, config_file: str | None = None, run_range: list[int, int] | None = None) -> None:
+def time_walk_2_ratdb(
+    checkpoint: str, ratdb_output_name: str, config_file: str | None = None, run_range: list[int, int] | None = None
+) -> None:
     checkpoint = Path(checkpoint)
     if checkpoint.is_dir():
         if checkpoint.name != "ckpt":
             checkpoint = checkpoint / "ckpt"
-        checkpoint = get_best_ckpt(checkpoint)
+        checkpoints = list(checkpoint.glob("*.pt"))
+        checkpoint = checkpoints[-1]
 
     config_file = Path(config_file) if config_file else checkpoint.parent.parent / "config.yaml"
 
