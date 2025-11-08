@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import yaml
 from torch import nn
 
+from deepsno.data.inter_pts_bins import inter_pts_bins
 from deepsno.utils.config_parse import instantiate
 from deepsno.utils.train import copy_if_tensor, get_best_ckpt
 
@@ -54,7 +55,66 @@ class CableDelayTimeWalk(nn.Module):
         return self.cable_delays[pmt_ids]
 
 
-# @torch.compile(dynamic=False, fullgraph=True)
+def linear_interp(
+    ids: torch.LongTensor, x: torch.FloatTensor, xp: torch.FloatTensor, fp: torch.FloatTensor, epsilon: float = 1e-6
+) -> torch.FloatTensor:
+    # ids, x: (batch_size, context_window)
+    # xp, fp: (n_pmts, n_points)
+
+    # assert ids.shape == x.shape
+
+    xp_by_id = xp[ids]
+    fp_by_id = fp[ids]
+    indices = torch.searchsorted(xp_by_id, x.unsqueeze(-1), side="right").squeeze(-1)
+    # The clamp insures that in the extrapolation case we use the two closest points
+    right_indices = torch.clamp(indices, min=1, max=xp.shape[1] - 1).unsqueeze(-1)
+    left_indices = right_indices - 1
+    left_x = torch.gather(xp_by_id, dim=-1, index=left_indices).squeeze()
+    left_y = torch.gather(fp_by_id, dim=-1, index=left_indices).squeeze()
+    right_x = torch.gather(xp_by_id, dim=-1, index=right_indices).squeeze()
+    right_y = torch.gather(fp_by_id, dim=-1, index=right_indices).squeeze()
+
+    slope = (right_y - left_y) / (right_x - left_x + epsilon)
+
+    interp = left_y + slope * (x - left_x)
+
+    return interp
+
+
+class InterPtsTimeWalk(nn.Module):
+    def __init__(self, qhs_hist: str | Path, qhs_scale: float, min_occupancy: int):
+        super().__init__()
+
+        with open(qhs_hist, "rb") as f:
+            pmt_qhs_hists = pickle.load(f)
+
+        edges = inter_pts_bins(pmt_qhs_hists, min_occupancy=min_occupancy)
+        edges /= qhs_scale
+        centers = torch.from_numpy(0.5 * (edges[:, 1:-2] + edges[:, 2:-1])).float()
+        self.register_buffer("centers", copy_if_tensor(centers))
+        self.register_buffer("min_qhs", copy_if_tensor(torch.from_numpy(edges[:, 0]).float()))
+        self.register_buffer("max_qhs", copy_if_tensor(torch.from_numpy(edges[:, -1]).float()))
+
+        self.times = nn.Parameter(torch.zeros_like(centers))
+        self.high_m = nn.Parameter(torch.zeros(self.centers.shape[0]).float())
+        self.high_b = nn.Parameter(torch.zeros(self.centers.shape[0]).float())
+
+    def forward(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor) -> torch.FloatTensor:
+        # qhs: (batch_size, context_window)
+        # min_qhs, max_qhs: (n_pmts,)
+
+        interp = linear_interp(ids=pmt_ids, x=qhs, xp=self.centers, fp=self.times)
+        interp_qhs = (qhs >= self.min_qhs[pmt_ids]) | (qhs <= self.max_qhs[pmt_ids])
+        pmt_ids = interp_qhs * pmt_ids
+        interp = interp_qhs * interp
+
+        straight_line_fit_qhs = qhs > self.max_qhs[pmt_ids]
+        interp = interp + straight_line_fit_qhs * self.high_m[pmt_ids] * qhs + self.high_b[pmt_ids]
+
+        return interp
+
+
+@torch.compile(dynamic=False, fullgraph=True)
 class HitTimeAutoEncoder(nn.Module):
     def __init__(
         self,
