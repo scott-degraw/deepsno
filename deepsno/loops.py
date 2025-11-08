@@ -205,6 +205,8 @@ def train(
 
                 profiler.start("loss_calc")
                 loss = loss_fn(predict, truth)
+                if not torch.isfinite(loss):
+                    raise ValueError("Training loss is not finite")
                 profiler.stop("loss_calc")
                 writer.add_scalar("Loss/train", loss.detach().item(), step_num, new_style=True)
 
@@ -239,6 +241,8 @@ def train(
                     model.train()
                     model.output_unnorm = train_unnorm
 
+                    if not math.isfinite(val_loss):
+                        raise ValueError("Validation loss is not finite")
                     writer.add_scalar("Loss/val", val_loss, step_num, new_style=True)
 
                     if val_metric_is_inverted:
