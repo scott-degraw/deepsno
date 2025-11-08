@@ -152,7 +152,7 @@ if __name__ == "__main__":
             cfg["predict"]["output_path"] = checkpoint_dir / cfg["predict"]["output_path"]
 
         # Merge the values from the ckpt config but override ckpt config with config from --config
-        ckpt_cfg = jsonargparse.namespace_to_dict(parser.parse_path(cfg["predict"]["ckpt_config"]))
+        ckpt_cfg = parser.parse_path(cfg["predict"]["ckpt_config"]).as_dict()
         cfg = ckpt_cfg | cfg
 
     if cfg["force"]:
