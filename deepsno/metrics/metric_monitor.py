@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Hashable, Iterable
 
-import boost_histogram as bh
+import hist as h
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -61,8 +61,8 @@ class PositionMonitor(MetricMonitor):
         self.bins = bins
 
         self.residual_hists = [
-            bh.Histogram(bh.axis.Regular(bins, min_residual, max_residual, overflow=False, underflow=False))
-            for _ in range(3)
+            h.Hist(h.axis.Regular(bins, min_residual, max_residual, overflow=False, underflow=False, name=""))
+            for name, label in zip(["x", "y", "z"], [r"$x$", r"$y$", r"$z$"])
         ]
 
         self.residual_sum = np.zeros(3, dtype=np.double)
@@ -70,7 +70,8 @@ class PositionMonitor(MetricMonitor):
         self.name_prefix = name_prefix
 
     def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
-        all_residuals = predict["positions"].cpu().numpy() - truth["positions"].cpu().numpy()
+        truth_positions = np.stack([truth[f"mcPos{c}"].cpu().numpy() for c in ["x", "y", "z"]], axis=-1)
+        all_residuals = predict["positions"].cpu().numpy() - truth_positions
         for residuals, hist in zip(all_residuals.T, self.residual_hists):
             hist.fill(residuals)
 
@@ -88,6 +89,8 @@ class PositionMonitor(MetricMonitor):
         positions = ["x", "y", "z"]
         for hist, c in zip(self.residual_hists, positions):
             axis.stairs(hist.values(), hist.axes[0].edges, label=c)
+        
+        axis.axvline(0, plt.rcParams["axes.linewidth"])
         axis.set_xlabel("Position residual (mm)")
         axis.set_ylabel("Counts")
         axis.legend()
@@ -121,10 +124,10 @@ class TimeResidualMonitor(MetricMonitor):
         self.offset = offset
         self.scale = scale
 
-        self.predict_hist = bh.Histogram(
-            bh.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True)
+        self.predict_hist = h.Hist(
+            h.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True)
         )
-        self.truth_hist = bh.Histogram(bh.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True))
+        self.truth_hist = h.Hist(h.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True))
 
         self.name_prefix = name_prefix
         self.effective_c = effective_c
