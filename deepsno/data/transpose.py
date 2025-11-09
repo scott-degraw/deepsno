@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 
+import pickle
 from pathlib import Path
-from typing import Iterable
 
+import awkward as ak
 import h5py
+import hist as h
 import numba as nb
 import numpy as np
+import uproot as ur
 from jsonargparse import CLI
-from tqdm import trange
+from tqdm import tqdm
 
 
 @nb.njit
@@ -29,71 +32,39 @@ def count_pmt_ids(id_block: np.ndarray, id_counts: np.ndarray) -> None:
 
 
 def transpose(
-    h5_path: str | Path,
-    block_size: int = 10_000,
-    only_count: bool = True,
-    groups: Iterable[str] = ["pmt"],
+    path: str | Path,
+    min_qhs: float = 0.0,
+    max_qhs: float = 300.0,
+    step_size: str | int = "100 MB",
+    q: float = 0.98,
+    epsilon: float = 1e-9,
 ):
-    with h5py.File(h5_path, mode="r+") as h5_file:
-        id_dset = h5_file["pmt/id"]
+    path = Path(path)
+    if q < 0 or q > 1:
+        raise ValueError("Quantile 'q' must be between 0 and 1.")
+    with ur.open({path: "pmt_info"}) as pmt_info:
+        n_pmts = pmt_info.num_entries
 
-        dset_len = id_dset.shape[0]
-        n_pmts = h5_file["pmt_info/pos"].shape[0]
+    # The actual QHS values are stored in the centres of the bins
+    hist = h.Hist(
+        h.axis.Integer(0, n_pmts, name="pmt_id", label="PMT ID"),
+        h.axis.Variable(
+            np.arange(min_qhs - 0.25, max_qhs + 0.3, 0.5),  # 0.3 to include max_qhs in the last bin
+            name="qhs",
+            label="QHS (cap)",
+        ),
+    )
+    for chunk in tqdm(
+        ur.iterate({path: "event"}, step_size=step_size, library="ak", expressions=["pmt_id", "pmt_qhs"])
+    ):
+        hist.fill(ak.flatten(chunk["pmt_id"]), ak.flatten(chunk["pmt_qhs"]))
 
-        n_blocks = (dset_len - 1) // block_size + 1
+    hist_path = path.parent / "pmt_qhs_hist.pkl"
+    with open(hist_path, "wb") as f:
+        pickle.dump(hist, f)
+    print(f"Saved histogram for pmt_qhs to {hist_path}")
 
-        id_counts = np.zeros(n_pmts, dtype=np.int64)
 
-        start_row = 0
-        for _ in trange(n_blocks, desc="Finding number of events per PMT"):
-            id_block = np.concat(id_dset[start_row : min(start_row + block_size, dset_len)])
-            count_pmt_ids(id_block=id_block, id_counts=id_counts)
-
-            start_row += block_size
-        
-        if "id_counts" in h5_file["pmt_info"]:
-            h5_file["pmt_info/id_counts"][:] = id_counts
-        else:
-            h5_file["pmt_info"].create_dataset("id_counts", data=id_counts)
-
-        if only_count:
-            return
-
-        id_counts[0] = 0
-
-        transpose_group = h5_file.create_group("transpose")
-        for group in groups:
-            h5_group = h5_file[group]
-            output_h5_group = transpose_group.create_group(group)
-
-            dset_buffers = []
-            for dset_key in h5_group.keys():
-                dset_group = output_h5_group.create_group(dset_key)
-                dset_dtype = h5_group[dset_key][0].dtype
-                for pmt_id in range(n_pmts):
-                    dset_group.create_dataset(
-                        str(pmt_id),
-                        shape=(id_counts[pmt_id],),
-                        dtype=dset_dtype,
-                    )
-                dset_buffers.append(np.zeros((n_pmts, block_size), dtype=dset_dtype))
-
-            start_row = 0
-            per_id_start_row = np.zeros(n_pmts, dtype=np.int64)
-            for _ in trange(n_blocks, desc=f"Transposing {group}"):
-                id_block = np.concat(id_dset[start_row : min(start_row + block_size, dset_len)])
-                for dset_key, dset_buffer in zip(h5_group.keys(), dset_buffers, strict=True):
-                    dset_block = np.concat(h5_group[dset_key][start_row : min(start_row + block_size, dset_len)])
-
-                    per_id_end = transpose_block(id_block=id_block, dset_block=dset_block, dset_buffer=dset_buffer)
-
-                    for pmt_id in range(n_pmts):
-                        end = per_id_end[pmt_id]
-                        start = per_id_start_row[pmt_id]
-                        output_h5_group[dset_key][str(pmt_id)][start : start + end] = dset_buffer[pmt_id, :end]
-
-                per_id_start_row += per_id_end
-                start_row += block_size
 
 
 if __name__ == "__main__":
