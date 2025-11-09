@@ -31,7 +31,6 @@ class ExpTimeWalk(nn.Module):
         c_beta: float = 10,
     ):
         super().__init__()
-        torch.backends.cudnn.conv.fp32_precision = "tf32"
 
         if b_init <= 0:
             raise ValueError("'b_init' must be positive")
@@ -146,6 +145,7 @@ class HitTimeAutoEncoder(nn.Module):
         norm_dict: dict | None = None,
     ):
         super().__init__()
+        torch.set_float32_matmul_precision("high")
 
         self.add_module("position_reconstructor", position_reconstructor)
         self.add_module("time_walk", time_walk)
