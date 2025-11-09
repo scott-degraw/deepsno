@@ -253,40 +253,126 @@ class HitTimeAEDataset(PositionRecoDataset):
 class TimeWalkDataset(HitTimeAEDataset):
     def __init__(
         self,
-        a_mean: float = 0.0,
-        a_std: float = 3.0,
-        b_mean: float = 0.0,
-        b_std: float = 2.0,
-        c_mean: float = 50,
-        c_std: float = 10,
+        ratdb_path: str | Path,
+        model_save_dir: str | Path,
         noise: float = 1.5,
+        qhs_weight_path: str | Path | None = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-
-        self.add_noise = True
-
-        self.a = torch.from_numpy(self.generator.normal(a_mean, a_std, self.n_pmts))
-        self.b = torch.from_numpy(self.generator.normal(b_mean, b_std, self.n_pmts))
-        self.c = torch.from_numpy(self.generator.normal(c_mean, c_std, self.n_pmts))
-
-        self.a[0] = 0.0
-        self.b[0] = 0.0
+        model_save_dir = Path(model_save_dir)
 
         self.noise = noise
 
-    def time_walk(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor):
-        times = self.a[pmt_ids] + self.b[pmt_ids] * torch.exp(-qhs / self.c[pmt_ids])
+        with open(ratdb_path) as f:
+            time_walk_params = json.load(f)
 
-        if self.add_noise:
-            times += torch.from_numpy(self.generator.normal(0, self.noise, times.shape))
+        bool_time_walk_status = good_pmt_status(
+            np.array(time_walk_params["PCATW_status"]), status_mask=self.status_mask
+        )
 
-        return times
+        param_names = ["time_scale", "qhs_scale", "gradient", "intercept"]
+        for name in param_names:
+            time_walk_params[name] = np.array(time_walk_params[name], dtype=np.float32)
 
-    def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
-        inputs, truth = super().__getitem__(index)
+        time_walk_params["max_qhs_scale"] = np.inf
+        for param_name in param_names:
+            bool_time_walk_status &= time_walk_params[f"max_{param_name}"] > time_walk_params[param_name]
+            bool_time_walk_status &= time_walk_params[f"min_{param_name}"] < time_walk_params[param_name]
 
-        inputs["uncal_hit_times"] += self.time_walk(pmt_ids=inputs["pmt_ids"], qhs=inputs["qhs"])
+        # Ids that are valid in dataset but are not valid in given time walk table
+        ids_to_fill = np.nonzero(self.pmt_statuses & (~bool_time_walk_status))[0]
 
-        return inputs, truth
+        crate_size = 512
+
+        def find_next_id(id):
+            while not bool_time_walk_status[id]:
+                id += 1
+                if id >= len(bool_time_walk_status):
+                    return -1
+            if id % crate_size == 0:
+                return -1
+            return id
+
+        def find_prev_id(id):
+            while not bool_time_walk_status[id]:
+                id -= 1
+                if id < 0:
+                    return -1
+            if id % crate_size == crate_size - 1:
+                return -1
+            return id
+
+        def linear_interpolate(x, x1, y1, x2, y2):
+            if x1 == x2:
+                return y1
+            return y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+
+        for id in ids_to_fill:
+            id1 = find_prev_id(id)
+            id2 = find_next_id(id)
+            no_interpolate = False
+            if id1 == -1:
+                if id2 == -1:
+                    # Crate is empty
+                    no_interpolate = True
+                # Try to extrapolate instead
+                id1 = find_next_id(id2)
+                if id1 == -1:
+                    # Give up
+                    no_interpolate = True
+            if id2 == -1:
+                # Try to extrapolate
+                id2 = find_prev_id(id1)
+                if id2 == -1:
+                    no_interpolate = True
+            if no_interpolate:
+                self.pmt_statuses[id] = False
+            else:
+                for param_name in param_names:
+                    params = time_walk_params[param_name]
+                    params[id] = linear_interpolate(id, x1=id1, y1=params[id1], x2=id2, y2=params[id2])
+                    params[id] = np.clip(
+                        params[id],
+                        time_walk_params[f"min_{param_name}"],
+                        time_walk_params[f"max_{param_name}"],
+                    )
+
+        model_save_dir.mkdir(parents=True, exist_ok=True)
+        with open(model_save_dir / "filled_time_walk.json", "w") as f:
+            saved_time_walk_params = {}
+            for name, params in time_walk_params.items():
+                if isinstance(params, np.ndarray):
+                    saved_time_walk_params[name] = params.tolist()
+                else:
+                    saved_time_walk_params[name] = params
+
+            json.dump(saved_time_walk_params, f)
+
+        for param_name in param_names:
+            setattr(self, param_name, torch.from_numpy(time_walk_params[param_name]))
+
+        if qhs_weight_path is not None:
+            with h5py.File(qhs_weight_path, "r") as h5_file:
+                self.qhs_weights = h5_file["weights"][:]
+                self.qhs_bins = h5_file["qhs_bins"][:]
+
+        self.qhs_sampler = torch.distributions.Uniform(0, 300)
+
+    def __iter__(self) -> Iterable[dict[Hashable, torch.Tensor]]:
+        for inputs, truth in super().__iter__():
+            truth["weights"] = torch.ones_like(inputs["qhs"])
+
+            ids = inputs["pmt_ids"]
+            time_walk = exp_time_walk(
+                q=inputs["qhs"],
+                a=self.time_scale[ids],
+                b=self.qhs_scale[ids],
+                c=self.gradient[ids],
+                d=self.intercept[ids],
+            )
+            inputs["uncal_hit_times"] += time_walk
+            inputs["uncal_hit_times"] += self.noise * torch.randn_like(inputs["uncal_hit_times"])
+
+            yield inputs, truth
