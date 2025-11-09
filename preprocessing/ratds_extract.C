@@ -56,22 +56,19 @@ struct McEvent {
 
 
 void ratds_extract(std::string input_fname, 
-        std::string ntuple_fname,
         std::string output_fname,
         Float_t min_ht, Float_t max_ht, Float_t min_qhs, Float_t max_qhs, 
-        std::string filter = "", bool eca_cal = false) {
+        std::string ntuple_fname = "",
+        std::string filter = "", 
+        bool eca_cal = false 
+    ) {
     try {
         std::cout << "Extracting data from " << input_fname << " into " << output_fname << "\n";
 
         if (gSystem->AccessPathName(input_fname.c_str(), kFileExists) != 0) 
             throw std::runtime_error("Input file " + input_fname + " does not exist");
-        if (gSystem->AccessPathName(ntuple_fname.c_str(), kFileExists) != 0) 
-            throw std::runtime_error("Ntuple file " + ntuple_fname + " does not exist");
-
-        std::cout << "Using ntuple file " << ntuple_fname << "\n";
-
-        TFile ntuple_file(ntuple_fname.c_str(), "READ");
-        TTree * ntuple = ntuple_file.Get<TTree>("output");
+        bool use_ntuple = ntuple_fname != "";
+        TTree * ntuple = nullptr;
 
         // Start the data reading 
         RAT::DU::DSReader dsreader(input_fname);
@@ -85,32 +82,12 @@ void ratds_extract(std::string input_fname,
         TFile output_file(output_fname.c_str(), "RECREATE");
         TTree pmt_info_tree("pmt_info", "Contains PMT information");
 
-        ntuple->SetBranchStatus("*", 0); // Disable all branches
-        for (const auto &branch : ntuple_branches) {
-            ntuple->SetBranchStatus(branch.c_str(), 1); // Enable only the branches we need
-        }
-        if (is_mc) {
-            for (const auto &branch : mc_ntuple_branches) {
-                ntuple->SetBranchStatus(branch.c_str(), 1); 
-            }
-        }
-        TTree * event_tree = ntuple->CloneTree(0);
-        event_tree->SetDirectory(&output_file);
-        event_tree->SetTitle("Contains event level data");
-        event_tree->SetName("event");
-
-        Int_t run_id;
-        Int_t event_id;
-        ntuple->BuildIndex("runID", "eventID");
-
         std::vector<Double_t> av_offset_vec = db->GetLink("GEO", "av")->GetDArray("position");
         if (av_offset_vec.size() != 3) {
             throw std::runtime_error("AV offset vector should have 3 elements, but has " + std::to_string(av_offset_vec.size()));
         }
         std::array<Double_t, 3> av_offset;
         std::copy(av_offset_vec.begin(), av_offset_vec.end(), av_offset.begin());
-
-        event_tree->Branch("av_offset", &av_offset);
 
         RAT::DBLinkPtr native_geo_dims_link = db->GetLink("NATIVE_GEO_DIMENSIONS", "natgeo_dimensions");
         Double_t inner_av_radius = native_geo_dims_link->GetD("inner_av_radius");
@@ -124,6 +101,66 @@ void ratds_extract(std::string input_fname,
         PmtEvent pmt_event;
         McEvent mc_event;
 
+        TTree * event_tree = nullptr;
+        ROOT::RDF::RResultPtr<std::vector<Int_t>> run_ids;
+        ROOT::RDF::RResultPtr<std::vector<Int_t>> event_ids;
+
+        std::size_t n_entries = dsreader.GetEntryCount();
+        std::size_t n_selected = n_entries;
+
+        if (use_ntuple) {
+            if (gSystem->AccessPathName(ntuple_fname.c_str(), kFileExists) != 0) 
+                throw std::runtime_error("Ntuple file " + ntuple_fname + " does not exist");
+
+            std::cout << "Using ntuple file " << ntuple_fname << "\n";
+            TFile ntuple_file(ntuple_fname.c_str(), "READ");
+            ntuple = ntuple_file.Get<TTree>("output");
+
+            ntuple->SetBranchStatus("*", 0); // Disable all branches
+            for (const auto &branch : ntuple_branches) {
+                ntuple->SetBranchStatus(branch.c_str(), 1); // Enable only the branches we need
+            }
+            if (is_mc) {
+                for (const auto &branch : mc_ntuple_branches) {
+                    ntuple->SetBranchStatus(branch.c_str(), 1); 
+                }
+            }
+            event_tree = ntuple->CloneTree(0);
+
+            ntuple->BuildIndex("runID", "eventID");
+
+            // Perform the cuts from the ntuple
+            if (is_mc) {
+                ntuple->SetBranchStatus("mcIndex", 1); 
+                ntuple->SetBranchStatus("evIndex", 1); 
+
+                if (filter != "")
+                    filter += " && ";
+                filter += " (evIndex == 0)"; // Ignore the other triggered events
+                std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
+            }
+
+            ROOT::RDataFrame ntuple_df("output", ntuple_fname);
+
+            if (filter != "") 
+                std::cout << "Applying filter: " << filter << '\n';
+
+            auto filtered_df = ntuple_df.Filter(filter);
+            n_selected = filtered_df.Count().GetValue();
+
+            if (filter != "") 
+                std::cout << "Selected " << n_selected << " events out of " << n_entries << "\n";
+
+            run_ids = filtered_df.Take<Int_t>("runID");
+            event_ids = filtered_df.Take<Int_t>("eventID");
+        } else {
+            event_tree = new TTree;
+        }
+
+        event_tree->SetDirectory(&output_file);
+        event_tree->SetTitle("Contains event level data");
+        event_tree->SetName("event");
+        event_tree->Branch("av_offset", &av_offset);
         event_tree->Branch("pmt_id", &pmt_event.id);
         event_tree->Branch("pmt_hit_time", &pmt_event.hit_time);
         event_tree->Branch("pmt_qhs", &pmt_event.qhs);
@@ -149,33 +186,6 @@ void ratds_extract(std::string input_fname,
             pmt_info_tree.Fill();
         }
 
-        std::size_t n_entries = dsreader.GetEntryCount();
-
-        // Perform the cuts from the ntuple
-        if (is_mc) {
-            ntuple->SetBranchStatus("mcIndex", 1); 
-            ntuple->SetBranchStatus("evIndex", 1); 
-
-            if (filter != "")
-                filter += " && ";
-            filter = " (evIndex == 0)"; // Ignore the other triggered events
-            std::cout << "Data is MC so only selecting first triggered event for every MC event\n";
-        }
-
-        ROOT::RDataFrame ntuple_df("output", ntuple_fname);
-
-        if (filter != "") 
-            std::cout << "Applying filter: " << filter << '\n';
-
-        auto filtered_df = ntuple_df.Filter(filter);
-        Long_t n_selected = filtered_df.Count().GetValue();
-
-        if (filter != "") 
-            std::cout << "Selected " << n_selected << " events out of " << n_entries << "\n";
-
-        auto run_ids = filtered_df.Take<Int_t>("runID");
-        auto event_ids = filtered_df.Take<Int_t>("eventID");
-
         auto *pmt_selector = RAT::PMTSelectors::PMTSelectorFactory::Get()->GetPMTSelector("PMTCalSelector");
         RAT::DS::FitVertex dummy_vertex;
 
@@ -186,10 +196,12 @@ void ratds_extract(std::string input_fname,
         bool valid_entry;
         std::cout << '\n';
 
+        Int_t run_id;
+        Int_t event_id;
 
         std::size_t run_event_i = 0; // This indexes the filtered run and event IDs
         for (std::size_t i_entry = 0; i_entry < n_entries; i_entry++) {
-            if (run_event_i >= run_ids->size()) {
+            if (use_ntuple && (run_event_i >= run_ids->size())) {
                 break;
             }
 
@@ -197,6 +209,7 @@ void ratds_extract(std::string input_fname,
             
             const RAT::DS::Entry &entry = dsreader.GetEntry(i_entry);
             run_id = entry.GetRunID();
+
             // In MC, some entries may not have triggered events.
             if (entry.GetEVCount() == 0) {
                 if (!is_mc) {
@@ -207,8 +220,10 @@ void ratds_extract(std::string input_fname,
             const RAT::DS::EV &ev = entry.GetEV(0);
             event_id = ev.GetGTID();
 
-            if (run_id != run_ids->at(run_event_i) || event_id != event_ids->at(run_event_i)) {
-                continue;
+            if (use_ntuple) {
+                if (run_id != run_ids->at(run_event_i) || event_id != event_ids->at(run_event_i)) {
+                    continue;
+                }
             }
             std::cout << "\rProcessing entry " << run_event_i + 1 << " / " << n_selected;
             run_event_i++; // Move onto the next filtered event
@@ -281,27 +296,26 @@ void ratds_extract(std::string input_fname,
                 }
             }
             if (valid_entry) {
-                Long_t ntuple_entry_num = ntuple->GetEntryNumberWithIndex(run_id, event_id);
-                if (ntuple_entry_num < 0) {
-                    throw std::runtime_error("Could not find entry with runID " + std::to_string(run_id) + 
-                                            " and eventID " + std::to_string(event_id));
+                if (use_ntuple) {
+                    Long_t ntuple_entry_num = ntuple->GetEntryNumberWithIndex(run_id, event_id);
+                    if (ntuple_entry_num < 0) {
+                        throw std::runtime_error("Could not find entry with runID " + std::to_string(run_id) + 
+                                                " and eventID " + std::to_string(event_id));
+                    }
+                        ntuple->GetEntry(ntuple_entry_num);
                 }
-                ntuple->GetEntry(ntuple_entry_num);
                 event_tree->Fill();
             }
             else
                 n_selected_final--;
         }
-        if (run_event_i != run_ids->size()) {
+        if (use_ntuple && (run_event_i != run_ids->size())) {
             throw std::runtime_error("Did not get through all filtered events");
         }
         std::cout << std::endl;
         std::cout << "Removed " << n_selected - n_selected_final << "\n";
         std::cout << "Writing output file " << output_fname << "\n";
         
-        output_file.Write();
-        output_file.Close();
-        ntuple_file.Close();
     } catch (const std::exception &e) {
         std::cerr << "Error: " << e.what() << "\n";
         exit(1);
