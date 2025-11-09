@@ -21,13 +21,26 @@ def exp_time_walk(
 
 
 class ExpTimeWalk(nn.Module):
-    def __init__(self, n_pmts: int, a_init: float = 0.1, b_init: float = 0.1, c_init: float = 0.0, d_init: float = 0.0):
+    def __init__(
+        self,
+        n_pmts: int,
+        a_init: float = 0.1,
+        b_init: float = 0.1,
+        c_init: float = -0.01,
+        d_init: float = 0.0,
+        b_beta: float = 10,
+        c_beta: float = 10,
+    ):
         super().__init__()
 
-        assert b_init > 0, "'b_init' must be positive"
-        assert c_init < 0, "'c_init' must be negative"
-        b_init = np.log(np.exp(b_init) - 1)
-        c_init = np.log(np.exp(-c_init) - 1)
+        if b_init <= 0:
+            raise ValueError("'b_init' must be positive")
+        if c_init > 0:
+            raise ValueError("'c_init' must be non-positive")
+        self.b_beta = b_beta / b_init
+        self.c_beta = -c_beta / c_init
+        b_init = np.log(np.exp(self.b_beta * b_init) - 1) / self.b_beta
+        c_init = np.log(np.exp(self.c_beta * -c_init) - 1) / self.c_beta
 
         self.a = nn.Parameter(torch.full((n_pmts,), a_init))
         self.b_base = nn.Parameter(torch.full((n_pmts,), b_init))
@@ -36,14 +49,14 @@ class ExpTimeWalk(nn.Module):
 
     @property
     def b(self):
-        return F.softplus(self.b_base, beta=1.0, threshold=20.0)
+        return F.softplus(self.b_base, beta=self.b_beta, threshold=20.0)
 
     @property
     def c(self):
-        return -F.softplus(self.c_base, beta=1.0, threshold=20.0)
+        return -F.softplus(self.c_base, beta=self.c_beta, threshold=20.0)
 
     def forward(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor) -> torch.Tensor:
-        return exp_time_walk(qhs, self.a[pmt_ids], self.b[pmt_ids], self.c[pmt_ids], self.d[pmt_ids])
+        return exp_time_walk(q=qhs, a=self.a[pmt_ids], b=self.b[pmt_ids], c=self.c[pmt_ids], d=self.d[pmt_ids])
 
 
 class CableDelayTimeWalk(nn.Module):
