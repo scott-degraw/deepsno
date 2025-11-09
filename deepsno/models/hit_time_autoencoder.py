@@ -1,17 +1,16 @@
+import pickle
 from pathlib import Path
-from typing import Tuple
 
-import uproot as ur
 import numpy as np
 import torch
 import torch.nn.functional as F
+import uproot 
 import yaml
 from torch import nn
 
 from deepsno.data.inter_pts_bins import inter_pts_bins
 from deepsno.utils.config_parse import instantiate
-from deepsno.utils.train import copy_if_tensor, get_best_ckpt
-
+from deepsno.utils.train import copy_if_tensor
 
 
 def exp_time_walk(
@@ -138,6 +137,10 @@ class HitTimeAutoEncoder(nn.Module):
         c_water: float,
         av_radius: float,
         dset: str | Path,
+        min_occupancy: float = 0,
+        max_occupancy: float = 1.0,
+        all_pass: int = 0x0,
+        all_fail: int = 0xFFFFFFFF,
         fix_c: bool = False,
         norm_dict: dict | None = None,
     ):
@@ -180,11 +183,18 @@ class HitTimeAutoEncoder(nn.Module):
 
         self.register_buffer("av_radius", copy_if_tensor(torch.tensor(av_radius) / self.position_scale))
 
-        with ur.open({dset: "transpose"}) as transpose:
-            status = transpose["status"].array(library="np").astype(np.int32)
+        self.all_pass = all_pass
+        self.all_fail = all_fail
+        with uproot.open({dset: "transpose"}) as transpose:
+            pmt_counts = transpose["pmt_counts"]
+            occupancy = pmt_counts / np.sum(pmt_counts)
+            valid = (occupancy > min_occupancy) & (occupancy <= max_occupancy)
+            print(f"Using {np.sum(valid)} / {len(valid)} PMTs in calibration")
+            status = np.where(valid, all_pass, all_fail)
             self.register_buffer("status", copy_if_tensor(status))
+            self.register_buffer("pmt_valid", copy_if_tensor(valid))
 
-        with ur.open({dset: "metadata"}) as metadata:
+        with uproot.open({dset: "metadata"}) as metadata:
             self.register_buffer("run_range", copy_if_tensor(metadata["run_range"].array(library="np")[0]))
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
@@ -254,6 +264,7 @@ class HitTimeAutoEncoder(nn.Module):
         av_offset: torch.FloatTensor,
         qhs: torch.FloatTensor | None = None,
     ) -> torch.FloatTensor:
+        pmt_ids *= self.pmt_valid[pmt_ids]
         self.position_reconstructor.input_norm = False
         self.position_reconstructor.output_unnorm = False
 
