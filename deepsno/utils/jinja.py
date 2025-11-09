@@ -38,5 +38,7 @@ def path_join(paths) -> str:
 
 
 def jinja_yaml_loader(stream):
+    if not isinstance(stream, str):
+        stream = stream.read()
     rendered_yaml = env.from_string(stream).render()
     return yaml_load(rendered_yaml)
