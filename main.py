@@ -14,7 +14,7 @@ from torch import nn, optim
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from deepsno.loops import test, train
+from deepsno.loops import predict, train
 from deepsno.metrics.metric_monitor import MonitorCollection
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
@@ -107,6 +107,8 @@ if __name__ == "__main__":
     predict_parser = ArgumentParser(parser_mode=loader)
     predict_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=True)
     predict_parser.add_argument("--ckpt_config", type=ptyping.Path_fr, required=False)
+    predict_parser.add_argument("--predict_keys", type=list, required=False)
+    predict_parser.add_argument("--truth_keys", type=list, required=False)
     predict_parser.add_argument("--output_path", type=ptyping.Path_fc, required=False)
     predict_parser.add_argument("--device", type=str, required=True)
     predict_parser.add_argument("--dataset", type=torch.utils.data.Dataset)
@@ -144,7 +146,7 @@ if __name__ == "__main__":
             cfg["predict"]["ckpt_config"] = checkpoint_dir / cfg["predict"]["ckpt_config"]
 
         if cfg["predict"]["output_path"] is None:
-            cfg["predict"]["output_path"] = checkpoint_dir / "test_result.h5"
+            cfg["predict"]["output_path"] = checkpoint_dir / "predict.root"
         elif not Path(cfg["predict"]["output_path"]).is_absolute():
             cfg["predict"]["output_path"] = checkpoint_dir / cfg["predict"]["output_path"]
 
@@ -179,7 +181,6 @@ if __name__ == "__main__":
             cfg["train"]["num_epochs"] = None
             cfg["train"]["num_steps"] = 3
             cfg["train"]["val_num_steps"] = 2
-            cfg["train"]["val_len"] = int(1.5 * cfg["train"]["val_batch_size"])
             cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / "dry_run"
 
         # Create the model save directory
@@ -319,6 +320,8 @@ if __name__ == "__main__":
         )
 
     elif cfg["subcommand"] == "predict":
+        import uproot
+
         cfg_keys.append("predict")
 
         cfg = {key: cfg[key] for key in cfg_keys}
@@ -341,27 +344,30 @@ if __name__ == "__main__":
         model.load_state_dict(state_dict["model"])
 
         dataloader: data.DataLoader = data.DataLoader(
-            cfg.predict.dataset, batch_size=cfg.predict.batch_size, num_workers=cfg.predict.num_workers
+            cfg.predict.dataset,
+            batch_size=cfg.predict.batch_size,
+            num_workers=cfg.predict.num_workers,
+            shuffle=False,
         )
 
-        dataset_len = len(cfg.predict.dataset) if cfg.predict.dataset_len is None else cfg.predict.dataset_len
-        if dataset_len > len(cfg.predict.dataset):
-            raise ValueError(
-                (
-                    f"The value of 'dataset_len' is larger than the length of the dataset: {len(cfg.predict.dataset)}. "
-                    "'dataset_len' must be less than or equal to the length of the dataset."
-                )
-            )
+        # dataset_len = len(cfg.predict.dataset) if cfg.predict.dataset_len is None else cfg.predict.dataset_len
+        # if dataset_len > len(cfg.predict.dataset):
+        #     raise ValueError(
+        #         (
+        #             f"The value of 'dataset_len' is larger than the length of the dataset: {len(cfg.predict.dataset)}. "
+        #             "'dataset_len' must be less than or equal to the length of the dataset."
+        #         )
+        #     )
 
         predict_cfg_path = Path(cfg.predict.output_path).with_suffix(".yaml")
         parser.save(save_cfg, predict_cfg_path, overwrite=True)
 
-        with h5py.File(cfg.predict.output_path, "w") as h5_file:
-            test(
+        with uproot.recreate(cfg.predict.output_path) as file:
+            predict(
                 model=model,
                 dataloader=dataloader,
-                group=h5_file,
-                dataset_len=dataset_len,
+                file=file,
                 device=cfg.predict.device,
-                predict_key=cfg.predict.predict_key,
+                predict_keys=cfg.predict.predict_keys,
+                truth_keys=cfg.predict.truth_keys,
             )

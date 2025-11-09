@@ -1,8 +1,9 @@
+import math
 from pathlib import Path
 
-import h5py
 import torch
 import tqdm
+import uproot
 from torch import nn
 from torch.utils import _pytree as pytree
 from torch.utils import data
@@ -21,44 +22,37 @@ TQDM_KWARGS = {
 
 
 @torch.inference_mode()
-def test(
+def predict(
     model: nn.Module,
     dataloader: data.DataLoader,
-    group: h5py.File | h5py.Group,
-    dataset_len: int,
+    file: uproot.WritableFile,
     device: str | torch.device,
-    predict_key: str | None = None,
+    predict_keys: str | None = None,
+    truth_keys: str | None = None,
+    predict_name: str = "predict",
+    truth_name: str = "truth",
 ):
     model.to(device)
     model.eval()
     model.output_unnorm = True
 
-    inputs, _ = next(iter(dataloader))
-    inputs = pytree.tree_map(lambda x: x.to(device), inputs)
-    predicts = model(**inputs)
-    if predict_key is not None:
-        predicts = predicts[predict_key]
-
-    batch_size = predicts.shape[0]
-    data_shape = predicts.shape[1:]
-    dataset_shape = (dataset_len, *data_shape)
-    dataset_dtype = predicts.cpu().numpy().dtype
-
-    predict_dset = group.create_dataset("predict", shape=dataset_shape, dtype=dataset_dtype)
-
-    start_row = 0
+    first_batch = True
     for inputs, truth in tqdm.tqdm(dataloader, desc="Test", **TQDM_KWARGS):
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
+
         predicts = model(**inputs)
-        if predict_key is not None:
-            predicts = predicts[predict_key]
+        predicts = {key: predicts[key] for key in predict_keys}
+        predicts = pytree.tree_map(lambda x: x.detach().cpu().numpy(), predicts)
+        truth = pytree.tree_map(lambda x: x.detach().cpu().numpy(), truth)
+        truth = {key: truth[key] for key in truth_keys}
 
-        batch_size = min(start_row + predicts.shape[0], dataset_len) - start_row
-        predict_dset[start_row : start_row + batch_size] = predicts[:batch_size].cpu().numpy()
-
-        start_row += batch_size
-        if start_row >= dataset_len:
-            break
+        if first_batch:
+            file[predict_name] = predicts
+            file[truth_name] = truth
+            first_batch = False
+        else:
+            file[predict_name].extend(predicts)
+            file[truth_name].extend(truth)
 
 
 @torch.inference_mode()
