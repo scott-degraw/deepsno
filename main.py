@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Iterable
 from warnings import warn
 
-import h5py
 import jsonargparse
 import torch
 from jsonargparse import ArgumentParser, Namespace, set_loader
@@ -15,7 +14,6 @@ from torch import nn, optim
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 
-from deepsno.data.datasets import BlockedRandomSampler
 from deepsno.loops import test, train
 from deepsno.metrics.metric_monitor import MonitorCollection
 from deepsno.metrics.metrics import Metric
@@ -79,14 +77,14 @@ if __name__ == "__main__":
     train_parser.add_argument("--seed", type=int, default=0)
     train_parser.add_argument("--checkpoint_dir", type=ptyping.Path_dc, required=True)
     train_parser.add_argument("--device", type=str, required=True)
-    train_parser.add_argument("--dataset", type=torch.utils.data.Dataset)
+    train_parser.add_argument("--train_dataset", type=torch.utils.data.Dataset)
+    train_parser.add_argument("--val_dataset", type=torch.utils.data.Dataset)
     train_parser.add_argument("--batch_size", type=int, required=True)
     train_parser.add_argument("--val_batch_size", type=int, required=True)
     train_parser.add_argument("--shuffle", type=bool, required=True)
     train_parser.add_argument("--num_workers", type=int, default=0)
     train_parser.add_argument("--num_epochs", type=int, required=False)
     train_parser.add_argument("--num_steps", type=int, required=False)
-    train_parser.add_argument("--val_len", type=int | float, required=True)
 
     train_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=False)
     train_parser.add_argument("--ckpt_keys", type=str, nargs="+", required=False)
@@ -115,7 +113,6 @@ if __name__ == "__main__":
     predict_parser.add_argument("--batch_size", type=int, required=True)
     predict_parser.add_argument("--num_workers", type=int, default=0)
     predict_parser.add_argument("--dataset_len", type=int, required=False)
-    predict_parser.add_argument("--predict_key", type=str, required=False)
 
     parser = ArgumentParser(prog="app", description="", parser_mode=loader)
     parser.add_argument("-c", "--config", action="config")
@@ -244,28 +241,26 @@ if __name__ == "__main__":
         if (cfg["num_epochs"] is None) and (cfg["num_steps"] is None):
             raise ValueError("Either 'train.num_epochs' or 'train.num_steps' must be provided.")
 
-        if isinstance(cfg["val_len"], float):
-            lengths = [1 - cfg["val_len"], cfg["val_len"]]
-        else:
-            lengths = [len(cfg["dataset"]) - cfg["val_len"], cfg["val_len"]]
-
-        train_set, val_set = data.random_split(cfg["dataset"], lengths)
-
-        print(f"Training set size: {len(train_set):,}")
-        print(f"Validation set size: {len(val_set):,}")
+        print(f"Training set size: {len(cfg['train_dataset']):,}")
+        print(f"Validation set size: {len(cfg['val_dataset']):,}")
 
         train_dataloader = data.DataLoader(
-            train_set,
+            cfg["train_dataset"],
             batch_size=cfg["batch_size"],
             num_workers=cfg["num_workers"],
-            sampler=BlockedRandomSampler(train_set),
+            shuffle=cfg["shuffle"],
+            drop_last=True,
         )
         val_dataloader = data.DataLoader(
-            val_set, batch_size=cfg["val_batch_size"], shuffle=False, num_workers=cfg["num_workers"]
+            cfg["val_dataset"],
+            batch_size=cfg["val_batch_size"],
+            shuffle=False,
+            num_workers=1,
+            drop_last=False,
         )
 
         if cfg.val_num_steps is None:
-            cfg["val_num_steps"] = len(train_dataloader)
+            cfg["val_num_steps"] = len(val_dataloader)
 
         # Save the config file
 
@@ -273,8 +268,8 @@ if __name__ == "__main__":
 
         writer = SummaryWriter(log_dir=model_save_dir)
 
-        writer.add_scalar("Number of training events", len(train_set))
-        writer.add_scalar("Number of validation events", len(val_set))
+        writer.add_scalar("Number of training events", len(cfg["train_dataset"]))
+        writer.add_scalar("Number of validation events", len(cfg["val_dataset"]))
         writer.add_scalar("Number of training batches", len(train_dataloader))
 
         # Instantiate the metric monitor
