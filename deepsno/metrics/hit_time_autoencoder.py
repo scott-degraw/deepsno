@@ -59,3 +59,25 @@ class TotalVarianceLoss(nn.Module):
         total_nhits = torch.sum(not_padding_masks)
 
         return torch.sum((residuals - torch.sum(residuals) / total_nhits).square()) / total_nhits
+
+class HuberLikeVarianceLoss(nn.Module):
+    def __init__(self, delta: float = 1):
+        super().__init__()
+        self.delta = delta
+
+    def forward(self, predict: dict, truth: dict):
+        time_res: torch.FloatTensor = predict["time_residuals"]
+        not_padding_masks: torch.BoolTensor = ~predict["pad_masks"]
+        weights: torch.FloatTensor = truth.get("weights", torch.ones_like(time_res))
+
+        time_res = not_padding_masks * time_res
+
+        # Normalize the weights to the size of the input
+        weights = not_padding_masks * weights / torch.sum(not_padding_masks * weights)
+        nhits = torch.sum(not_padding_masks, dim=-1, keepdims=True)
+        centered_time_res = time_res - torch.sum(time_res, dim=-1, keepdims=True) / nhits
+
+        losses = self.delta**2 * (torch.sqrt(1 + (centered_time_res / self.delta)**2) - 1)
+
+        loss = torch.sum(not_padding_masks * weights * losses)
+        return loss
