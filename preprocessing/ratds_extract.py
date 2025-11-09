@@ -46,15 +46,22 @@ now = time()
 ROOT.gROOT.LoadMacro(args.macro + "+")
 print(f"Time to compile: {time() - now}")
 
+if args.ntuples is None:
+    args.ntuples = len(args.input_files) * [""]
+
 for input_path, ntuple_path, output_path in zip(args.input_files, args.ntuples, args.output_files):
+    if isinstance(ntuple_path, Path):
+        ntuple_path = str(ntuple_path.resolve())
+    else:
+        ntuple_path = ""
     ROOT.ratds_extract(
         str(input_path.resolve()),
-        str(ntuple_path.resolve()),
         str(output_path.resolve()),
         args.min_ht,
         args.max_ht,
         args.min_qhs,
         args.max_qhs,
+        ntuple_path,
         args.filter,
         args.eca_cal,
     )
