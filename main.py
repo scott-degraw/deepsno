@@ -68,9 +68,6 @@ def get_git_hash(raise_exception: bool = False) -> str:
 
 
 if __name__ == "__main__":
-    # TODO: put this in the config
-    torch.set_float32_matmul_precision("high")
-
     loader = "jinja_yaml"
     set_loader(loader, loader_fn=jinja_utils.jinja_yaml_loader, exceptions=jinja_utils.get_exceptions())
     train_parser = ArgumentParser(parser_mode=loader)

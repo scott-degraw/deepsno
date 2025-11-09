@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-import uproot 
+import uproot
 import yaml
 from torch import nn
 
@@ -31,6 +31,7 @@ class ExpTimeWalk(nn.Module):
         c_beta: float = 10,
     ):
         super().__init__()
+        torch.backends.cudnn.conv.fp32_precision = "tf32"
 
         if b_init <= 0:
             raise ValueError("'b_init' must be positive")
