@@ -185,7 +185,7 @@ if __name__ == "__main__":
 
             # Create the model save directory
 
-            model_save_dir = Path(jinja_utils.model_save_directory(cfg["train"]["checkpoint_dir"]))
+            model_save_dir = Path(cfg["train"]["checkpoint_dir"])
             model_save_dir.mkdir(parents=True)
 
             print(
