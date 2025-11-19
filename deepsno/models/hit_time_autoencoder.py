@@ -269,9 +269,13 @@ class HitTimeAutoEncoder(nn.Module):
         self.position_reconstructor.input_norm = False
         self.position_reconstructor.output_unnorm = False
 
+        not_padding_masks = pmt_ids != 0
+
         pmt_positions = self.position_normalize(pmt_positions)
         av_offset = self.position_normalize(av_offset)
         uncal_hit_times = self.time_normalize(uncal_hit_times)
+        uncal_hit_times[not_padding_masks] = torch.nan
+        uncal_hit_times = uncal_hit_times - torch.nanmedian(uncal_hit_times, dim=-1, keepdim=True)
 
         if qhs is None:
             time_walk = self.time_walk(pmt_ids=pmt_ids)
@@ -280,6 +284,7 @@ class HitTimeAutoEncoder(nn.Module):
             time_walk = self.time_walk(pmt_ids=pmt_ids, qhs=qhs)
 
         cal_hit_times = uncal_hit_times - time_walk
+        cal_hit_times = cal_hit_times - torch.nanmedian(cal_hit_times, dim=-1, keepdim=True)
 
         predict = self.position_reconstructor(hit_times=cal_hit_times, pmt_ids=pmt_ids)
 
