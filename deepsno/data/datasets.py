@@ -215,8 +215,6 @@ class PositionRecoDataset(IterableDataset):
                 qhs = qhs[non_zero_pmt_indices]
                 qhs = np.pad(qhs, pad_width=(0, self.context_len - len(non_zero_pmt_indices)))
 
-            hit_times -= np.median(hit_times)
-
             pmt_ids = torch.from_numpy(pmt_ids).long()
             hit_times = torch.from_numpy(hit_times)
             qhs = torch.from_numpy(qhs)
