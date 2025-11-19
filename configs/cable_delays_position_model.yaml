@@ -18,9 +18,9 @@ model:
                 hit_time_embedding_dim: 512
 
 predict:
-    ckpt: /data/snoplus3/degraw/uniform_electron_energy/cable_delays_checkpoints/2024-12-18_22-14-47/ckpt
+    ckpt: /data/snoplus3/degraw/uniform_electron_energy/cable_delays_checkpoints/best_cable_delays_2024-12-31_00-43-40/ckpt
     ckpt_config: /home/degraw/deepsnoreco/configs/cable_delays_position_model.yaml
-    output_file: /data/snoplus3/degraw/uniform_electron_energy/cable_delays_checkpoints/2024-12-18_22-14-47/test_result.h5
+    output_file: /data/snoplus3/degraw/uniform_electron_energy/cable_delays_checkpoints/best_cable_delays_2024-12-31_00-43-40/rest_results.h5
     device: cuda
     dataset: 
         class_path: src.data.datasets.PositionRecoDataset

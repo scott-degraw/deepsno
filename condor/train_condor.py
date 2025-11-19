@@ -4,19 +4,19 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-import yaml
 
 import htcondor
+import yaml
 
 python_executable = str(Path("main.py").resolve())
 conda_env_name = "deepsno"
 
-config_path = "configs/cable_delays.yaml"
+config_path = "configs/time_walk.yaml"
 
 condor_root_dir = Path("condor_logs/train").resolve()
 condor_root_dir.mkdir(parents=True, exist_ok=True)
 
-arguments = f"run --name {conda_env_name} --no-capture-output {python_executable} --config {config_path} train"
+arguments = f"run --name {conda_env_name} --no-capture-output {python_executable} --config {config_path} --force train"
 
 job = htcondor.Submit(
     {

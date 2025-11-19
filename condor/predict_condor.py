@@ -15,7 +15,7 @@ arguments = f"run --name {conda_env_name} --no-capture-output {python_executable
 
 job = htcondor.Submit(
     {
-        "nice_user": "True",
+        "nice_user": "true",
         "batch_name": "position_reco_test",
         "executable": shutil.which("conda"),
         "arguments": arguments,
@@ -23,8 +23,8 @@ job = htcondor.Submit(
         "error": str(condor_root_dir / "err.log"),
         "log": str(condor_root_dir / "log.log"),
         "request_gpus": "1",
-        "request_cpus": "33",
-        "request_memory": "32G",
+        "request_cpus": "1",
+        "request_memory": "16G",
     }
 )
 

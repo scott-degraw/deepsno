@@ -149,9 +149,9 @@ if __name__ == "__main__":
 
         # Substitute custom tags
         # TODO: this needs to be written better
-        cfg["train"]["dataset"]["init_args"]["delays_save_path"] = cfg["train"]["dataset"]["init_args"][
-            "delays_save_path"
-        ].replace(r"<ckpt_dir>", str(model_save_dir))
+        # cfg["train"]["dataset"]["init_args"]["delays_save_path"] = cfg["train"]["dataset"]["init_args"][
+        #     "delays_save_path"
+        # ].replace(r"<ckpt_dir>", str(model_save_dir))
 
         initialize_norm_dict(cfg["model"])
 

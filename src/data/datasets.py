@@ -4,6 +4,7 @@ from typing import Hashable
 import h5py
 import numpy as np
 import torch
+import torch.distributions as dist
 from torch.utils.data import Dataset
 
 # TODO: We might be able to make this quicker. Implement custom that uses a slice of indices. This index slice
@@ -105,6 +106,66 @@ class CableDelaysPositionRecoDataset(PositionRecoDataset):
 
         inputs["hit_times"] += self.cable_delays[inputs["pmt_ids"]]
         inputs["uncal_hit_times"] = inputs.pop("hit_times")
+
+        truth = inputs["uncal_hit_times"]
+
+        return inputs, truth
+
+
+class TimeWalkDataset(PositionRecoDataset):
+    def __init__(
+        self,
+        path: str | Path,
+        context_len: int,
+        noise: float,
+        charge_scale: float,
+        time_scale: float,
+        tail_slope: float,
+        tail_intercept: float,
+        positions: list[str] = ["x", "y", "z"],
+    ):
+        super().__init__(path=path, positions=positions, context_len=context_len)
+
+        self._qhs_dset = self._h5_file["cal_pmt_events/qhs"]
+
+        n_pmts = self._h5_file[f"pmt_info/position/{positions[0]}"].shape[0]
+        self._pmt_positions = torch.zeros((n_pmts, len(self.positions)), dtype=self.position_torch_dtype)
+        for i, c in enumerate(self.positions):
+            self._pmt_positions[:, i] = torch.from_numpy(self._h5_file[f"pmt_info/position/{c}"][:])
+
+        self.noise = noise
+        self.charge_scale = torch.full((n_pmts,), charge_scale)
+        self.time_scale = torch.full((n_pmts,), time_scale)
+        self.tail_slope = torch.full((n_pmts,), tail_slope)
+
+        tail_norm = dist.Normal(loc=tail_intercept, scale=3)
+        self.tail_intercept = tail_norm.sample((n_pmts,))
+
+        self.norm_dist = dist.Normal(loc=0, scale=self.noise)
+
+    def time_walk_generate(self, charges: torch.Tensor, pmt_ids: torch.Tensor, truth: bool = False):
+        time_walk = (
+            self.time_scale[pmt_ids] * torch.exp(-charges / self.charge_scale[pmt_ids])
+            + self.tail_slope[pmt_ids] * charges
+            + self.tail_intercept[pmt_ids]
+        )
+
+        if not truth:
+            time_walk += self.norm_dist.sample(time_walk.shape)
+
+        return time_walk
+
+    def __getitem__(self, index: int) -> dict[Hashable, torch.Tensor]:
+        inputs, _ = super().__getitem__(index)
+
+        inputs["pmt_positions"] = self._pmt_positions[inputs["pmt_ids"]]
+
+        qhs = torch.from_numpy(self._qhs_dset[index, : self.context_len])
+
+        inputs["hit_times"] += self.time_walk_generate(qhs, inputs["pmt_ids"])
+        inputs["uncal_hit_times"] = inputs.pop("hit_times")
+
+        inputs["qhs"] = qhs
 
         truth = inputs["uncal_hit_times"]
 

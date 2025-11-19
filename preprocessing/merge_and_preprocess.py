@@ -171,24 +171,26 @@ def merge_and_norm(
     if len(test_input_paths) == 0:
         raise RuntimeError(f"Not enough files. No test dataset for {train_test_split:.3g} train-test split.")
 
-    print("Merge train files")
-    merge_h5(
-        input_paths=train_input_paths,
-        output_path=train_output_path,
-        dataset_identifiers=dataset_identifiers,
-        pmt_info_identifiers=pmt_info_identifiers,
-    )
+    # print("Merge train files")
+    # merge_h5(
+    #     input_paths=train_input_paths,
+    #     output_path=train_output_path,
+    #     dataset_identifiers=dataset_identifiers,
+    #     pmt_info_identifiers=pmt_info_identifiers,
+    # )
 
     # Add in the mean and root mean square deviation normalization
 
     with h5py.File(train_output_path, "r+") as train_h5:
-        print("Finding hit time norms")
-        find_norms(
-            train_h5["cal_pmt_events/hit_times"], block_size=block_size, pmt_id_dataset=train_h5["cal_pmt_events/ids"]
-        )
-        for c in positions:
-            print(f"Finding {c} position norms")
-            find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
+        # print("Finding hit time norms")
+        # find_norms(
+        #     train_h5["cal_pmt_events/hit_times"], block_size=block_size, pmt_id_dataset=train_h5["cal_pmt_events/ids"]
+        # )
+        # print("Finding QHS norms")
+        # find_norms(train_h5["cal_pmt_events/qhs"], block_size=block_size, pmt_id_dataset=train_h5["cal_pmt_events/ids"])
+        # for c in positions:
+        #     print(f"Finding {c} position norms")
+        #     find_norms(train_h5[f"mc_truth/position/{c}"], block_size=block_size)
         print("Finding valid PMT IDs")
         n_pmts = len(next(iter(train_h5["pmt_info/position"].values())))
         find_valid_pmts(dataset=train_h5["cal_pmt_events/ids"], block_size=block_size, n_pmts=n_pmts)

@@ -28,10 +28,10 @@ train:
             std_delay: 3
             mean_delay: 0
             delays_save_path: <ckpt_dir>/delays.txt
-            context_len: 1024
+            context_len: 2048
 
-    batch_size: &batch_size 200
-    val_batch_size: &val_batch_size 250
+    batch_size: &batch_size 100
+    val_batch_size: &val_batch_size 125
     shuffle: true
     num_workers: &num_workers 63
     num_epochs: 6

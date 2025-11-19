@@ -10,11 +10,12 @@ conda_env_name = "deepsno"
 
 input_paths = Path("/data/snoplus3/degraw/uniform_electron_energy/pt-net-h5").glob("*.h5")
 input_paths = [str(path) for path in input_paths]
+input_paths = input_paths[:20]
 
 config = {
     "input_paths": input_paths,
-    "train_output_path": "/data/snoplus3/degraw/uniform_electron_energy/train_dset.h5",
-    "test_output_path": "/data/snoplus3/degraw/uniform_electron_energy/test_dset.h5",
+    "train_output_path": "/data/snoplus3/degraw/uniform_electron_energy/train_dset_test.h5",
+    "test_output_path": "/data/snoplus3/degraw/uniform_electron_energy/test_dset_test.h5",
     "train_test_split": 0.8,
     "block_size": 1_000_000,
     "seed": 47381,
@@ -37,12 +38,12 @@ job = htcondor.Submit(
         "executable": shutil.which("conda"),
         "arguments": arguments,
         "output": str(condor_root_dir / "out.log"),
-        "error": str(condor_root_dir / "err.log"),
+        "error": str(condor_root_dir / "out.log"),
         "log": str(condor_root_dir / "log.log"),
         "max_materialize": "1",
-        "request_cpus": "32",
+        "request_cpus": "16",
         "request_gpus": "1",
-        "request_memory": "64GB",
+        "request_memory": "32GB",
     }
 )
 
