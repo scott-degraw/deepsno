@@ -375,6 +375,6 @@ if __name__ == "__main__":
                 )
 
     except Exception as e:
-        print(f"Critical error occured: {e}")
-        print("Exiting")
+        print(f"Critical error occured: {e}", file=sys.stderr)
+        print("Exiting", file=sys.stderr)
         sys.exit(1)
