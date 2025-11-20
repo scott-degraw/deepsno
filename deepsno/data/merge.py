@@ -28,7 +28,7 @@ def merge(
     if len(splits) != len(output_paths):
         raise ValueError("Number of splits must match number of output paths.")
 
-    negative_split = None
+    negative_split = 0
     for i in range(len(splits)):
         if splits[i] < 0:
             if negative_split is not None:
