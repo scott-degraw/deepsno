@@ -4,7 +4,6 @@ import shutil
 from pathlib import Path
 from typing import Hashable, Iterable, Iterator
 
-import h5py
 import numpy as np
 import torch
 import uproot as ur
@@ -254,7 +253,6 @@ class TimeWalkDataset(HitTimeAEDataset):
         ratdb_path: str | Path,
         model_save_dir: str | Path,
         noise: float = 1.5,
-        qhs_weight_path: str | Path | None = None,
         *args,
         **kwargs,
     ):
@@ -354,13 +352,6 @@ class TimeWalkDataset(HitTimeAEDataset):
 
         for param_name in param_names:
             setattr(self, param_name, torch.from_numpy(time_walk_params[param_name]))
-
-        if qhs_weight_path is not None:
-            with h5py.File(qhs_weight_path, "r") as h5_file:
-                self.qhs_weights = h5_file["weights"][:]
-                self.qhs_bins = h5_file["qhs_bins"][:]
-
-        self.qhs_sampler = torch.distributions.Uniform(0, 300)
 
     def __iter__(self) -> Iterable[dict[Hashable, torch.Tensor]]:
         for inputs, truth in super().__iter__():
