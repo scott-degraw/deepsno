@@ -24,7 +24,7 @@
 #include <ROOT/RDataFrame.hxx>
 
 std::vector<std::string> ntuple_branches = {
-    "runID", "eventID", "nhits", "fitValid", "posx", "posy", "posz", "posz_av", "posr_av", "energy", "time", 
+    "runID", "eventID", "nhits", "fitValid", "posx", "posy", "posz", "posr", "posz_av", "posr_av", "energy", "time", 
     "nhitsCleaned", "nearAV", "itr", "necknhits", 
 };
 
