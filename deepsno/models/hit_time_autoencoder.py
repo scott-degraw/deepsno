@@ -48,9 +48,8 @@ class ExpTimeWalk(nn.Module):
         if self.enable_grad_term:
             self._c_base = nn.Parameter(torch.full((n_pmts,), c_init))
         else:
-            self._c_base = torch.zeros((n_pmts,))
+            self.register_buffer("_c_base", copy_if_tensor(torch.full((n_pmts,), 0.0)))
         self.d = nn.Parameter(torch.full((n_pmts,), d_init))
-
 
     @property
     def b(self):
