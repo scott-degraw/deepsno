@@ -315,6 +315,8 @@ void ratds_extract(std::string input_fname,
         std::cout << std::endl;
         std::cout << "Removed " << n_selected - n_selected_final << "\n";
         std::cout << "Writing output file " << output_fname << "\n";
+        output_file.Write();
+        output_file.Close();
         
     } catch (const std::exception &e) {
         std::cerr << "Error: " << e.what() << "\n";
