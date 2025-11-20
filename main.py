@@ -74,7 +74,7 @@ if __name__ == "__main__":
         set_loader(loader, loader_fn=jinja_utils.jinja_yaml_loader, exceptions=jinja_utils.get_exceptions())
         train_parser = ArgumentParser(parser_mode=loader)
         train_parser.add_argument("--seed", type=int, default=0)
-        train_parser.add_argument("--checkpoint_dir", type=ptyping.Path_dc, required=True)
+        train_parser.add_argument("--checkpoint_dir", type=Path, required=True)
         train_parser.add_argument("--device", type=str, required=True)
         train_parser.add_argument("--train_dataset", type=torch.utils.data.Dataset)
         train_parser.add_argument("--val_dataset", type=torch.utils.data.Dataset)
