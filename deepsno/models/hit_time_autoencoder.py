@@ -29,6 +29,7 @@ class ExpTimeWalk(nn.Module):
         d_init: float = 0.0,
         b_beta: float = 10,
         c_beta: float = 10,
+        enable_grad_term: bool = False,
     ):
         super().__init__()
 
@@ -42,17 +43,25 @@ class ExpTimeWalk(nn.Module):
         c_init = np.log(np.exp(self.c_beta * -c_init) - 1) / self.c_beta
 
         self.a = nn.Parameter(torch.full((n_pmts,), a_init))
-        self.b_base = nn.Parameter(torch.full((n_pmts,), b_init))
-        self.c_base = nn.Parameter(torch.full((n_pmts,), c_init))
+        self._b_base = nn.Parameter(torch.full((n_pmts,), b_init))
+        self.enable_grad_term = enable_grad_term
+        if self.enable_grad_term:
+            self._c_base = nn.Parameter(torch.full((n_pmts,), c_init))
+        else:
+            self._c_base = torch.zeros((n_pmts,))
         self.d = nn.Parameter(torch.full((n_pmts,), d_init))
+
 
     @property
     def b(self):
-        return F.softplus(self.b_base, beta=self.b_beta, threshold=20.0)
+        return F.softplus(self._b_base, beta=self.b_beta, threshold=20.0)
 
     @property
     def c(self):
-        return -F.softplus(self.c_base, beta=self.c_beta, threshold=20.0)
+        if self.enable_grad_term:
+            return -F.softplus(self._c_base, beta=self.c_beta, threshold=20.0)
+        else:
+            return self._c_base
 
     def forward(self, pmt_ids: torch.LongTensor, qhs: torch.FloatTensor) -> torch.Tensor:
         return exp_time_walk(q=qhs, a=self.a[pmt_ids], b=self.b[pmt_ids], c=self.c[pmt_ids], d=self.d[pmt_ids])
