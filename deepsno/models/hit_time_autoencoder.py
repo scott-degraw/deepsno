@@ -143,6 +143,7 @@ class HitTimeAutoEncoder(nn.Module):
         all_fail: int = 0xFFFFFFFF,
         fix_c: bool = False,
         norm_dict: dict | None = None,
+        pos_recon_gets_cal_time: bool = True,
     ):
         super().__init__()
         torch.set_float32_matmul_precision("high")
@@ -197,6 +198,8 @@ class HitTimeAutoEncoder(nn.Module):
 
         with uproot.open({dset: "metadata"}) as metadata:
             self.register_buffer("run_range", copy_if_tensor(metadata["run_range"].array(library="np")[0]))
+
+        self.pos_recon_gets_cal_time = pos_recon_gets_cal_time
 
     def position_normalize(self, positions: torch.FloatTensor) -> torch.FloatTensor:
         return self.position_reconstructor.position_normalize(positions)
@@ -269,13 +272,16 @@ class HitTimeAutoEncoder(nn.Module):
         self.position_reconstructor.input_norm = False
         self.position_reconstructor.output_unnorm = False
 
-        not_padding_masks = pmt_ids != 0
+        pmt_mask = pmt_ids == 0
+        not_padding_masks = ~pmt_mask
+        nhits = torch.sum(not_padding_masks, dim=-1, keepdim=True).float()
 
         pmt_positions = self.position_normalize(pmt_positions)
         av_offset = self.position_normalize(av_offset)
         uncal_hit_times = self.time_normalize(uncal_hit_times)
-        uncal_hit_times[not_padding_masks] = torch.nan
-        uncal_hit_times = uncal_hit_times - torch.nanmedian(uncal_hit_times, dim=-1, keepdim=True)
+        uncal_hit_times[pmt_mask] = 0
+        # I believe this is redundant since we subtract the mean below but I still want to include it
+        uncal_hit_times = uncal_hit_times - torch.sum(uncal_hit_times, dim=-1, keepdim=True) / nhits
 
         if qhs is None:
             time_walk = self.time_walk(pmt_ids=pmt_ids)
@@ -284,13 +290,13 @@ class HitTimeAutoEncoder(nn.Module):
             time_walk = self.time_walk(pmt_ids=pmt_ids, qhs=qhs)
 
         cal_hit_times = uncal_hit_times - time_walk
-        cal_hit_times = cal_hit_times - torch.nanmedian(cal_hit_times, dim=-1, keepdim=True)
+        cal_hit_times[pmt_mask] = 0
+        cal_hit_times = cal_hit_times - torch.sum(cal_hit_times, dim=-1, keepdim=True) / nhits
 
-        predict = self.position_reconstructor(hit_times=cal_hit_times, pmt_ids=pmt_ids)
-
-        # Dims: (batch_size, context_window, ...)
-
-        not_padding_masks = pmt_ids != 0
+        if self.pos_recon_gets_cal_time:
+            predict = self.position_reconstructor(hit_times=cal_hit_times, pmt_ids=pmt_ids)
+        else:
+            predict = self.position_reconstructor(hit_times=uncal_hit_times, pmt_ids=pmt_ids)
 
         # Masked pmt positions have positions of zero
         times_of_flight = self.flight_time(
