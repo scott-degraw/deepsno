@@ -276,11 +276,15 @@ class TimeWalkDataset(HitTimeAEDataset):
 
         time_walk_params["max_qhs_scale"] = np.inf
         for param_name in param_names:
-            bool_time_walk_status &= time_walk_params[f"max_{param_name}"] > time_walk_params[param_name]
+            bool_time_walk_status &= time_walk_params[f"max_{param_name}"] >= time_walk_params[param_name]
             bool_time_walk_status &= time_walk_params[f"min_{param_name}"] < time_walk_params[param_name]
 
         # Ids that are valid in dataset but are not valid in given time walk table
-        ids_to_fill = np.nonzero(self.pmt_statuses & (~bool_time_walk_status))[0]
+        bool_ids_to_fill = self.pmt_statuses & (~bool_time_walk_status)
+        if np.sum(bool_time_walk_status) == np.sum(self.pmt_statuses):
+            raise RuntimeError("All PMTs are marked bad in time walk table")
+
+        ids_to_fill = np.nonzero(bool_ids_to_fill)[0]
 
         crate_size = 512
 
