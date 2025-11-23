@@ -68,13 +68,13 @@ apptainer_runner(container=args.container, args=apptainer_args, timeout=60 * 60 
 # Perform PMT hit extraction
 macro_args = [
     f'"{str(args.extract_input)}"',
-    f'"{Path(args.ntuple).name}"',
     f'"{Path(args.extract_input).with_suffix(".pmt.root")}"',
     str(args.min_ht),
     str(args.max_ht),
     str(args.min_qhs),
     str(args.max_qhs),
-    f'"{args.filter}"',
+    '""',
+    '""',
     "1",  # bool
 ]
 macro_args = ", ".join(macro_args)
