@@ -39,9 +39,6 @@ def time_walk_2_ratdb(
 
     invalid_pmts = (status & all_fail).astype(bool)
 
-    print("FJDSAFJASDKFJKDASJFKASDJFKSADJFAKSJFKSADJFKSADJFKSDAJFKASDJKFSDA LOOK HERE!")
-    tw["gradient"] *= 0
-
     tw["time_scale"][invalid_pmts] = invalid_value
     tw["qhs_scale"][invalid_pmts] = invalid_value
     tw["gradient"][invalid_pmts] = invalid_value
