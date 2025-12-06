@@ -68,7 +68,6 @@ void ratds_extract(std::string input_fname,
         if (gSystem->AccessPathName(input_fname.c_str(), kFileExists) != 0) 
             throw std::runtime_error("Input file " + input_fname + " does not exist");
         bool use_ntuple = ntuple_fname != "";
-        TTree * ntuple = nullptr;
 
         // Start the data reading 
         RAT::DU::DSReader dsreader(input_fname);
@@ -108,13 +107,15 @@ void ratds_extract(std::string input_fname,
         std::size_t n_entries = dsreader.GetEntryCount();
         std::size_t n_selected = n_entries;
 
+        TFile * ntuple_file = nullptr;
+        TTree * ntuple = nullptr;
         if (use_ntuple) {
             if (gSystem->AccessPathName(ntuple_fname.c_str(), kFileExists) != 0) 
                 throw std::runtime_error("Ntuple file " + ntuple_fname + " does not exist");
 
             std::cout << "Using ntuple file " << ntuple_fname << "\n";
-            TFile ntuple_file(ntuple_fname.c_str(), "READ");
-            ntuple = ntuple_file.Get<TTree>("output");
+            ntuple_file = new TFile(ntuple_fname.c_str(), "READ");
+            ntuple = ntuple_file->Get<TTree>("output");
 
             ntuple->SetBranchStatus("*", 0); // Disable all branches
             for (const auto &branch : ntuple_branches) {
