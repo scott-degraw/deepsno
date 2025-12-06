@@ -43,6 +43,8 @@ download(args.zdab, args.zdab_adler, max_retries=args.max_retries)
 if args.ntuple is not None:
     download(args.ntuple, args.ntuple_adler, max_retries=args.max_retries)
 
+ntuple = Path(args.ntuple).name
+
 # Create eventlist.txt
 apptainer_args = [
     "root",
@@ -50,7 +52,7 @@ apptainer_args = [
     "-q",
     "-b",
     "-x",
-    f'ntuple_2_eventlist.C("{Path(args.ntuple).name}", "{args.filter}")',
+    f'ntuple_2_eventlist.C("{ntuple}", "{args.filter}")',
 ]
 apptainer_runner(container=args.container, args=apptainer_args, timeout=60 * 60 * 1)
 
@@ -73,8 +75,8 @@ macro_args = [
     str(args.max_ht),
     str(args.min_qhs),
     str(args.max_qhs),
-    '""',
-    '""',
+    f'"{ntuple}"',
+    f'"{args.filter}"',
     "1",  # bool
 ]
 macro_args = ", ".join(macro_args)
