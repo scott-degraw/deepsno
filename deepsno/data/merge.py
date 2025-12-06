@@ -28,14 +28,17 @@ def merge(
     if len(splits) != len(output_paths):
         raise ValueError("Number of splits must match number of output paths.")
 
-    negative_split = 0
-    for i in range(len(splits)):
-        if splits[i] < 0:
-            if negative_split is not None:
-                raise ValueError("Only one split can be negative.")
-            negative_split = i
+    negative_split = None
+    if len(splits) == 1:
+        splits = [1.0]
+    else:
+        for i in range(len(splits)):
+            if splits[i] < 0:
+                if negative_split is not None:
+                    raise ValueError("Only one split can be negative.")
+                negative_split = i
 
-    splits[negative_split] = 1.0 - sum(splits) + splits[negative_split]
+        splits[negative_split] = 1.0 - sum(splits) + splits[negative_split]
 
     if not np.isclose(sum(splits), 1.0, atol=1e-4):
         raise ValueError("Splits must sum to 1.")
