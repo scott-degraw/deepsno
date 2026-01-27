@@ -1,5 +1,7 @@
 #!/usr/bin/env -S python3 -u
 
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -9,17 +11,17 @@ from warnings import warn
 
 import jsonargparse
 import torch
+import wandb
 from jsonargparse import ArgumentParser, Namespace, set_loader
 from jsonargparse import typing as ptyping
 from torch import nn, optim
 from torch.utils import data
-from torch.utils.tensorboard import SummaryWriter
 
 from deepsno.loops import predict, train
-from deepsno.metrics.metric_monitor import MonitorCollection
+from deepsno.metrics import metric_monitor
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
-from deepsno.utils.config_parse import check_instantiate_keys, get_class
+from deepsno.utils.config_parse import check_instantiate_keys, get_class, instantiate
 from deepsno.utils.train import get_best_ckpt
 
 
@@ -68,22 +70,32 @@ def get_git_hash(raise_exception: bool = False) -> str:
     return git_hash
 
 
-if __name__ == "__main__":
+def main():
     try:
         loader = "jinja_yaml"
         set_loader(loader, loader_fn=jinja_utils.jinja_yaml_loader, exceptions=jinja_utils.get_exceptions())
-        train_parser = ArgumentParser(parser_mode=loader)
+        train_parser = ArgumentParser(prog="deepsno", parser_mode=loader)
+
+        # wandb config
+        train_parser.add_argument("--entity", type=str, required=True)
+        train_parser.add_argument("--project", type=str, required=True)
+        train_parser.add_argument("--tags", type=str, nargs="+", required=False)
+        train_parser.add_argument("--wandb_disable", action="store_true", default=False)
+        train_parser.add_argument("--log_interval", type=int, required=False, default=50)
+
         train_parser.add_argument("--seed", type=int, default=0)
         train_parser.add_argument("--checkpoint_dir", type=Path, required=True)
         train_parser.add_argument("--device", type=str, required=True)
         train_parser.add_argument("--train_dataset", type=torch.utils.data.Dataset)
         train_parser.add_argument("--val_dataset", type=torch.utils.data.Dataset)
+        train_parser.add_argument("--collate_fn", type=str, required=False, default=None)
         train_parser.add_argument("--batch_size", type=int, required=True)
         train_parser.add_argument("--val_batch_size", type=int, required=True)
         train_parser.add_argument("--shuffle", type=bool, required=True)
         train_parser.add_argument("--num_workers", type=int, default=0)
         train_parser.add_argument("--num_epochs", type=int, required=False)
         train_parser.add_argument("--num_steps", type=int, required=False)
+        train_parser.add_argument("--autocast_dtype", type=str, required=False, default="float32")
 
         train_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=False)
         train_parser.add_argument("--ckpt_keys", type=str, nargs="+", required=False)
@@ -106,11 +118,10 @@ if __name__ == "__main__":
         predict_parser = ArgumentParser(parser_mode=loader)
         predict_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=True)
         predict_parser.add_argument("--ckpt_config", type=ptyping.Path_fr, required=False)
-        predict_parser.add_argument("--predict_keys", type=list, required=False)
-        predict_parser.add_argument("--truth_keys", type=list, required=False)
         predict_parser.add_argument("--output_path", type=ptyping.Path_fc, required=False)
         predict_parser.add_argument("--device", type=str, required=True)
         predict_parser.add_argument("--dataset", type=torch.utils.data.Dataset)
+        predict_parser.add_argument("--collate_fn", type=str, required=False, default=None)
         predict_parser.add_argument("--batch_size", type=int, required=True)
         predict_parser.add_argument("--num_workers", type=int, default=0)
         predict_parser.add_argument("--dataset_len", type=int, required=False)
@@ -182,15 +193,12 @@ if __name__ == "__main__":
                 cfg["train"]["num_steps"] = 3
                 cfg["train"]["val_num_steps"] = 2
                 cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / "dry_run"
+                cfg["train"]["wandb_disable"] = True
+                shutil.rmtree(cfg["train"]["checkpoint_dir"], ignore_errors=True)
 
             # Create the model save directory
-
             model_save_dir = Path(cfg["train"]["checkpoint_dir"])
-            model_save_dir.mkdir(parents=True)
-
-            print(
-                f"Saving model config and checkpoints to {str(model_save_dir.resolve())}"
-            )  # Instantiate the optimizer
+            model_save_dir.mkdir(parents=True, exist_ok=True)
 
             initialize_norm_dict(cfg["model"])
 
@@ -208,8 +216,16 @@ if __name__ == "__main__":
             optimizer_class = get_class(cfg["optimizer"]["class_path"])
 
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            print(f"Number of trainable parameters: {num_params}")
-            optimizer: optim.Optimizer = optimizer_class(model.parameters(), **cfg["optimizer"]["init_args"])
+            try:
+                next(iter(cfg["loss_fn"].parameters()))
+                param_groups = [
+                    {"params": model.parameters()},
+                    {"params": cfg["loss_fn"].parameters()},
+                ]
+            except StopIteration:
+                param_groups = model.parameters()
+
+            optimizer: optim.Optimizer = optimizer_class(param_groups, **cfg["optimizer"]["init_args"])
 
             # Instantiate the scheduler
 
@@ -244,22 +260,23 @@ if __name__ == "__main__":
             if (cfg["num_epochs"] is None) and (cfg["num_steps"] is None):
                 raise ValueError("Either 'train.num_epochs' or 'train.num_steps' must be provided.")
 
-            print(f"Training set size: {len(cfg['train_dataset']):,}")
-            print(f"Validation set size: {len(cfg['val_dataset']):,}")
-
             train_dataloader = data.DataLoader(
                 cfg["train_dataset"],
                 batch_size=cfg["batch_size"],
                 num_workers=cfg["num_workers"],
                 shuffle=cfg["shuffle"],
-                drop_last=True,
+                prefetch_factor=4 if cfg["num_workers"] > 0 else None,
+                drop_last=False,
+                pin_memory=True
             )
             val_dataloader = data.DataLoader(
                 cfg["val_dataset"],
                 batch_size=cfg["val_batch_size"],
                 shuffle=False,
-                num_workers=1,
+                num_workers=10,
+                prefetch_factor=4 if 10 > 0 else None,
                 drop_last=False,
+                pin_memory=True,
             )
 
             if cfg.val_num_steps is None:
@@ -269,57 +286,72 @@ if __name__ == "__main__":
 
             parser.save(save_cfg, model_save_dir / "config.yaml")
 
-            writer = SummaryWriter(log_dir=model_save_dir)
+            try:
+                autocast_dtype = getattr(torch, cfg["autocast_dtype"])
+            except AttributeError:
+                raise ValueError(f"Invalid autocast dtype: {cfg['autocast_dtype']}")
 
-            writer.add_scalar("Number of training events", len(cfg["train_dataset"]))
-            writer.add_scalar("Number of validation events", len(cfg["val_dataset"]))
-            writer.add_scalar("Number of training batches", len(train_dataloader))
-
-            # Instantiate the metric monitor
-            if isinstance(cfg["metric_monitors"], dict):
-                check_instantiate_keys(cfg["metric_monitors"], "metric_monitors")
-                metric_monitor_class = get_class(cfg["metric_monitors"]["class_path"])
-                if "init_args" in cfg["metric_monitors"]:
-                    metric_monitor = metric_monitor_class(writer, **cfg["metric_monitors"]["init_args"])
-                else:
-                    metric_monitor = metric_monitor_class(writer)
-
-            elif isinstance(cfg["metric_monitors"], Iterable):
-                monitors = []
-                for monitor_dict in cfg["metric_monitors"]:
-                    check_instantiate_keys(monitor_dict, "metric_monitors")
-                    metric_monitor_class = get_class(monitor_dict["class_path"])
-                    if "init_args" in monitor_dict:
-                        metric_monitor = metric_monitor_class(writer, **monitor_dict["init_args"])
-                    else:
-                        metric_monitor = metric_monitor_class(writer)
-                    monitors.append(metric_monitor)
-
-                metric_monitor = MonitorCollection(monitors)
+            if cfg["wandb_disable"] or cfg["dry_run"]:
+                mode = "disabled"
             else:
-                metric_monitor = None
+                mode = "online"
 
-            train(
-                checkpoint_dir=model_save_dir / "ckpt",
-                writer=writer,
-                model=model,
-                device=torch.device(cfg["device"]),
-                train_dataloader=train_dataloader,
-                val_dataloader=val_dataloader,
-                num_epochs=cfg["num_epochs"],
-                num_steps=cfg["num_steps"],
-                optimizer=optimizer,
-                loss_fn=cfg["loss_fn"],
-                scheduler=scheduler,
-                train_unnorm=cfg["train_unnorm"],
-                val_norm=cfg["val_norm"],
-                val_metric=cfg["val_metric"],
-                val_metric_is_inverted=cfg["val_metric_is_inverted"],
-                val_num_steps=cfg["val_num_steps"],
-                max_grad_norm=cfg["max_grad_norm"],
-                metric_monitor=metric_monitor,
-                profile=cfg["profile"],
-            )
+            with wandb.init(
+                entity=cfg["entity"],
+                project=cfg["project"],
+                tags=cfg["tags"],
+                dir=model_save_dir,
+                config=save_cfg,
+                mode=mode,
+            ) as run:
+                run.log_code()
+                print(f"Saving model config and checkpoints to {str(model_save_dir.resolve())}")
+                print(f"Number of trainable parameters: {num_params}")
+                print(f"Training set size: {len(cfg['train_dataset']):,}")
+                print(f"Validation set size: {len(cfg['val_dataset']):,}")
+
+                # Instantiate the metric monitor
+                if isinstance(cfg["metric_monitors"], dict):
+                    cfg["metric_monitors"] = [cfg["metric_monitors"]]
+                if isinstance(cfg["metric_monitors"], Iterable):
+                    monitors = []
+                    for monitor_dict in cfg["metric_monitors"]:
+                        check_instantiate_keys(monitor_dict, "metric_monitors")
+                        metric_monitor_class = get_class(monitor_dict["class_path"])
+                        if "init_args" in monitor_dict:
+                            init_args = instantiate(monitor_dict["init_args"])
+                            monitor = metric_monitor_class(run, **init_args)
+                        else:
+                            monitor = metric_monitor_class(run)
+                        monitors.append(monitor)
+
+                    monitor = metric_monitor.MonitorCollection(monitors)
+                else:
+                    monitor = None
+
+                train(
+                    checkpoint_dir=model_save_dir / "ckpt",
+                    run=run,
+                    log_interval=cfg["log_interval"],
+                    model=model,
+                    device=torch.device(cfg["device"]),
+                    train_dataloader=train_dataloader,
+                    val_dataloader=val_dataloader,
+                    num_epochs=cfg["num_epochs"],
+                    num_steps=cfg["num_steps"],
+                    optimizer=optimizer,
+                    loss_fn=cfg["loss_fn"],
+                    scheduler=scheduler,
+                    train_unnorm=cfg["train_unnorm"],
+                    val_norm=cfg["val_norm"],
+                    val_metric=cfg["val_metric"],
+                    val_metric_is_inverted=cfg["val_metric_is_inverted"],
+                    val_num_steps=cfg["val_num_steps"],
+                    max_grad_norm=cfg["max_grad_norm"],
+                    metric_monitor=monitor,
+                    profile=cfg["profile"],
+                    autocast_dtype=autocast_dtype,
+                )
 
         elif cfg["subcommand"] == "predict":
             import uproot
@@ -345,21 +377,15 @@ if __name__ == "__main__":
 
             model.load_state_dict(state_dict["model"])
 
+            collate_fn = None if cfg.predict.collate_fn is None else get_class(cfg.predict.collate_fn)
+
             dataloader: data.DataLoader = data.DataLoader(
                 cfg.predict.dataset,
                 batch_size=cfg.predict.batch_size,
                 num_workers=cfg.predict.num_workers,
+                collate_fn=collate_fn,
                 shuffle=False,
             )
-
-            # dataset_len = len(cfg.predict.dataset) if cfg.predict.dataset_len is None else cfg.predict.dataset_len
-            # if dataset_len > len(cfg.predict.dataset):
-            #     raise ValueError(
-            #         (
-            #             f"The value of 'dataset_len' is larger than the length of the dataset: {len(cfg.predict.dataset)}. "
-            #             "'dataset_len' must be less than or equal to the length of the dataset."
-            #         )
-            #     )
 
             predict_cfg_path = Path(cfg.predict.output_path).with_suffix(".yaml")
             parser.save(save_cfg, predict_cfg_path, overwrite=True)
@@ -370,11 +396,13 @@ if __name__ == "__main__":
                     dataloader=dataloader,
                     file=file,
                     device=cfg.predict.device,
-                    predict_keys=cfg.predict.predict_keys,
-                    truth_keys=cfg.predict.truth_keys,
                 )
 
-    except Exception as e:
-        print(f"Critical error occured: {e}", file=sys.stderr)
-        print("Exiting", file=sys.stderr)
-        sys.exit(1)
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt received. Exiting.", file=sys.stderr)
+        # This is more severe than a regular exit
+        os._exit(130)
+
+
+if __name__ == "__main__":
+    main()
