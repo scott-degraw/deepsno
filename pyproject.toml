@@ -1,2 +1,46 @@
+[project]
+name = "deepsno"
+version = "0.1.0"
+description = "Models, dataloaders and utilities for deep learning in SNO+"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "deepmerge>=2.0",
+    "fsspec-xrootd>=0.5.1",
+    "hist>=2.9.0",
+    "htcondor>=25.5.1",
+    "iminuit>=2.32.0",
+    "jinja2>=3.1.6",
+    "jsonargparse>=4.44.0",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.10.8",
+    "mpld3>=0.5.12",
+    "mplhep>=0.4.1",
+    "numba>=0.63.1",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "papermill>=2.6.0",
+    "particle>=0.26.0",
+    "plotly>=6.5.0",
+    "scikit-learn>=1.8.0",
+    "scipy>=1.16.3",
+    "snakemake>=9.15.0",
+    "tensorboard>=2.20.0",
+    "torch>=2.9.1",
+    "torchmetrics>=1.8.2",
+    "torchvision>=0.24.1",
+    "tqdm>=4.67.1",
+    "uproot>=5.6.9",
+    "wandb>=0.23.1",
+    "xrootd>=5.9.1",
+]
+
+[project.scripts]
+deepsno = "deepsno.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.ruff]
 line-length = 120
