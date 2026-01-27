@@ -1,9 +1,7 @@
 import importlib
 from typing import Any
 
-import h5py
 from jsonargparse import Namespace
-import jsonargparse
 
 
 def get_class(class_path: str) -> type:
@@ -21,35 +19,29 @@ def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
         raise KeyError(f"'class_path' not found in {object_name} config object")
 
 
-def write_config_to_h5(h5_group: h5py.Group, config_obj: dict):
-    for key, item in config_obj.items():
-        if isinstance(item, dict):
-            sub_group = h5_group.create_group(key)
-            write_config_to_h5(sub_group, item)
-        elif isinstance(item, jsonargparse.Path):
-            item = str(item)
-        elif item is not None:
-            h5_group.attrs[key] = item
-
-
 def instantiate(cfg_obj: Any):
-    if hasattr(cfg_obj, "keys"):
-        if "class_path" in cfg_obj:
-            class_path = cfg_obj["class_path"]
-            max_len = 2 if "init_args" in cfg_obj else 1
-
-            if len(cfg_obj) > max_len:
-                raise KeyError("Found 'class_path' key in config object but also invalid key(s) other than 'init_args'")
-
-            class_type = get_class(class_path)
-            if "init_args" in cfg_obj:
-                cfg_obj["init_args"] = instantiate(cfg_obj["init_args"])
-
-                return class_type(**cfg_obj["init_args"])
-
-            return class_type()
-
+    if isinstance(cfg_obj, str):
+        return cfg_obj
+    try:
+        class_path = cfg_obj["class_path"]
+    except KeyError:
         for key, item in cfg_obj.items():
             cfg_obj[key] = instantiate(item)
+        return cfg_obj
+    except TypeError:
+        try:
+            cfg_obj = [instantiate(item) for item in cfg_obj]
+        except TypeError:
+            pass
+        return cfg_obj
 
-    return cfg_obj
+    class_type = get_class(class_path)
+    init_args = cfg_obj.get("init_args", {})
+
+    for key, item in init_args.items():
+        if key == "class_path":
+            init_args[key] = get_class(item)
+        else:
+            init_args[key] = instantiate(item)
+
+    return class_type(**init_args)

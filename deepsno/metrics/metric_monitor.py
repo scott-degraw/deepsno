@@ -5,9 +5,12 @@ import hist as h
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torchmetrics as tm
+from torch import nn
 from torch.utils import _pytree as pytree
 from torch.utils.tensorboard import SummaryWriter
 
+import wandb
 from deepsno.metrics.eval import fwhm
 
 
@@ -46,16 +49,82 @@ class MonitorCollection(MetricMonitor):
             monitor.compute(global_step)
 
 
+class MultiLossMonitor(MetricMonitor):
+    def __init__(
+        self,
+        run: wandb.Run,
+        multi_loss_fn: nn.Module,
+        name_prefix: str = "multi_loss",
+    ):
+        self.run = run
+        self.name_prefix = name_prefix
+        self.multi_loss_fn = multi_loss_fn
+        self.reset()
+
+    def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
+        losses = self.multi_loss_fn.losses(predict, truth)
+
+        for key, value in losses.items():
+            self.losses.setdefault(key, []).append(value.detach().item())
+
+    def reset(self) -> None:
+        self.losses = {}
+
+    def compute(self, global_step: int) -> None:
+        mean_losses = {key: np.mean(values) for key, values in self.losses.items()}
+        self.run.log({f"{self.name_prefix}/{key}": value for key, value in mean_losses.items()}, step=global_step)
+
+
+class BinaryClassMonitor(MetricMonitor):
+    def __init__(
+        self,
+        run: wandb.Run,
+        truth_key: str,
+        predict_key: str,
+        metrics: list[tm.Metric],
+        logits: bool = True,
+        threshold: float = 0.5,
+        name_prefix: str = "classification_metrics",
+    ):
+        self.run = run
+        self.name_prefix = name_prefix
+        self.truth_key = truth_key
+        self.predict_key = predict_key
+        self.metrics = metrics
+        self.logits = logits
+        self.reset()
+
+    def reset(self) -> None:
+        for metric in self.metrics:
+            metric.reset()
+
+    def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
+        pred_prob = predict[self.predict_key]
+        if self.logits:
+            pred_prob = torch.sigmoid(pred_prob)
+
+        truth_class = truth[self.truth_key].bool()
+
+        for metric in self.metrics:
+            metric.to(pred_prob.device)
+            metric.update(pred_prob, truth_class)
+
+    def compute(self, global_step: int) -> None:
+        for metric in self.metrics:
+            value = metric.compute().detach().item()
+            self.run.log({f"{self.name_prefix}/{metric.__class__.__name__}": value}, step=global_step)
+
+
 class PositionMonitor(MetricMonitor):
     def __init__(
         self,
-        writer: SummaryWriter,
+        run: wandb.Run,
         min_residual: float = -4000,
         max_residual: float = 4000,
         bins: int = 100,
         name_prefix: str = "validation_metrics",
     ):
-        self.writer = writer
+        self.writer = run
         self.min_residual = min_residual
         self.max_residual = max_residual
         self.bins = bins
@@ -89,7 +158,7 @@ class PositionMonitor(MetricMonitor):
         positions = ["x", "y", "z"]
         for hist, c in zip(self.residual_hists, positions):
             axis.stairs(hist.values(), hist.axes[0].edges, label=c)
-        
+
         axis.axvline(0, plt.rcParams["axes.linewidth"])
         axis.set_xlabel("Position residual (mm)")
         axis.set_ylabel("Counts")
@@ -124,9 +193,7 @@ class TimeResidualMonitor(MetricMonitor):
         self.offset = offset
         self.scale = scale
 
-        self.predict_hist = h.Hist(
-            h.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True)
-        )
+        self.predict_hist = h.Hist(h.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True))
         self.truth_hist = h.Hist(h.axis.Regular(bins, min_residual, max_residual, overflow=True, underflow=True))
 
         self.name_prefix = name_prefix

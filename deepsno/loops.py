@@ -4,14 +4,13 @@ from pathlib import Path
 import torch
 import tqdm
 import uproot
+import wandb
 from torch import nn
 from torch.utils import _pytree as pytree
 from torch.utils import data
-from torch.utils.tensorboard import SummaryWriter
 
 from deepsno.metrics.metric_monitor import MetricMonitor
 from deepsno.utils.profiling import LoopProfiler
-from deepsno.utils.train import convert_byte_units
 
 TQDM_KWARGS = {
     "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar}]{r_bar}",
@@ -20,6 +19,21 @@ TQDM_KWARGS = {
     "dynamic_ncols": True,
 }
 
+def to_device(d: dict, device: str | torch.device) -> dict:
+    def to(x):
+        try:
+            return x.to(device)
+        except AttributeError:
+            return x
+    return pytree.tree_map(lambda x: to(x), d)
+
+def detach_to_cpu(d: dict) -> dict:
+    def to(x):
+        try:
+            return x.detach().cpu()
+        except AttributeError:
+            return x
+    return pytree.tree_map(lambda x: to(x), d)
 
 @torch.inference_mode()
 def predict(
@@ -27,8 +41,6 @@ def predict(
     dataloader: data.DataLoader,
     file: uproot.WritableFile,
     device: str | torch.device,
-    predict_keys: str | None = None,
-    truth_keys: str | None = None,
     predict_name: str = "predict",
     truth_name: str = "truth",
 ):
@@ -37,22 +49,25 @@ def predict(
     model.output_unnorm = True
 
     first_batch = True
-    for inputs, truth in tqdm.tqdm(dataloader, desc="Test", **TQDM_KWARGS):
+    for inputs, entries in tqdm.tqdm(dataloader, desc="Test", **TQDM_KWARGS):
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
 
         predicts = model(**inputs)
-        predicts = {key: predicts[key] for key in predict_keys}
+
         predicts = pytree.tree_map(lambda x: x.detach().cpu().numpy(), predicts)
-        truth = pytree.tree_map(lambda x: x.detach().cpu().numpy(), truth)
-        truth = {key: truth[key] for key in truth_keys}
+        for key, value in entries.items():
+            try:
+                entries[key] = value.detach().cpu().numpy()
+            except AttributeError:
+                pass
 
         if first_batch:
             file[predict_name] = predicts
-            file[truth_name] = truth
+            file[truth_name] = entries
             first_batch = False
         else:
             file[predict_name].extend(predicts)
-            file[truth_name].extend(truth)
+            file[truth_name].extend(entries)
 
 
 @torch.inference_mode()
@@ -77,15 +92,18 @@ def validate(
     metric.reset()
 
     for inputs, truth in tqdm.tqdm(dataloader, desc="Validation", leave=False, **TQDM_KWARGS):
-        inputs = pytree.tree_map(lambda x: x.to(device), inputs)
-        truth = pytree.tree_map(lambda x: x.to(device), truth)
+        inputs = to_device(inputs, device)
+        truth = to_device(truth, device)
 
         predict = model(**inputs)
 
-        if metric_monitor is not None:
-            metric_monitor.update(predict=predict, truth=truth)
+        if not model.output_unnorm:
+            truth = model.output_normalize(truth)
 
         metric.update(predict, truth)
+
+        if metric_monitor is not None:
+            metric_monitor.update(predict=predict, truth=truth)
 
     if metric_monitor is not None:
         metric_monitor.compute(global_step)
@@ -95,7 +113,8 @@ def validate(
 
 def train(
     checkpoint_dir: str | Path,
-    writer: SummaryWriter,
+    run: wandb.Run,
+    log_interval: int,
     model: nn.Module,
     device: str | torch.device,
     train_dataloader: data.DataLoader,
@@ -115,13 +134,14 @@ def train(
     profile: bool = False,
     profiling_unit: str = "ms",
     metric_monitor: MetricMonitor | None = None,
+    autocast_dtype: torch.dtype = torch.float32,
 ):
     device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(exist_ok=True, parents=True)
 
     profiler = LoopProfiler(
-        writer=writer,
+        writer=run,
         profiles=[
             "train_data_load",
             "data_to_device",
@@ -150,13 +170,7 @@ def train(
     model.to(device)
     model.train()
     model.output_unnorm = train_unnorm
-
-    if "cuda" in device.type:
-        writer.add_scalar(
-            f"GPU/total_memory-{memory_unit}",
-            convert_byte_units(torch.cuda.mem_get_info()[1], memory_unit),
-            new_style=True,
-        )
+    loss_fn.to(device)
 
     sub_epoch = 0
     training = True
@@ -167,6 +181,8 @@ def train(
             profiler.start("train_data_load")
             for inputs, truth in train_dataloader:
                 profiler.stop("train_data_load")
+                log_this_step = step_num % log_interval == 0
+                step_num += 1
 
                 if num_steps is not None and step_num == num_steps:
                     training = False
@@ -174,20 +190,11 @@ def train(
 
                 progress_bar.update()
 
-                if "cuda" in device.type:
-                    writer.add_scalar(
-                        "GPU/memory_allocated-MiB",
-                        convert_byte_units(torch.cuda.max_memory_reserved(), memory_unit),
-                        step_num,
-                        new_style=True,
-                    )
-                    torch.cuda.reset_peak_memory_stats()
-
                 optimizer.zero_grad()
 
                 profiler.start("data_to_device")
-                inputs = pytree.tree_map(lambda x: x.to(device), inputs)
-                truth = pytree.tree_map(lambda x: x.to(device), truth)
+                inputs = to_device(inputs, device)
+                truth = to_device(truth, device)
                 profiler.stop("data_to_device")
 
                 if not model.output_unnorm:
@@ -202,7 +209,8 @@ def train(
                 if not torch.isfinite(loss):
                     raise ValueError("Training loss is not finite")
                 profiler.stop("loss_calc")
-                writer.add_scalar("Loss/train", loss.detach().item(), step_num, new_style=True)
+                if log_this_step:
+                    run.log({"Loss/train": loss.item()}, step=step_num)
 
                 profiler.start("backward_pass")
                 loss.backward()
@@ -212,14 +220,14 @@ def train(
 
                 if scheduler is not None:
                     scheduler.step()
-                    writer.add_scalar("learning_rate", scheduler.get_last_lr()[0], step_num, new_style=True)
+                    if log_this_step:
+                        run.log({"learning_rate": scheduler.get_last_lr()[0]}, step=step_num)
 
                 profiler.stop("step_total")
 
-                step_num += 1
-
                 if step_num % val_num_steps == 0:
                     del inputs, truth, predict, loss
+                    log_this_step = True
                     profiler.start("validation")
                     val_loss = validate(
                         val_dataloader,
@@ -237,7 +245,7 @@ def train(
 
                     if not math.isfinite(val_loss):
                         raise ValueError("Validation loss is not finite")
-                    writer.add_scalar("Loss/val", val_loss, step_num, new_style=True)
+                    run.log({"Loss/val": val_loss}, step=step_num)
 
                     if val_metric_is_inverted:
                         val_loss = -val_loss
@@ -245,11 +253,10 @@ def train(
                     profiler.start("model_save")
                     state_dict = {
                         "sub_epoch": sub_epoch,
-                        "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
+                        "model": detach_to_cpu(model.state_dict()),
+                        "optimizer": detach_to_cpu(optimizer.state_dict()),
+                        "scheduler": None if scheduler is None else detach_to_cpu(scheduler.state_dict()),
                     }
-
-                    state_dict["scheduler"] = None if scheduler is None else scheduler.state_dict()
 
                     filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
 
@@ -258,7 +265,8 @@ def train(
 
                     sub_epoch += 1
 
-                profiler.log_all(step_num)
+                if log_this_step:
+                    run.log({}, step=step_num, commit=True)
                 profiler.start("step_total")
                 profiler.start("train_data_load")
 
