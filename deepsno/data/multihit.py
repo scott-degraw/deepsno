@@ -302,18 +302,20 @@ class MultiHitDataset(UprootMultiFileDataset):
             self.active_voxels.fill(False)
             self.active_voxels = voxelise_tracks(tracks, self.edges, self.active_voxels)
             vertex_indices = np.nonzero(self.active_voxels)
-            vertex_shuffle_i = self.generator.permutation(len(vertex_indices[0]))
-            vertex_indices = [vertex_indices[i][vertex_shuffle_i] for i in range(len(vertex_indices))]
             vertex_positions = np.stack([self.centers[i][vertex_indices[i]] for i in range(len(self.edges))], axis=1)
             if vertex_positions.shape[0] == 0:
                 warn(f"No vertices found in event {entry['mc_index'].item()} in file {file_path}")
 
             exists = np.ones(vertex_positions.shape[0], dtype=bool)
+
             exists = pad_array(exists, pad_length=self.max_n_vertices, axis=0, generator=self.generator)
             vertices = pad_array(vertex_positions, pad_length=self.max_n_vertices, axis=0, generator=self.generator)
 
             vertices = {"position": vertices[:, :3], "time": vertices[:, 3], "exists": exists}
 
+            # Shuffle around the vertices so they're not in any particular order
+            vertex_shuffle_i = self.generator.permutation(self.max_n_vertices)
+            vertices = pytree.tree_map(lambda x: x[vertex_shuffle_i], vertices)
             vertices = pytree.tree_map(torch.from_numpy, vertices)
 
             truth = {
