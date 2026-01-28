@@ -19,13 +19,16 @@ TQDM_KWARGS = {
     "dynamic_ncols": True,
 }
 
+
 def to_device(d: dict, device: str | torch.device) -> dict:
     def to(x):
         try:
             return x.to(device)
         except AttributeError:
             return x
+
     return pytree.tree_map(lambda x: to(x), d)
+
 
 def detach_to_cpu(d: dict) -> dict:
     def to(x):
@@ -33,7 +36,9 @@ def detach_to_cpu(d: dict) -> dict:
             return x.detach().cpu()
         except AttributeError:
             return x
+
     return pytree.tree_map(lambda x: to(x), d)
+
 
 @torch.inference_mode()
 def predict(
@@ -175,14 +180,15 @@ def train(
     sub_epoch = 0
     training = True
     step_num = 0
+    rolling_loss = 0.0
     with tqdm.tqdm(desc="Train", total=num_steps, **TQDM_KWARGS) as progress_bar:
         while training:
             profiler.start("step_total")
             profiler.start("train_data_load")
             for inputs, truth in train_dataloader:
                 profiler.stop("train_data_load")
-                log_this_step = step_num % log_interval == 0
                 step_num += 1
+                log_this_step = step_num % log_interval == 0
 
                 if num_steps is not None and step_num == num_steps:
                     training = False
@@ -206,11 +212,13 @@ def train(
 
                 profiler.start("loss_calc")
                 loss = loss_fn(predict, truth)
+                rolling_loss += loss.item()
                 if not torch.isfinite(loss):
                     raise ValueError("Training loss is not finite")
                 profiler.stop("loss_calc")
                 if log_this_step:
-                    run.log({"Loss/train": loss.item()}, step=step_num)
+                    run.log({"Loss/train": rolling_loss / log_interval}, step=step_num)
+                    rolling_loss = 0.0
 
                 profiler.start("backward_pass")
                 loss.backward()
