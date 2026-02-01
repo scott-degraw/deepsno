@@ -20,15 +20,6 @@ print("Give encoder a final layer norm?")
 print("Remove the initial object decoder")
 
 
-class HitTimeFeatures:
-    def __init__(self, n_bins: int, range: tuple[float, float], dtype=np.float32):
-        self.bins = np.linspace(*range, n_bins + 1)
-        self.dtype = dtype
-
-    def __call__(self, hit_times: ak.Array):
-        hist = stats.hist_jagged(hit_times, self.bins, dtype=self.dtype)
-        return hist
-
 
 class MultiHeadAttention(nn.Module):
     def __init__(
