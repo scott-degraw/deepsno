@@ -23,30 +23,31 @@ class UprootMultiFileDataset(IterableDataset):
         debug: bool = False,
     ) -> None:
         if expressions is None:
-            expressions = []
-        self.file_paths = file_paths
+            expressions = set()
         if isinstance(file_paths, str):
-            file_paths = glob.glob(file_paths)
+            self.file_paths = glob.glob(file_paths)
+        else:
+            self.file_paths = file_paths
         self.tree_name = tree_name
-        self.expressions = expressions
+        self.expressions = set(expressions)
         self.cut = cut
         self.seed = seed
         self.buffer_size = buffer_size
         self.generator = None
         self.debug = debug
 
-        self.length = 0
-
-        with uproot.open({next(iter(file_paths)): self.tree_name}, cut=self.cut) as ntuple:
-            self.length += len(ntuple["npe"].array())
-
-        self.length *= len(file_paths)
         if self.debug:
             self.debug_print("Initializing")
 
         self.events_yielded = 0
 
+        self.length = None
+
     def __len__(self) -> int:
+        if self.length is None:
+            for path in self.file_paths:
+                with uproot.open(path)[self.tree_name] as tree:
+                    self.length += tree.num_entries
         return self.length
 
     def debug_print(self, msg: str) -> None:
@@ -62,6 +63,8 @@ class UprootMultiFileDataset(IterableDataset):
 
     def __iter__(self):
         file_paths = glob.glob(self.file_paths) if isinstance(self.file_paths, str) else self.file_paths
+        if len(file_paths) == 0:
+            raise ValueError("No files found!")
         worker_info = torch.utils.data.get_worker_info()
 
         if worker_info is None:
@@ -120,9 +123,12 @@ class UprootMultiFileDataset(IterableDataset):
 
                 buffer[buffer_i] = entry
 
+            if empty:
+                raise ValueError(f"No entries found in file {file}!")
+
         self.debug_print("Flushing buffer")
         # Flush out the rest of the buffer
-        permutations = self.generator.permutation(self.buffer_size)
+        permutations = self.generator.permutation(len(buffer))
         for buffer_i in permutations:
             yield buffer[buffer_i]
 

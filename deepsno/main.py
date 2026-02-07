@@ -93,7 +93,6 @@ def main():
         train_parser.add_argument("--val_batch_size", type=int, required=True)
         train_parser.add_argument("--shuffle", type=bool, required=True)
         train_parser.add_argument("--num_workers", type=int, default=0)
-        train_parser.add_argument("--num_epochs", type=int, required=False)
         train_parser.add_argument("--num_steps", type=int, required=False)
         train_parser.add_argument("--autocast_dtype", type=str, required=False, default="float32")
 
@@ -189,7 +188,6 @@ def main():
             torch.manual_seed(cfg["train"]["seed"])
 
             if cfg["train"]["dry_run"]:
-                cfg["train"]["num_epochs"] = None
                 cfg["train"]["num_steps"] = 3
                 cfg["train"]["val_num_steps"] = 2
                 cfg["train"]["checkpoint_dir"] = Path(tempfile.gettempdir()) / "dry_run"
@@ -255,10 +253,6 @@ def main():
 
             # Instantiate the dataloaders
 
-            if (cfg["num_epochs"] is not None) and (cfg["num_steps"] is not None):
-                raise ValueError("Only 'train.num_epochs' or 'train.num_steps' can be given, not both.")
-            if (cfg["num_epochs"] is None) and (cfg["num_steps"] is None):
-                raise ValueError("Either 'train.num_epochs' or 'train.num_steps' must be provided.")
 
             train_dataloader = data.DataLoader(
                 cfg["train_dataset"],
@@ -278,10 +272,6 @@ def main():
                 drop_last=False,
                 pin_memory=True,
             )
-
-            if cfg.val_num_steps is None:
-                cfg["val_num_steps"] = len(val_dataloader)
-
             # Save the config file
 
             parser.save(save_cfg, model_save_dir / "config.yaml")
@@ -307,8 +297,6 @@ def main():
                 run.log_code()
                 print(f"Saving model config and checkpoints to {str(model_save_dir.resolve())}")
                 print(f"Number of trainable parameters: {num_params}")
-                print(f"Training set size: {len(cfg['train_dataset']):,}")
-                print(f"Validation set size: {len(cfg['val_dataset']):,}")
 
                 # Instantiate the metric monitor
                 if isinstance(cfg["metric_monitors"], dict):
@@ -337,7 +325,6 @@ def main():
                     device=torch.device(cfg["device"]),
                     train_dataloader=train_dataloader,
                     val_dataloader=val_dataloader,
-                    num_epochs=cfg["num_epochs"],
                     num_steps=cfg["num_steps"],
                     optimizer=optimizer,
                     loss_fn=cfg["loss_fn"],
