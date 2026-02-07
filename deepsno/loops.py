@@ -129,7 +129,6 @@ def train(
     val_metric: object,
     val_metric_is_inverted: bool,
     val_num_steps: int,
-    num_epochs: int | None = None,
     num_steps: int | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     train_unnorm: bool = False,
@@ -162,16 +161,6 @@ def train(
         disable=not profile,
     )
 
-    if (num_epochs is not None) and (num_steps is not None):
-        raise ValueError("Only 'num_epochs' or 'num_steps' can be given, not both.")
-    if (num_epochs is None) and (num_steps is None):
-        raise ValueError("Either 'num_epochs' or 'num_steps' must be provided.")
-
-    if num_steps is not None:
-        num_epochs = (num_steps - 1) // len(train_dataloader) + 1
-
-    print(f"Performing {num_epochs} epochs through the training dataset", flush=True)
-
     model.to(device)
     model.train()
     model.output_unnorm = train_unnorm
@@ -181,11 +170,13 @@ def train(
     training = True
     step_num = 0
     rolling_loss = 0.0
+    dset_size = 0
     with tqdm.tqdm(desc="Train", total=num_steps, **TQDM_KWARGS) as progress_bar:
         while training:
             profiler.start("step_total")
             profiler.start("train_data_load")
             for inputs, truth in train_dataloader:
+                dset_size += len(next(iter(inputs)))
                 profiler.stop("train_data_load")
                 step_num += 1
                 log_this_step = step_num % log_interval == 0
@@ -277,5 +268,7 @@ def train(
                     run.log({}, step=step_num, commit=True)
                 profiler.start("step_total")
                 profiler.start("train_data_load")
+
+            print(f"Dataset size: {dset_size}")
 
     print("Training completed")
