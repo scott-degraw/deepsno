@@ -1,8 +1,6 @@
 import zlib
 from pathlib import Path
 
-import h5py
-
 
 def checksum_file(path: str | Path, chunk_size: int = 65536) -> str:
     path = Path(path)
@@ -17,16 +15,6 @@ def checksum_file(path: str | Path, chunk_size: int = 65536) -> str:
                 break
             running_checksum = zlib.adler32(chunk, running_checksum)
     return running_checksum & 0xFFFFFFFF
-
-
-def checksum_h5_file(h5_file: h5py.File):
-    if isinstance(h5_file, h5py.File):
-        path = h5_file.filename
-    else:
-        path = h5_file
-
-    with h5py.File(path, "r+") as f:
-        f.attrs["checksum"] = checksum_file(path)
 
 
 def str_from_many_paths(paths: tuple[str], n=3) -> str:

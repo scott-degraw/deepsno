@@ -15,7 +15,6 @@ import wandb
 from jsonargparse import ArgumentParser, Namespace, set_loader
 from jsonargparse import typing as ptyping
 from torch import nn, optim
-from torch.utils import data
 
 from deepsno.loops import predict, train
 from deepsno.metrics import metric_monitor
@@ -86,13 +85,9 @@ def main():
         train_parser.add_argument("--seed", type=int, default=0)
         train_parser.add_argument("--checkpoint_dir", type=Path, required=True)
         train_parser.add_argument("--device", type=str, required=True)
-        train_parser.add_argument("--train_dataset", type=torch.utils.data.Dataset)
-        train_parser.add_argument("--val_dataset", type=torch.utils.data.Dataset)
-        train_parser.add_argument("--collate_fn", type=str, required=False, default=None)
-        train_parser.add_argument("--batch_size", type=int, required=True)
-        train_parser.add_argument("--val_batch_size", type=int, required=True)
-        train_parser.add_argument("--shuffle", type=bool, required=True)
-        train_parser.add_argument("--num_workers", type=int, default=0)
+        train_parser.add_argument("--train_dataloader", type=dict)
+        train_parser.add_argument("--val_dataloader", type=dict)
+        train_parser.add_argument("--val_batch_size", type=int)
         train_parser.add_argument("--num_steps", type=int, required=False)
         train_parser.add_argument("--autocast_dtype", type=str, required=False, default="float32")
 
@@ -119,10 +114,7 @@ def main():
         predict_parser.add_argument("--ckpt_config", type=ptyping.Path_fr, required=False)
         predict_parser.add_argument("--output_path", type=ptyping.Path_fc, required=False)
         predict_parser.add_argument("--device", type=str, required=True)
-        predict_parser.add_argument("--dataset", type=torch.utils.data.Dataset)
-        predict_parser.add_argument("--collate_fn", type=str, required=False, default=None)
-        predict_parser.add_argument("--batch_size", type=int, required=True)
-        predict_parser.add_argument("--num_workers", type=int, default=0)
+        predict_parser.add_argument("--dataloader", type=dict)
         predict_parser.add_argument("--dataset_len", type=int, required=False)
 
         parser = ArgumentParser(prog="app", description="", parser_mode=loader)
@@ -208,6 +200,9 @@ def main():
 
             cfg: Namespace = cfg["train"]
 
+            cfg["train_dataloader"] = instantiate(cfg["train_dataloader"])
+            cfg["val_dataloader"] = instantiate(cfg["val_dataloader"])
+
             # Instantiate the optimizer
 
             check_instantiate_keys(cfg["optimizer"], "optimizer")
@@ -251,27 +246,6 @@ def main():
                 if "scheduler" in ckpt_keys:
                     scheduler.load_state_dict(state_dict["scheduler"])
 
-            # Instantiate the dataloaders
-
-
-            train_dataloader = data.DataLoader(
-                cfg["train_dataset"],
-                batch_size=cfg["batch_size"],
-                num_workers=cfg["num_workers"],
-                shuffle=cfg["shuffle"],
-                prefetch_factor=4 if cfg["num_workers"] > 0 else None,
-                drop_last=False,
-                pin_memory=True
-            )
-            val_dataloader = data.DataLoader(
-                cfg["val_dataset"],
-                batch_size=cfg["val_batch_size"],
-                shuffle=False,
-                num_workers=10,
-                prefetch_factor=4 if 10 > 0 else None,
-                drop_last=False,
-                pin_memory=True,
-            )
             # Save the config file
 
             parser.save(save_cfg, model_save_dir / "config.yaml")
@@ -323,8 +297,8 @@ def main():
                     log_interval=cfg["log_interval"],
                     model=model,
                     device=torch.device(cfg["device"]),
-                    train_dataloader=train_dataloader,
-                    val_dataloader=val_dataloader,
+                    train_dataloader=cfg["train_dataloader"],
+                    val_dataloader=cfg["val_dataloader"],
                     num_steps=cfg["num_steps"],
                     optimizer=optimizer,
                     loss_fn=cfg["loss_fn"],
@@ -364,15 +338,7 @@ def main():
 
             model.load_state_dict(state_dict["model"])
 
-            collate_fn = None if cfg.predict.collate_fn is None else get_class(cfg.predict.collate_fn)
-
-            dataloader: data.DataLoader = data.DataLoader(
-                cfg.predict.dataset,
-                batch_size=cfg.predict.batch_size,
-                num_workers=cfg.predict.num_workers,
-                collate_fn=collate_fn,
-                shuffle=False,
-            )
+            dataloader = instantiate(cfg["dataloader"])
 
             predict_cfg_path = Path(cfg.predict.output_path).with_suffix(".yaml")
             parser.save(save_cfg, predict_cfg_path, overwrite=True)
