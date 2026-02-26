@@ -87,7 +87,6 @@ def main():
         train_parser.add_argument("--device", type=str, required=True)
         train_parser.add_argument("--train_dataloader", type=dict)
         train_parser.add_argument("--val_dataloader", type=dict)
-        train_parser.add_argument("--val_batch_size", type=int)
         train_parser.add_argument("--num_steps", type=int, required=False)
         train_parser.add_argument("--autocast_dtype", type=str, required=False, default="float32")
 
@@ -110,11 +109,12 @@ def main():
         train_parser.add_argument("--profile", action="store_true")
 
         predict_parser = ArgumentParser(parser_mode=loader)
+        predict_parser.add_argument("--keys", type=str, nargs="+")
         predict_parser.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=True)
         predict_parser.add_argument("--ckpt_config", type=ptyping.Path_fr, required=False)
         predict_parser.add_argument("--output_path", type=ptyping.Path_fc, required=False)
         predict_parser.add_argument("--device", type=str, required=True)
-        predict_parser.add_argument("--dataloader", type=dict)
+        predict_parser.add_argument("--dataloader", type=dict, required=True)
         predict_parser.add_argument("--dataset_len", type=int, required=False)
 
         parser = ArgumentParser(prog="app", description="", parser_mode=loader)
@@ -338,7 +338,7 @@ def main():
 
             model.load_state_dict(state_dict["model"])
 
-            dataloader = instantiate(cfg["dataloader"])
+            dataloader = instantiate(cfg["predict"]["dataloader"])
 
             predict_cfg_path = Path(cfg.predict.output_path).with_suffix(".yaml")
             parser.save(save_cfg, predict_cfg_path, overwrite=True)
@@ -349,6 +349,7 @@ def main():
                     dataloader=dataloader,
                     file=file,
                     device=cfg.predict.device,
+                    keys=cfg["predict"]["keys"],
                 )
 
     except KeyboardInterrupt:
