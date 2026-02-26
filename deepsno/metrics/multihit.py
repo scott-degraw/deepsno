@@ -1,4 +1,4 @@
-from warnings import warn
+from typing import Callable
 
 import numpy as np
 import scipy as sp
@@ -7,147 +7,191 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils import _pytree as pytree
 
-
-class MultiVertexLoss(nn.Module):
-    def __init__(self, position_weight: float = 1.0, time_weight: float = 1.0, physical: bool = False):
-        super().__init__()
-        weight_sum = position_weight + time_weight
-        self.position_weight = position_weight / weight_sum
-        self.time_weight = time_weight / weight_sum
-        self.position_loss_fn = nn.MSELoss()
-        self.time_loss_fn = nn.MSELoss()
-        self.physical = physical
-
-    def forward(self, predicted: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]) -> torch.Tensor:
-        truth = pytree.tree_map(lambda x: x[:, 0], truth)
-
-        loss = self.position_weight * F.mse_loss(predicted["position"], truth["position"])
-        if self.physical:
-            loss = loss / self.position_weight
-            loss = torch.sqrt(loss / 3)
-            return loss
-
-        loss = loss + self.time_weight * F.mse_loss(predicted["time"], truth["time"])
-
-        return loss
+from deepsno.metrics.metric_monitor import MetricMonitor
 
 
-@torch.no_grad
-def bipartite_matching(
-    truth_pos: np.ndarray,
-    pred_pos: np.ndarray,
-    truth_class: np.ndarray,
-    pred_class: np.ndarray,
-    ord: int | float = 2,
-) -> tuple[np.ndarray, np.ndarray]:
-    # pos1, pos2: (batch..., max_n_vertex, 3)
-    # mask: (batch..., max_n_vertex)
-
-    if not (truth_pos.device == pred_pos.device == truth_class.device == pred_class.device):
-        raise ValueError("All inputs to bipartite_matching must be on the same device")
-
-    assert truth_pos.shape == pred_pos.shape
-    assert truth_class.shape == pred_class.shape
-
-    displacements = truth_pos[..., :, None, :] - pred_pos[..., None, :, :]
-
-    displacement_costs = np.sum(np.power(np.abs(displacements), ord), axis=-1) / displacements.shape[-1]
-    displacement_costs *= truth_class[..., :, None]
-
-    class_costs = -(truth_class[..., :, None] * pred_class[..., None, :])
-
-    cost_matrices = displacement_costs + class_costs
-
-    truth_i = np.full(truth_pos.shape[:-1], dtype=np.int64, fill_value=-1)
-    pred_i = np.full(pred_pos.shape[:-1], dtype=np.int64, fill_value=-1)
-
-    for batch_i in np.ndindex(cost_matrices.shape[:-2]):
-        truth_i[*batch_i], pred_i[*batch_i] = sp.optimize.linear_sum_assignment(cost_matrices[*batch_i])
-
-    return truth_i, pred_i
 
 
 class HungarianVertexLoss(nn.Module):
     def __init__(
         self,
-        device: torch.device | str = "cpu",
-        position_weight: float = 0.0,
-        time_weight: float = 0.0,
-        class_weight: float = 0.0,
-        sigma_requires_grad: bool = False,
+        positive_weight: float = 1.0,
+        negative_weight: float = 1.0,
+        weights: dict[str, float] | None = None,
         ord: int | float = 2,
         epsilon: float = 1e-8,
     ):
         super().__init__()
 
-        grad = sigma_requires_grad
-        self.log_pos_sigma2 = nn.Parameter(torch.full([3], position_weight, device=device), requires_grad=grad)
-        self.log_time_sigma2 = nn.Parameter(torch.tensor(time_weight, device=device), requires_grad=grad)
-        self.log_class_sigma2 = nn.Parameter(torch.tensor(class_weight, device=device), requires_grad=grad)
+        self.positive_weight = positive_weight / (positive_weight + negative_weight)
+        self.negative_weight = negative_weight / (positive_weight + negative_weight)
         self.ord = ord
         self.epsilon = epsilon
+        self.weights = (
+            pytree.tree_map(lambda x: x / sum(weights.values()), weights)
+            if weights
+            else None
+        )
+
+    def apply_weights(self, losses: dict) -> dict:
+        if self.weights:
+            return {k: w * losses[k] for k, w in self.weights.items()}
+        return losses
 
     def unreduced_losses(
         self, predict: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        log_sigma2 = predict["log_sigma2"]
         n_truth_vertices = truth["exists"].sum(-1, keepdim=True) + self.epsilon
+        truth["energy"] = truth["exists"] * truth["energy"]
+        energy_norm = truth["energy"] / (
+            truth["energy"].sum(-1, keepdim=True) + self.epsilon
+        )
         pos_loss = F.mse_loss(predict["position"], truth["position"], reduction="none")
-        pos_loss = pos_loss / (2 * torch.exp(self.log_pos_sigma2)) + 0.5 * self.log_pos_sigma2
+        # pos_loss = pos_loss / (2 * torch.exp(log_sigma2["position"])) + 0.5 * log_sigma2["position"]
         pos_loss = torch.sum(pos_loss, dim=-1)  # sum over coords
-        pos_loss = truth["exists"] * pos_loss / n_truth_vertices
+        pos_loss = pos_loss * energy_norm
+        # pos_loss = truth["exists"] * pos_loss / n_truth_vertices
 
         time_loss = F.mse_loss(predict["time"], truth["time"], reduction="none")
-        time_loss = time_loss / (2 * torch.exp(self.log_time_sigma2)) + 0.5 * self.log_time_sigma2
-        time_loss = truth["exists"] * time_loss / n_truth_vertices 
+        # time_loss = time_loss / (2 * torch.exp(log_sigma2["time"])) + 0.5 * log_sigma2["time"]
+        time_loss = time_loss * energy_norm
+        # time_loss = truth["exists"] * time_loss / n_truth_vertices
 
         exists_loss = F.binary_cross_entropy_with_logits(
             predict["exists_logit"], truth["exists"].float(), reduction="none"
         )
-        exists_loss = exists_loss / torch.exp(self.log_class_sigma2) + 0.5 * self.log_class_sigma2
-        exists_loss = exists_loss / exists_loss.shape[-1]  # normalize by number of vertices
+        exists_loss = (
+            self.negative_weight * ~truth["exists"]
+            + self.positive_weight * truth["exists"]
+        ) * exists_loss
+        # exists_loss = exists_loss / torch.exp(log_sigma2["exists"]) + 0.5 * log_sigma2["exists"]
+        # normalize by number of vertices
+        exists_loss = exists_loss / exists_loss.shape[-1]
+
+        truth["energy"] = truth["exists"] * truth["energy"]
+        energy_loss = F.mse_loss(predict["energy"], truth["energy"], reduction="none")
+        energy_loss = energy_loss / energy_loss.shape[-1]
 
         batch_size = np.prod(truth["exists"].shape[:-1]).item()
-        losses = {"pos_loss": pos_loss, "time_loss": time_loss, "exists_loss": exists_loss}
+        losses = {
+            "position": pos_loss,
+            "time": time_loss,
+            # "exists": exists_loss,
+            "energy": energy_loss,
+        }
         losses = pytree.tree_map(lambda x: x / batch_size, losses)
 
         return losses
 
-    def losses(self, predict: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        unreduced_losses = self.unreduced_losses(predict, truth)
-        reduced_losses = pytree.tree_map(lambda x: torch.sum(x, dim=1), unreduced_losses)
-        for key, value in reduced_losses.items():
-            batch_i = torch.nonzero(~torch.isfinite(value))
-            if len(batch_i) > 0:
-                batch_i = batch_i.squeeze().tolist()
-                warn(f"Loss {key} is not finite for batch indices {batch_i}")
-                print(f"  Corresponding predictions: {[{k: v[batch_i]} for k, v in predict.items()]}")
-                print(f"  Corresponding truths: {[{k: v[batch_i]} for k, v in truth.items()]}")
-
-        reduced_losses = pytree.tree_map(torch.sum, reduced_losses)
-
-        return reduced_losses
-
-    def bipartite_matching(self, predict: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]):
+    @torch.no_grad
+    def cross_losses(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> np.ndarray:
+        log_sigma2 = predict["log_sigma2"]
         cross_predict = {
-            "position": predict["position"][..., None, :],
-            "time": predict["time"][..., None],
-            "logit_exists": predict["logit_exists"][..., None],
+            "position": predict["position"][..., :, None, :],
+            "time": predict["time"][..., :, None],
+            "exists_logit": predict["exists_logit"][..., :, None],
+            "energy": predict["energy"][..., :, None],
         }
+
         cross_truth = {
             "position": truth["position"][..., None, :, :],
             "time": truth["time"][..., None, :],
             "exists": truth["exists"][..., None, :],
+            "energy": truth["energy"][..., None, :],
         }
 
-        costs = self.losses(cross_predict, cross_truth)
-        costs = pytree.tree_map(lambda x: x.cpu().detach().numpy(), costs)
-        cost_matrix = sum(costs.values())
+        for pkey, tkey in zip(
+            ["position", "time", "exists_logit", "energy"],
+            ["position", "time", "exists", "energy"],
+        ):
+            cross_predict[pkey], cross_truth[tkey] = torch.broadcast_tensors(
+                cross_predict[pkey], cross_truth[tkey]
+            )
+
+        n_truth_vertices = truth["exists"].sum(-1) + self.epsilon
+        n_truth_vertices = n_truth_vertices[..., None, None]
+        truth["energy"] = truth["exists"] * truth["energy"]
+        energy_norm = cross_truth["energy"] / (
+            cross_truth["energy"].sum(-1, keepdim=True) + self.epsilon
+        )
+        pos_loss = F.mse_loss(
+            cross_predict["position"], cross_truth["position"], reduction="none"
+        )
+        # pos_loss = pos_loss / (2 * torch.exp(log_sigma2["position"])) + 0.5 * log_sigma2["position"]
+        pos_loss = torch.sum(pos_loss, dim=-1)  # sum over coords
+        pos_loss = pos_loss * energy_norm
+        # pos_loss = cross_truth["exists"] * pos_loss / n_truth_vertices
+
+        time_loss = F.mse_loss(
+            cross_predict["time"], cross_truth["time"], reduction="none"
+        )
+        # time_loss = time_loss / (2 * torch.exp(log_sigma2["time"])) + 0.5 * log_sigma2["time"]
+        time_loss = time_loss * energy_norm
+        # time_loss = cross_truth["exists"] * time_loss / n_truth_vertices
+
+        exists_loss = F.binary_cross_entropy_with_logits(
+            cross_predict["exists_logit"],
+            cross_truth["exists"].float(),
+            reduction="none",
+        )
+        # exists_loss = -(cross_truth["exists"] * F.sigmoid(cross_predict["exists_logit"]))
+        exists_loss = (
+            self.negative_weight * ~cross_truth["exists"]
+            + self.positive_weight * cross_truth["exists"]
+        ) * exists_loss
+        # exists_loss = exists_loss / torch.exp(log_sigma2["exists"]) + 0.5 * log_sigma2["exists"]
+        exists_loss = (
+            exists_loss / exists_loss.shape[-1]
+        )  # normalize by number of vertices
+
+        cross_truth["energy"] = cross_truth["exists"] * cross_truth["energy"]
+        energy_loss = F.mse_loss(
+            cross_predict["energy"], cross_truth["energy"], reduction="none"
+        )
+        energy_loss = energy_loss / energy_loss.shape[-1]
+
+        costs = {
+            "position": pos_loss,
+            "time": time_loss,
+            # "exists": exists_loss,
+            "energy": energy_loss,
+        }
+        costs = self.apply_weights(costs)
+        costs = sum(costs.values())  # sum over loss types
+        costs = costs.cpu().numpy()
+
+        return costs
+
+    def losses(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        predict, truth = self.bipartite_matching(predict, truth)
+        unreduced_losses = self.unreduced_losses(predict, truth)
+        reduced_losses = pytree.tree_map(torch.sum, unreduced_losses)
+
+        return reduced_losses
+
+    def bipartite_matching(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        costs = self.cross_losses(predict, truth)
 
         truth_i = np.full(truth["exists"].shape, dtype=np.int64, fill_value=-1)
         pred_i = np.full(truth["exists"].shape, dtype=np.int64, fill_value=-1)
 
-        for batch_i in np.ndindex(cost_matrix.shape[:-2]):
-            truth_i[*batch_i], pred_i[*batch_i] = sp.optimize.linear_sum_assignment(cost_matrix[*batch_i])
+        for batch_i in np.ndindex(costs.shape[:-2]):
+            pred_i[*batch_i], truth_i[*batch_i] = sp.optimize.linear_sum_assignment(
+                costs[*batch_i]
+            )
 
         device = truth["exists"].device
         truth_i = torch.from_numpy(truth_i).to(device)
@@ -156,58 +200,58 @@ class HungarianVertexLoss(nn.Module):
         matched_predict = {}
         matched_truth = {}
 
-        matched_predict["position"] = torch.take_along_dim(predict["position"], pred_i[..., None], -2)
+        matched_predict["position"] = torch.take_along_dim(
+            predict["position"], pred_i[..., None], -2
+        )
         matched_predict["time"] = torch.take_along_dim(predict["time"], pred_i, -1)
-        matched_predict["exists_logit"] = torch.take_along_dim(predict["exists_logit"], pred_i, -1)
+        matched_predict["exists_logit"] = torch.take_along_dim(
+            predict["exists_logit"], pred_i, -1
+        )
+        matched_predict["energy"] = torch.take_along_dim(predict["energy"], pred_i, -1)
 
-        matched_truth["position"] = torch.take_along_dim(truth["position"], truth_i[..., None], -2)
+        matched_truth["position"] = torch.take_along_dim(
+            truth["position"], truth_i[..., None], -2
+        )
         matched_truth["time"] = torch.take_along_dim(truth["time"], truth_i, -1)
         matched_truth["exists"] = torch.take_along_dim(truth["exists"], truth_i, -1)
+        matched_truth["energy"] = torch.take_along_dim(truth["energy"], truth_i, -1)
 
-        return matched_predict, matched_truth
+        return {**matched_predict, "log_sigma2": predict["log_sigma2"]}, matched_truth
 
-    def losses_old(
+    def forward(
         self, predict: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        # pred_pos, truth_pos: (batch..., max_n_vertices, 3)
-        truth_pos = torch.concat([truth["position"], truth["time"][..., None]], dim=-1)
-        pred_pos = torch.concat([predict["position"], predict["time"][..., None]], dim=-1)
+    ) -> torch.Tensor:
+        losses = self.losses(predict, truth)
+        losses = self.apply_weights(losses)
+        return sum(losses.values()) / len(losses.values())
 
-        truth_class = truth["exists"]
-        pred_class = predict["exists_logit"]
 
-        matched_truth_i, matched_pred_i = bipartite_matching(
-            truth_pos=truth_pos.detach().cpu().numpy(),
-            pred_pos=pred_pos.detach().cpu().numpy(),
-            truth_class=truth_class.detach().cpu().numpy(),
-            pred_class=F.sigmoid(predict["exists_logit"]).detach().cpu().numpy(),
-        )
+def cardinality_error(
+    predict_logit: torch.Tensor,
+    truth_exists: torch.Tensor,
+    threshold: torch.Tensor = 0.5,
+    prob_fn=torch.sigmoid,
+):
+    threshold = torch.tensor(
+        threshold, device=predict_logit.device, dtype=predict_logit.dtype
+    )
+    predict_exists = prob_fn(predict_logit) > threshold
+    return (predict_exists != truth_exists).float().mean()
 
-        matched_truth_i = torch.from_numpy(matched_truth_i).to(truth_pos.device)
-        matched_pred_i = torch.from_numpy(matched_pred_i).to(truth_pos.device)
 
-        predict["position"] = torch.take_along_dim(predict["position"], matched_pred_i[..., None], -2)
-        predict["time"] = torch.take_along_dim(predict["time"], matched_pred_i, -1)
-        predict["exists_logit"] = torch.take_along_dim(predict["exists_logit"], matched_pred_i, -1)
-        truth["position"] = torch.take_along_dim(truth["position"], matched_truth_i[..., None], -2)
-        truth["time"] = torch.take_along_dim(truth["time"], matched_truth_i, -1)
-        truth["exists"] = torch.take_along_dim(truth["exists"], matched_truth_i, -1)
+def padded_chamfer_distance(
+    x1: torch.Tensor,
+    x2: torch.Tensor,
+    pad_mask1: torch.Tensor,
+    pad_mask2: torch.Tensor,
+    distance_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = torch.cdist,
+) -> torch.Tensor:
+    dist = distance_fn(x1, x2)
+    dist = dist + torch.max(dist) * (pad_mask1[..., :, None] + pad_mask2[..., None, :])
+    not_pad_mask1 = ~pad_mask1
+    not_pad_mask2 = ~pad_mask2
+    dist1 = (dist.min(-1).values * not_pad_mask1).sum(-1) / not_pad_mask1.sum(-1)
+    dist2 = (dist.min(-2).values * not_pad_mask2).sum(-1) / not_pad_mask2.sum(-1)
+    return 0.5 * (dist1 + dist2)
 
-        truth_pos = torch.take_along_dim(truth_pos, matched_truth_i[..., None], -2)
-        pred_pos = torch.take_along_dim(pred_pos, matched_pred_i[..., None], -2)
-        truth_class = torch.take_along_dim(truth_class, matched_truth_i, -1)
-        pred_class = torch.take_along_dim(pred_class, matched_pred_i, -1)
 
-        metric_loss = F.mse_loss(pred_pos, truth_pos, reduction="none")
-        # metric_loss = metric_loss / (2 * torch.exp(self.log_pos_sigma[None, None, :]))
-        # metric_loss = torch.sum(metric_loss, dim=-1)
-        metric_loss = torch.sum(truth_class[..., None] * metric_loss / truth_class.sum(-1)[..., None, None])
-        # metric_loss = torch.sum(truth_class * metric_loss / truth_class.sum(-1, keepdim=True))
-
-        cross_entropy = F.binary_cross_entropy_with_logits(pred_class, truth_class.float())
-
-        return {"metric_loss": metric_loss, "cross_entropy": cross_entropy}
-
-    def forward(self, predicted: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]) -> torch.Tensor:
-        losses = self.losses(predicted, truth)
-        return sum(losses.values())
