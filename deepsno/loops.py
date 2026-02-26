@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+from typing import Iterable
 
 import torch
 import tqdm
@@ -46,6 +47,7 @@ def predict(
     dataloader: data.DataLoader,
     file: uproot.WritableFile,
     device: str | torch.device,
+    keys: Iterable[str] | None = None,
     predict_name: str = "predict",
     truth_name: str = "truth",
 ):
@@ -58,6 +60,8 @@ def predict(
         inputs = pytree.tree_map(lambda x: x.to(device), inputs)
 
         predicts = model(**inputs)
+        if keys is not None:
+            predicts = {k: predicts[k] for k in keys}
 
         predicts = pytree.tree_map(lambda x: x.detach().cpu().numpy(), predicts)
         for key, value in entries.items():
@@ -171,12 +175,14 @@ def train(
     step_num = 0
     rolling_loss = 0.0
     dset_size = 0
+    first_dset_print = True
     with tqdm.tqdm(desc="Train", total=num_steps, **TQDM_KWARGS) as progress_bar:
         while training:
             profiler.start("step_total")
             profiler.start("train_data_load")
+
             for inputs, truth in train_dataloader:
-                dset_size += len(next(iter(inputs)))
+                dset_size += len(next(iter(inputs.values())))
                 profiler.stop("train_data_load")
                 step_num += 1
                 log_this_step = step_num % log_interval == 0
@@ -269,6 +275,8 @@ def train(
                 profiler.start("step_total")
                 profiler.start("train_data_load")
 
-            print(f"Dataset size: {dset_size}")
+            if first_dset_print:
+                print(f"Dataset size: {dset_size}")
+                first_dset_print = False
 
     print("Training completed")

@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ import torch
 import uproot as ur
 from torch.utils.data import IterableDataset
 
+from deepsno.data.multihit import UprootMultiFileDataset
 from deepsno.models.hit_time_autoencoder import exp_time_walk
 
 
@@ -140,61 +142,35 @@ class ChunkedUprootDataset(IterableDataset):
             )
 
 
-class PositionRecoDataset(IterableDataset):
-    expressions = ["pmt_id", "pmt_hit_time", "pmt_qhs"]
-
+class PositionRecoDataset(UprootMultiFileDataset):
     def __init__(
         self,
-        uproot_dataset: ChunkedUprootDataset,
+        pmt_valid_file: str,
         context_len: int,
-        trigger_offset: float = 0,
-        truth_expressions: Iterable = [],
+        truth_expressions: list = [],
         status_mask: int = 0xFFFFFFFF,
         seed=74819,
+        *args,
+        **kwargs,
     ):
-        super().__init__()
+        super().__init__(*args, **kwargs)
 
         self.context_len = context_len
-        self.trigger_offset = trigger_offset
         self.status_mask = status_mask
         self.seed = seed
-        self.generator = None
         self.truth_expressions = truth_expressions
-        self.uproot_dataset = uproot_dataset
-        self.uproot_dataset.expressions.update(self.expressions + truth_expressions)
-        self.uproot_iter = None
-        self.path = uproot_dataset.path
+        self.expressions.update(truth_expressions)
+        self.expressions.update(["pmt_ids", "pmt_hit_times", "pmt_qhs"])
 
-        with ur.open(self.path) as direc:
-            transpose = direc["transpose"]
-            status = transpose["status"].array(library="np")
-            self.pmt_statuses = good_pmt_status(status, status_mask)
-            print(f"Using {np.sum(self.pmt_statuses)} / {len(self.pmt_statuses)} PMTs in dataset")
-
-    def __len__(self) -> int:
-        return len(self.uproot_dataset)
+        self.pmt_valid = np.loadtxt(pmt_valid_file, dtype=bool)
+        print(f"Using {np.sum(self.pmt_valid)} / {len(self.pmt_valid)} PMTs in dataset")
 
     def __iter__(self) -> Iterator[dict[Hashable, torch.Tensor]]:
-        worker_info = torch.utils.data.get_worker_info()
-        if worker_info is None:
-            num_workers = 1
-            worker_id = 0
-        else:
-            num_workers = worker_info.num_workers
-            worker_id = worker_info.id
-
-        self.uproot_dataset.worker_id = worker_id
-        self.uproot_dataset.num_workers = num_workers
-
-        if self.generator is None:
-            self.generator = np.random.default_rng(self.seed + worker_id)
-            self.uproot_dataset.generator = self.generator
-
-        for self.event in self.uproot_dataset:
-            pmt_ids = self.event["pmt_id"]
-            pmt_ids *= self.pmt_statuses[pmt_ids]
-            hit_times = self.pmt_statuses[pmt_ids] * self.event["pmt_hit_time"]
-            qhs = self.pmt_statuses[pmt_ids] * self.event["pmt_qhs"]
+        for entry, _ in super().__iter__():
+            pmt_ids = entry["pmt_ids"].to_numpy()
+            pmt_ids *= self.pmt_valid[pmt_ids]
+            hit_times = self.pmt_valid[pmt_ids] * entry["pmt_hit_times"].to_numpy()
+            qhs = self.pmt_valid[pmt_ids] * entry["pmt_qhs"].to_numpy()
 
             non_zero_pmt_indices = np.nonzero(pmt_ids)[0]
             if len(non_zero_pmt_indices) == 0:
@@ -220,7 +196,7 @@ class PositionRecoDataset(IterableDataset):
 
             inputs = {"hit_times": hit_times, "pmt_ids": pmt_ids, "qhs": qhs}
 
-            truth = {expr: self.event[expr] for expr in self.truth_expressions}
+            truth = {field: torch.from_numpy(entry[field].to_numpy()) for field in self.truth_expressions}
 
             yield inputs, truth
 
@@ -228,18 +204,21 @@ class PositionRecoDataset(IterableDataset):
 class HitTimeAEDataset(PositionRecoDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.super_iter = super().__iter__()
+        self.expressions.add("av_offset")
 
-        self.uproot_dataset.expressions.add("av_offset")
+        if isinstance(self.file_paths, str):
+            file_paths = glob.glob(self.file_paths)
+        else:
+            file_paths = self.file_paths
 
-        with ur.open({self.path: "pmt_info"}) as pmt_info:
+        with ur.open({next(iter(file_paths)): "pmt_info"}) as pmt_info:
             pos = pmt_info["pos"].array(library="np")
             self.n_pmts = pos.shape[0]
             self._pmt_positions = torch.from_numpy(pos)
 
     def __iter__(self) -> Iterator[dict[Hashable, torch.Tensor]]:
         for inputs, truth in super().__iter__():
-            inputs["av_offset"] = torch.from_numpy(self.event["av_offset"])
+            inputs["av_offset"] = truth["av_offset"]
             inputs["pmt_positions"] = self._pmt_positions[inputs["pmt_ids"]]
 
             inputs["uncal_hit_times"] = inputs.pop("hit_times")
