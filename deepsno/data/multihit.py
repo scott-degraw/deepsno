@@ -1,8 +1,9 @@
 import glob
-from typing import Callable, Iterable
+from typing import Iterable
 from warnings import warn
 
 import awkward as ak
+import fsspec
 import numba as nb
 import numpy as np
 import torch
@@ -117,19 +118,25 @@ class UprootMultiFileDataset(IterableDataset):
                 with uproot.open(f) as ntuple:
                     arrays = ntuple[self.tree_name].arrays(self.expressions)
 
+            empty = True
             for entry in arrays:
+                empty = False
                 entry = (entry, file)
                 if len(buffer) < self.buffer_size:
                     buffer.append(entry)
                     continue
                 elif len(buffer) > self.buffer_size:
-                    raise ValueError(f"Buffer size exceeded! Size is {len(buffer)} but should be {self.buffer_size}.")
+                    raise ValueError(
+                        f"Buffer size exceeded! Size is {len(buffer)} but should be {self.buffer_size}."
+                    )
 
                 buffer_i = self.generator.choice(self.buffer_size)
                 if len(buffer) < 1:
                     raise ValueError("Buffer is empty!")
                 if len(buffer) != self.buffer_size:
-                    raise ValueError(f"Buffer is not full!. Size is {len(buffer)} but should be {self.buffer_size}.")
+                    raise ValueError(
+                        f"Buffer is not full!. Size is {len(buffer)} but should be {self.buffer_size}."
+                    )
 
                 self.debug_print(f"Yielding event {self.n_entries}")
 
@@ -149,7 +156,10 @@ class UprootMultiFileDataset(IterableDataset):
 
 
 def pad_array(
-    array: np.ndarray, pad_length: int, axis: int | None = None, generator: np.random.Generator | None = None
+    array: np.ndarray,
+    pad_length: int,
+    axis: int | None = None,
+    generator: np.random.Generator | None = None,
 ) -> np.ndarray:
     if axis is None:
         array = array.ravel()
@@ -161,7 +171,9 @@ def pad_array(
     if pad_width == 0:
         return array
     if pad_width < 0:
-        sampled_indices = generator.choice(array.shape[axis], size=pad_length, replace=False)
+        sampled_indices = generator.choice(
+            array.shape[axis], size=pad_length, replace=False
+        )
         return np.take(array, sampled_indices, axis=axis)
     else:
         indexer = array.ndim * [slice(None)]
@@ -175,6 +187,20 @@ def pad_array(
 
 
 @nb.njit
+def hist_jagged(
+    x: ak.Array, bin_width: float, low: float, counts: np.ndarray
+) -> np.ndarray:
+    for i in range(len(x)):
+        row = x[i]
+        for j in range(len(row)):
+            bin_i = int((row[j] - low) / bin_width)
+            if (0 <= bin_i) and (bin_i < counts.shape[1]):
+                counts[i, bin_i] += 1
+
+    return counts
+
+
+@nb.njit
 def voxelise_line(
     first_pos: np.ndarray,
     last_pos: np.ndarray,
@@ -182,7 +208,9 @@ def voxelise_line(
     active: np.ndarray | None = None,
 ):
     if active is None:
-        active = np.zeros((len(edges[0]), len(edges[1]), len(edges[2]), len(edges[3])), dtype=np.bool)
+        active = np.zeros(
+            (len(edges[0]), len(edges[1]), len(edges[2]), len(edges[3])), dtype=np.bool
+        )
 
     voxel_centers = [0.5 * (edges[:-1] + edges[1:]) for edges in edges]
 
@@ -205,12 +233,16 @@ def voxelise_line(
         z_planes = edges[coord_i][low_z_i : high_z_i + 1]
 
         # Parametrise straight line with lambd in [0, 1] and find intersections with planes
-        lambd = (z_planes - first_pos[coord_i]) / (last_pos[coord_i] - first_pos[coord_i])
+        lambd = (z_planes - first_pos[coord_i]) / (
+            last_pos[coord_i] - first_pos[coord_i]
+        )
         lambd = np.clip(lambd, 0, 1)
 
         # Find the intercepts in all len(edges) coordinates
         # (len(edges), N_intercepts)
-        intercepts = lambd * (last_pos[:, None] - first_pos[:, None]) + first_pos[:, None]
+        intercepts = (
+            lambd * (last_pos[:, None] - first_pos[:, None]) + first_pos[:, None]
+        )
 
         # # Find the voxel indices for each intercept
         # # (len(edges), N_intercepts)
@@ -233,18 +265,26 @@ def voxelise_line(
         # Get the voxel centers for each valid intercept and add to list
         for j in range(edge_is.shape[1]):
             if edge_valid[j]:
-                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = True
+                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = (
+                    True
+                )
 
         edge_is[coord_i] -= 1
         for j in range(1, edge_is.shape[1]):
             if edge_valid[j]:
-                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = True
+                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = (
+                    True
+                )
 
     return active
 
 
 @nb.njit()
-def voxelise_track(track_positions: np.ndarray, edges: list[np.ndarray], active: np.ndarray | None = None):
+def voxelise_track(
+    track_positions: np.ndarray,
+    edges: list[np.ndarray],
+    active: np.ndarray | None = None,
+):
     for i in range(track_positions.shape[0] - 1):
         first_pos = track_positions[i]
         last_pos = track_positions[i + 1]
@@ -259,7 +299,9 @@ def voxelise_track(track_positions: np.ndarray, edges: list[np.ndarray], active:
     return active
 
 
-def voxelise_tracks(tracks: ak.Array, edges: list[np.ndarray], active: np.ndarray | None = None):
+def voxelise_tracks(
+    tracks: ak.Array, edges: list[np.ndarray], active: np.ndarray | None = None
+):
     for track in tracks:
         positions = track["steps"]["position"].to_numpy()
         times = track["steps"]["time"].to_numpy()
@@ -270,73 +312,189 @@ def voxelise_tracks(tracks: ak.Array, edges: list[np.ndarray], active: np.ndarra
     return active
 
 
+def voxel_vertices(active: np.ndarray, centers: list[np.ndarray]):
+    vertex_indices = np.nonzero(active)
+    vertex_positions = np.stack(
+        [centers[i][vertex_indices[i]] for i in range(len(centers))], axis=1
+    )
+    return vertex_positions
+
+
+def voxelise_points(
+    points: np.ndarray, edges: list[np.ndarray], *aux_values
+) -> np.ndarray:
+    spacings = np.array([e[1] - e[0] for e in edges], dtype=np.float32)
+    lows = np.array([e[0] for e in edges], dtype=np.float32)
+    max_edge_indices = np.array([len(e) - 1 for e in edges], dtype=np.int64)
+    centers = [0.5 * (e[:-1] + e[1:]) for e in edges]
+
+    indices = np.floor((points - lows) / spacings)
+    good_indices = (0 <= indices) & (indices < max_edge_indices - 1)
+    good_indices = np.all(good_indices, axis=1)
+    indices = indices[good_indices].astype(np.int64)
+    indices, uniq_2_non_uniq_indices = np.unique(indices, axis=0, return_inverse=True)
+
+    vertex_positions = np.stack(
+        [centers[i][indices[:, i]] for i in range(len(edges))], axis=1
+    )
+
+    if aux_values:
+        reduced_aux_values = []
+        for value in aux_values:
+            value = value[good_indices]
+
+            sort_i = np.argsort(uniq_2_non_uniq_indices)
+            uniq_2_non_uniq_indices = uniq_2_non_uniq_indices[sort_i]
+            value = value[sort_i]
+
+            # For each label on non unique vector find the number of these elements and their starting point
+            _, uniq_label_start_indices = np.unique(
+                uniq_2_non_uniq_indices, return_index=True
+            )
+            value = np.add.reduceat(value, uniq_label_start_indices)
+
+            reduced_aux_values.append(value)
+
+        return vertex_positions, *reduced_aux_values
+    return vertex_positions
+
+
 class MultiHitDataset(UprootMultiFileDataset):
     def __init__(
         self,
-        waveform_generator: Callable,
+        waveform_range: tuple[float, float],
+        n_waveform_bins: int,
+        n_pmts: int,
+        radius: float,
+        pos_spacing: float,
+        time_spacing: float,
         max_context_len: int,
         max_n_vertices: int,
-        min_deposited_energy: float = 0.0,
+        min_energy: float = 0.0,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.waveform_generator = waveform_generator
+        self.waveform_range = waveform_range
+        self.waveform_dt = (waveform_range[1] - waveform_range[0]) / n_waveform_bins
+        self.n_waveform_bins = n_waveform_bins
+        self.n_pmts = n_pmts
 
-        self.expressions += "hit_times", "npe", "mc_index", "tracks*"
+        self.expressions.update(["hit_times", "npe", "mc_index", "tracks*"])
         self.max_context_len = max_context_len
         self.max_n_vertices = max_n_vertices
-        self.min_deposited_energy = min_deposited_energy
+        self.min_energy = min_energy
 
-        radius = 6000
-        self.edges = [np.arange(-radius, radius, step=100, dtype=np.float32) for _ in range(3)]
-        self.edges += [np.arange(0, 40, step=0.5, dtype=np.float32)]
+        self.pos_spacing = pos_spacing
+        self.time_spacing = time_spacing
+        self.grid_spacing = np.array(
+            [self.pos_spacing, self.pos_spacing, self.pos_spacing, self.time_spacing],
+            dtype=np.float32,
+        )
+        self.edges = [
+            np.arange(
+                -radius, radius + self.pos_spacing, self.pos_spacing, dtype=np.float32
+            )
+            for _ in range(3)
+        ]
+        self.edges += [
+            np.arange(0, 40 + self.time_spacing, self.time_spacing, dtype=np.float32)
+        ]
+        self.lows = np.array([e[0] for e in self.edges], dtype=np.float32)
         self.centers = [0.5 * (e[:-1] + e[1:]) for e in self.edges]
-        voxel_dims = [len(e) - 1 for e in self.edges]
-
-        self.active_voxels = np.zeros(voxel_dims, dtype=bool)
+        self.max_edge_indices = np.array(
+            [len(e) - 1 for e in self.edges], dtype=np.int64
+        )
 
     def __iter__(self):
+        waveforms = np.zeros((self.n_pmts, self.n_waveform_bins), dtype=np.float32)
+
         for entry, file_path in super().__iter__():
             hits_per_pmt = ak.num(entry["hit_times"]).to_numpy()
             hit_pmt_ids = np.nonzero(hits_per_pmt)[0]
             if len(hit_pmt_ids) == 0:
-                warn(f"No hits found in event {entry['mc_index'].item()} in file {file_path}")
-
-            waveforms = self.waveform_generator(entry["hit_times"])[hit_pmt_ids]
-
-            inputs = {"pmt_ids": hit_pmt_ids, "waveforms": waveforms}
-
-            if np.sum(inputs["waveforms"]) == 0:
-                warn(f"No waveform data in event {entry['mc_index'].item()} in file {file_path}")
-
-            inputs = pytree.tree_map(
-                lambda x: pad_array(x, pad_length=self.max_context_len, axis=0, generator=self.generator), inputs
-            )
-
-            tracks = entry["tracks"][entry["tracks"]["deposited_energy"] >= self.min_deposited_energy]
-            if len(tracks) == 0:
                 warn(
-                    f"No tracks with deposited energy > {self.min_deposited_energy} in event {entry['mc_index'].item()} in file {file_path}"
+                    f"No hits found in event {entry['mc_index'].item()} in file {file_path}"
                 )
 
-            self.active_voxels.fill(False)
-            self.active_voxels = voxelise_tracks(tracks, self.edges, self.active_voxels)
-            vertex_indices = np.nonzero(self.active_voxels)
-            vertex_positions = np.stack([self.centers[i][vertex_indices[i]] for i in range(len(self.edges))], axis=1)
+            waveforms.fill(0)
+            waveforms = hist_jagged(
+                entry["hit_times"],
+                bin_width=self.waveform_dt,
+                low=self.waveform_range[0],
+                counts=waveforms,
+            )
+
+            inputs = {"pmt_ids": hit_pmt_ids, "waveforms": waveforms[hit_pmt_ids]}
+
+            if np.sum(inputs["waveforms"]) == 0:
+                warn(
+                    f"No waveform data in event {entry['mc_index'].item()} in file {file_path}"
+                )
+
+            inputs = pytree.tree_map(
+                lambda x: pad_array(
+                    x, pad_length=self.max_context_len, axis=0, generator=self.generator
+                ),
+                inputs,
+            )
+
+            tracks = entry["tracks"][
+                entry["tracks"]["deposited_energy"] > self.min_energy
+            ]
+            if len(tracks) == 0:
+                warn(
+                    f"No tracks with deposited energy > {self.min_energy} in event {entry['mc_index'].item()} in file {file_path}"
+                )
+
+            vertex_positions = np.concatenate(
+                [
+                    ak.flatten(tracks["steps"]["position"]).to_numpy(),
+                    ak.flatten(tracks["steps"]["time"]).to_numpy()[:, None],
+                ],
+                axis=1,
+            )
+
+            energy = ak.flatten(tracks["steps"]["deposited_energy"]).to_numpy()
+            vertex_positions, energy = voxelise_points(
+                vertex_positions, self.edges, energy
+            )
+            energy_selector = energy > self.min_energy
+            vertex_positions = vertex_positions[energy_selector]
+            energy = energy[energy_selector]
+
             if vertex_positions.shape[0] == 0:
-                warn(f"No vertices found in event {entry['mc_index'].item()} in file {file_path}")
+                warn(
+                    f"No vertices found in event {entry['mc_index'].item()} in file {file_path}"
+                )
 
-            exists = np.ones(vertex_positions.shape[0], dtype=bool)
+            energy_sort_i = np.argsort(-energy)
+            energy = energy[energy_sort_i]
+            vertex_positions = vertex_positions[energy_sort_i]
+            exists = np.ones(energy.shape[0], dtype=bool)
 
-            exists = pad_array(exists, pad_length=self.max_n_vertices, axis=0, generator=self.generator)
-            vertices = pad_array(vertex_positions, pad_length=self.max_n_vertices, axis=0, generator=self.generator)
+            if len(energy_sort_i) > self.max_n_vertices:
+                energy = energy[:self.max_n_vertices]
+                vertex_positions = vertex_positions[:self.max_n_vertices]
+                exists = exists[:self.max_n_vertices]
 
-            vertices = {"position": vertices[:, :3], "time": vertices[:, 3], "exists": exists}
+            pad_kwargs = dict(
+                pad_length=self.max_n_vertices, axis=0, generator=self.generator
+            )
+            exists = pad_array(exists, **pad_kwargs)
+            vertices = pad_array(vertex_positions, **pad_kwargs)
+            energy = pad_array(energy, **pad_kwargs)
+            vertices = {
+                "position": vertices[:, :3],
+                "time": vertices[:, 3],
+                "energy": energy,
+                "exists": exists,
+            }
 
             # Shuffle around the vertices so they're not in any particular order
             vertex_shuffle_i = self.generator.permutation(self.max_n_vertices)
             vertices = pytree.tree_map(lambda x: x[vertex_shuffle_i], vertices)
+
             vertices = pytree.tree_map(torch.from_numpy, vertices)
 
             truth = {
