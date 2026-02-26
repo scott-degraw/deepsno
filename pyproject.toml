@@ -3,10 +3,11 @@ name = "deepsno"
 version = "0.1.0"
 description = "Models, dataloaders and utilities for deep learning in SNO+"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "deepmerge>=2.0",
     "hist>=2.9.0",
+    "htcondor>=25.6.1",
     "iminuit>=2.32.0",
     "jinja2>=3.1.6",
     "jsonargparse>=4.44.0",
