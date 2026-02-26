@@ -1,5 +1,29 @@
+import itertools
+
 import numpy as np
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import plotly.colors as pc
+
+
+def threshold_violin_plot(ax, thresholds, data, cmap: str = plt.get_cmap("plasma")):
+    vp = ax.violinplot(
+        data.T,
+        showmedians=True,
+        showextrema=False,
+        quantiles=[[0.25, 0.75]] * len(data),
+    )
+
+    if isinstance(cmap, str):
+        cmap = plt.get_cmap(cmap)
+    for i, pc in enumerate(vp["bodies"]):
+        norm = (thresholds[i] - min(thresholds)) / (max(thresholds) - min(thresholds))
+        pc.set_facecolor(cmap(norm))
+        pc.set_alpha(0.7)
+
+        ax.set_xticks(range(1, len(thresholds) + 1))
+        ax.set_xticklabels([f"{t:.2g}" for t in thresholds])
+        ax.set_xlabel("Threshold")
 
 
 def get_cube_mesh(
@@ -9,6 +33,8 @@ def get_cube_mesh(
     x_size: float = 1,
     y_size: float = 1,
     z_size: float = 1,
+    color=None,
+    hovertemplates=None,
     **mesh3d_kwargs,
 ):
     # Calculate half-size for offsets
@@ -52,7 +78,16 @@ def get_cube_mesh(
     k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
 
     meshes = []
-    for x, y, z in zip(x_vertices, y_vertices, z_vertices):
+    try:
+        iter(color)
+    except TypeError:
+        color = itertools.repeat(color)
+    try:
+        iter(hovertemplates)
+    except TypeError:
+        hovertemplates = itertools.repeat(hovertemplates)
+
+    for x, y, z, c, t in zip(x_vertices, y_vertices, z_vertices, color, hovertemplates):
         meshes.append(
             go.Mesh3d(
                 x=x,
@@ -63,6 +98,8 @@ def get_cube_mesh(
                 k=k,
                 alphahull=-1,
                 flatshading=True,
+                color=c,
+                hovertemplate=t,
                 **mesh3d_kwargs,
             )
         )
