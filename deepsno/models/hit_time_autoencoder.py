@@ -4,7 +4,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-import uproot
 import yaml
 from torch import nn
 
@@ -144,9 +143,7 @@ class HitTimeAutoEncoder(nn.Module):
         c_av_grad: float,
         c_water: float,
         av_radius: float,
-        dset: str | Path,
-        min_occupancy: float = 0,
-        max_occupancy: float = 1.0,
+        pmt_valid_file: str | Path,
         all_pass: int = 0x0,
         all_fail: int = 0xFFFFFFFF,
         fix_c: bool = False,
@@ -195,17 +192,11 @@ class HitTimeAutoEncoder(nn.Module):
 
         self.all_pass = all_pass
         self.all_fail = all_fail
-        with uproot.open({dset: "transpose"}) as transpose:
-            pmt_counts = transpose["pmt_counts"]
-            occupancy = pmt_counts / np.sum(pmt_counts)
-            valid = (occupancy > min_occupancy) & (occupancy <= max_occupancy)
-            print(f"Using {np.sum(valid)} / {len(valid)} PMTs in calibration")
-            status = np.where(valid, all_pass, all_fail)
-            self.register_buffer("status", copy_if_tensor(status))
-            self.register_buffer("pmt_valid", copy_if_tensor(valid))
 
-        with uproot.open({dset: "metadata"}) as metadata:
-            self.register_buffer("run_range", copy_if_tensor(metadata["run_range"].array(library="np")[0]))
+        valid = np.loadtxt(pmt_valid_file, dtype=np.uint32).astype(np.bool)
+        status = np.where(valid, all_pass, all_fail)
+        self.register_buffer("status", copy_if_tensor(status))
+        self.register_buffer("pmt_valid", copy_if_tensor(valid))
 
         self.pos_recon_gets_cal_time = pos_recon_gets_cal_time
 
@@ -356,6 +347,5 @@ class HitTimeAutoEncoder(nn.Module):
         time_walk_params["qhs_scale"] = (model.qhs_scale * time_walk.b).detach().numpy()
         time_walk_params["time_scale"] = (model.time_scale * time_walk.a).detach().numpy()
         time_walk_params["status"] = model.status.detach().numpy().astype(np.uint32)
-        time_walk_params["run_range"] = model.run_range.tolist()
 
         return time_walk_params
