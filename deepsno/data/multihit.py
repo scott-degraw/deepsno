@@ -20,6 +20,7 @@ class UprootMultiFileDataset(IterableDataset):
         cut: str | None = None,
         seed: int = 42,
         buffer_size: int = 100,
+        cache: bool = False,
         debug: bool = False,
     ) -> None:
         if expressions is None:
@@ -35,6 +36,7 @@ class UprootMultiFileDataset(IterableDataset):
         self.buffer_size = buffer_size
         self.generator = None
         self.debug = debug
+        self.cache = cache
 
         if self.debug:
             self.debug_print("Initializing")
@@ -62,7 +64,11 @@ class UprootMultiFileDataset(IterableDataset):
             print(f"Worker {worker_id + 1} of {n_workers}: {msg}")
 
     def __iter__(self):
-        file_paths = glob.glob(self.file_paths) if isinstance(self.file_paths, str) else self.file_paths
+        file_paths = (
+            glob.glob(self.file_paths)
+            if isinstance(self.file_paths, str)
+            else self.file_paths
+        )
         if len(file_paths) == 0:
             raise ValueError("No files found!")
         worker_info = torch.utils.data.get_worker_info()
@@ -96,11 +102,20 @@ class UprootMultiFileDataset(IterableDataset):
         buffer = []
         self.n_entries = 0
 
+        if self.cache:
+            fs = fsspec.filesystem(
+                "simplecache", target_protocol="file", cache_storage="data_cache"
+            )
+            open_context = fs.open
+        else:
+            open_context = open
+
         for file_index in shuffled_file_indices:
             file = file_paths[file_index]
 
-            with uproot.open(file) as ntuple:
-                arrays = ntuple[self.tree_name].arrays(self.expressions)
+            with open_context(file, mode="rb") as f:
+                with uproot.open(f) as ntuple:
+                    arrays = ntuple[self.tree_name].arrays(self.expressions)
 
             for entry in arrays:
                 entry = (entry, file)
