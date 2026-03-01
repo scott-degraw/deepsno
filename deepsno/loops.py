@@ -275,6 +275,10 @@ def train(
                 profiler.start("step_total")
                 profiler.start("train_data_load")
 
+                if step_num >= num_steps:
+                    training = False
+                    break
+
             if first_dset_print:
                 print(f"Dataset size: {dset_size}")
                 first_dset_print = False
