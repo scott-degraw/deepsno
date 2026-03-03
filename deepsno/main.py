@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from importlib.resources import files
 from pathlib import Path
 from typing import Iterable
 from warnings import warn
@@ -268,7 +269,8 @@ def main():
                 config=save_cfg,
                 mode=mode,
             ) as run:
-                run.log_code()
+                package_root = Path(files("deepsno"))
+                run.log_code(root=package_root, include_fn=lambda path: path.endswith(".py"))
                 print(f"Saving model config and checkpoints to {str(model_save_dir.resolve())}")
                 print(f"Number of trainable parameters: {num_params}")
 
