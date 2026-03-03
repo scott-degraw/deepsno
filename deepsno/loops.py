@@ -187,10 +187,6 @@ def train(
                 step_num += 1
                 log_this_step = step_num % log_interval == 0
 
-                if num_steps is not None and step_num == num_steps:
-                    training = False
-                    break
-
                 progress_bar.update()
 
                 optimizer.zero_grad()
