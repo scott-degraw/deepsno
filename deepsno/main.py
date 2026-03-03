@@ -125,11 +125,21 @@ def main():
         parser.add_argument(
             "--git_hash", type=str, required=False, help="If given, will check if current repository matches this hash."
         )
+        parser.add_argument(
+            "--log_file", type=Path, required=False, default=None,
+            help="If given, redirect stdout and stderr to this file."
+        )
         subcommands = parser.add_subcommands()
         subcommands.add_subcommand("train", train_parser)
         subcommands.add_subcommand("predict", predict_parser)
 
         cfg = parser.parse_args().as_dict()
+
+        log_fh = None
+        if cfg["log_file"] is not None:
+            log_fh = open(cfg["log_file"], "w", buffering=1)  # line-buffered
+            sys.stdout = log_fh
+            sys.stderr = log_fh
 
         if cfg["subcommand"] == "predict":
             ckpt = Path(cfg["predict"]["ckpt"]).resolve()
@@ -356,8 +366,18 @@ def main():
 
     except KeyboardInterrupt:
         print("KeyboardInterrupt received. Exiting.", file=sys.stderr)
-        # This is more severe than a regular exit
+        # Use os._exit to skip wandb cleanup (avoids hangs) and exit with
+        # the conventional Ctrl+C code 130. Close the log file first since
+        # finally blocks are bypassed by os._exit.
+        if log_fh is not None:
+            log_fh.flush()
+            log_fh.close()
         os._exit(130)
+    finally:
+        if log_fh is not None:
+            sys.stdout = sys.__stdout__
+            sys.stderr = sys.__stderr__
+            log_fh.close()
 
 
 if __name__ == "__main__":
