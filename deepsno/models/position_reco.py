@@ -2,6 +2,7 @@ import torch
 from torch import nn
 
 from deepsno.utils.train import copy_if_tensor
+from deepsno.models.transformers import SetEncoderVarlenPadded
 
 
 class PositionReco(nn.Module):
@@ -67,19 +68,14 @@ class PositionReco(nn.Module):
     ):
         super().__init__()
         self.n_pmts = n_pmts
-        self.dropout_p = dropout
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
+        
+        self.transformer_encoder = SetEncoderVarlenPadded(
+            dim_in=d_model,
+            dim_hidden=d_model,
+            num_heads=nhead,
+            num_sabs=num_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True,
-            norm_first=True,
-        )
-
-        # TODO: Go over if we should use nested tensors
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers, enable_nested_tensor=False
         )
 
         self.pmt_id_embeddings = nn.Embedding(n_pmts, d_model)
@@ -128,7 +124,8 @@ class PositionReco(nn.Module):
 
         x = self.pmt_id_embeddings(pmt_ids) + self.hit_time_embedder(hit_times.unsqueeze(-1))
 
-        x = self.transformer_encoder(x, src_key_padding_mask=pmt_masks)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            x = self.transformer_encoder(x, mask=pmt_ids != 0)
 
         not_padding_masks = ~pmt_masks
         x = torch.sum(x * not_padding_masks.unsqueeze(-1), dim=-2) / not_padding_masks.sum(-1).unsqueeze(-1)
