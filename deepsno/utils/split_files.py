@@ -61,26 +61,44 @@ if __name__ == "__main__":
     import argparse
     from pathlib import Path
 
-    try:
-        parser = argparse.ArgumentParser(
-            prog="split_files", description="Groups and splits files into different directories"
-        )
+    parser = argparse.ArgumentParser(
+        prog="split_files", description="Groups and splits files into different directories"
+    )
 
-        parser.add_argument("-f", "--files", type=Path, nargs="+", help="Files to group and split.")
-        parser.add_argument(
-            "-s",
-            "--splits",
-            type=float,
-            nargs="+",
-            help="Fractions to split files. Only one can be negative.",
-            required=True,
-        )
-        parser.add_argument("-d", "--dirs", type=Path, nargs="+", help="Directories to put files into.", required=True)
-        parser.add_argument("-S", "--seed", type=int, default=47281, help="Random seed")
-        parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing links.")
+    parser.add_argument("-f", "--files", type=Path, nargs="+", help="Files to group and split.")
+    parser.add_argument(
+        "-g",
+        "--glob",
+        type=str,
+        help="Glob pattern to find files (e.g. '/data/dir/*.h5'). Used if --files is not provided.",
+    )
+    parser.add_argument(
+        "-s",
+        "--splits",
+        type=float,
+        nargs="+",
+        help="Fractions to split files. Only one can be negative.",
+        required=True,
+    )
+    parser.add_argument("-d", "--dirs", type=Path, nargs="+", help="Directories to put files into.", required=True)
+    parser.add_argument("-S", "--seed", type=int, default=47281, help="Random seed")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing links.")
 
-        args = parser.parse_args()
+    args = parser.parse_args()
 
-    except Exception as e:
-        print(f"Exception encounted: {e}", file=sys.stderr)
+    if args.files:
+        files = args.files
+    elif args.glob:
+        import glob
+
+        files = [Path(p) for p in glob.glob(args.glob)]
+        if not files:
+            print(f"No files matched glob pattern: {args.glob}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("Error: must provide --files or --glob.", file=sys.stderr)
+        parser.print_usage(sys.stderr)
         sys.exit(1)
+
+    split_files(splits=args.splits, dirs=args.dirs, files=files, seed=args.seed, force=args.force)
+
