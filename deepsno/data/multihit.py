@@ -359,7 +359,15 @@ def voxelise_points(
     return vertex_positions
 
 
-class MultiHitDataset(UprootMultiFileDataset):
+class MultiHitDatasetBase(UprootMultiFileDataset):
+    """
+    Shared base for MultiHit datasets.
+
+    Handles all data loading, hit filtering, log-time quantisation,
+    truncation/padding, and truth-building.  Subclasses implement
+    :meth:`_make_pmt_inputs` to choose how PMT data are represented.
+    """
+
     def __init__(
         self,
         waveform_range: tuple[float, float],
@@ -406,45 +414,66 @@ class MultiHitDataset(UprootMultiFileDataset):
             [len(e) - 1 for e in self.edges], dtype=np.int64
         )
 
+    def _make_pmt_inputs(
+        self, pmt_ids: np.ndarray, hit_times: np.ndarray
+    ) -> dict[str, np.ndarray]:
+        """
+        Build the ``inputs`` dict from sorted, padded ``pmt_ids`` and
+        ``hit_times`` arrays (each of length ``max_context_len``).
+
+        Subclasses must override this method.
+        """
+        raise NotImplementedError
+
     def __iter__(self):
-        waveforms = np.zeros((self.n_pmts, self.n_waveform_bins), dtype=np.float32)
+        self.time_edges = np.linspace(2, 6, self.n_waveform_bins + 1)
 
         for entry, file_path in super().__iter__():
+            # --- hit extraction & filtering ---
             hits_per_pmt = ak.num(entry["hit_times"]).to_numpy()
-            hit_pmt_ids = np.nonzero(hits_per_pmt)[0]
-            if len(hit_pmt_ids) == 0:
-                warn(
-                    f"No hits found in event {entry['mc_index'].item()} in file {file_path}"
+            pmt_ids = np.arange(len(entry["hit_times"]))
+            pmt_ids = np.repeat(pmt_ids, hits_per_pmt)
+            hit_times = ak.flatten(entry["hit_times"]).to_numpy()
+
+            selector = (hit_times > 0) & (hit_times < 300)
+            pmt_ids = pmt_ids[selector]
+            hit_times = hit_times[selector]
+
+            hit_times = np.log(hit_times)
+
+            hit_times = np.searchsorted(self.time_edges, hit_times) - 1
+            bad_hit_time_idx = (hit_times < 0) | (hit_times >= len(self.time_edges))
+            pmt_ids = pmt_ids[~bad_hit_time_idx]
+            hit_times = hit_times[~bad_hit_time_idx]
+
+            # --- truncate or pad to max_context_len ---
+            if len(pmt_ids) > self.max_context_len:
+                shuffle_indices = self.generator.choice(
+                    len(pmt_ids), size=self.max_context_len, replace=False
                 )
+                pmt_ids = pmt_ids[shuffle_indices]
+                hit_times = hit_times[shuffle_indices]
+            else:
+                pad_tuple = (0, self.max_context_len - len(pmt_ids))
+                pmt_ids = np.pad(pmt_ids, pad_tuple)
+                hit_times = np.pad(hit_times, pad_tuple)
 
-            waveforms.fill(0)
-            waveforms = hist_jagged(
-                entry["hit_times"],
-                bin_width=self.waveform_dt,
-                low=self.waveform_range[0],
-                counts=waveforms,
-            )
+            # sort by PMT id so subclasses can rely on ordering
+            sort_idx = np.argsort(pmt_ids)
+            pmt_ids = pmt_ids[sort_idx]
+            hit_times = hit_times[sort_idx]
 
-            inputs = {"pmt_ids": hit_pmt_ids, "waveforms": waveforms[hit_pmt_ids]}
+            # --- subclass-specific PMT representation ---
+            inputs = self._make_pmt_inputs(pmt_ids, hit_times)
 
-            if np.sum(inputs["waveforms"]) == 0:
-                warn(
-                    f"No waveform data in event {entry['mc_index'].item()} in file {file_path}"
-                )
-
-            inputs = pytree.tree_map(
-                lambda x: pad_array(
-                    x, pad_length=self.max_context_len, axis=0, generator=self.generator
-                ),
-                inputs,
-            )
-
+            # --- truth building ---
             tracks = entry["tracks"][
                 entry["tracks"]["deposited_energy"] > self.min_energy
             ]
             if len(tracks) == 0:
                 warn(
-                    f"No tracks with deposited energy > {self.min_energy} in event {entry['mc_index'].item()} in file {file_path}"
+                    f"No tracks with deposited energy > {self.min_energy} in event "
+                    f"{entry['mc_index'].item()} in file {file_path}"
                 )
 
             vertex_positions = np.concatenate(
@@ -474,9 +503,9 @@ class MultiHitDataset(UprootMultiFileDataset):
             exists = np.ones(energy.shape[0], dtype=bool)
 
             if len(energy_sort_i) > self.max_n_vertices:
-                energy = energy[:self.max_n_vertices]
-                vertex_positions = vertex_positions[:self.max_n_vertices]
-                exists = exists[:self.max_n_vertices]
+                energy = energy[: self.max_n_vertices]
+                vertex_positions = vertex_positions[: self.max_n_vertices]
+                exists = exists[: self.max_n_vertices]
 
             pad_kwargs = dict(
                 pad_length=self.max_n_vertices, axis=0, generator=self.generator
@@ -491,10 +520,8 @@ class MultiHitDataset(UprootMultiFileDataset):
                 "exists": exists,
             }
 
-            # Shuffle around the vertices so they're not in any particular order
             vertex_shuffle_i = self.generator.permutation(self.max_n_vertices)
             vertices = pytree.tree_map(lambda x: x[vertex_shuffle_i], vertices)
-
             vertices = pytree.tree_map(torch.from_numpy, vertices)
 
             truth = {
@@ -507,3 +534,49 @@ class MultiHitDataset(UprootMultiFileDataset):
             inputs = pytree.tree_map(torch.from_numpy, inputs)
 
             yield inputs, truth
+
+
+class MultiHitDatasetUnique(MultiHitDatasetBase):
+    """
+    PMT representation: unique PMT IDs + per-PMT hit counts.
+
+    Outputs ``pmt_ids`` and ``pmt_id_counts`` each of length ``n_pmts``,
+    and ``hit_times`` of length ``max_context_len``.  Compatible with
+    :class:`~deepsno.models.multihit.MultiHitEncoder`, which uses
+    ``torch.segment_reduce`` to aggregate hit-time embeddings per PMT.
+    """
+
+    def _make_pmt_inputs(
+        self, pmt_ids: np.ndarray, hit_times: np.ndarray
+    ) -> dict[str, np.ndarray]:
+        uniq_pmt_ids, pmt_id_counts = np.unique(pmt_ids, return_counts=True)
+        pad_tuple = (0, self.n_pmts - len(uniq_pmt_ids))
+        uniq_pmt_ids = np.pad(uniq_pmt_ids, pad_tuple)
+        pmt_id_counts = np.pad(pmt_id_counts, pad_tuple)
+        return {
+            "pmt_ids": uniq_pmt_ids,
+            "pmt_id_counts": pmt_id_counts,
+            "hit_times": hit_times,
+        }
+
+
+class MultiHitDatasetExpanded(MultiHitDatasetBase):
+    """
+    PMT representation: one entry per hit (expanded / repeated form).
+
+    Outputs ``pmt_ids`` and ``hit_times`` each of length ``max_context_len``,
+    sorted by PMT ID.  Suitable for models that process individual hits rather
+    than aggregated per-PMT features.
+    """
+
+    def _make_pmt_inputs(
+        self, pmt_ids: np.ndarray, hit_times: np.ndarray
+    ) -> dict[str, np.ndarray]:
+        return {
+            "pmt_ids": pmt_ids,
+            "hit_times": hit_times,
+        }
+
+
+# Backward-compatible alias
+MultiHitDataset = MultiHitDatasetUnique
