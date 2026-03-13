@@ -2,10 +2,23 @@ from datetime import datetime
 from pathlib import Path
 
 import jinja2
+import yaml
 from jsonargparse._loaders_dumpers import get_loader_exceptions, yaml_load
 
 now = datetime.now()
 env = jinja2.Environment()
+
+
+def load_yaml(path: str | Path) -> dict:
+    """Load a YAML file and return its contents as a dict.
+
+    Available inside Jinja templates as ``load_yaml(path)``.
+    """
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+env.globals["load_yaml"] = load_yaml
 
 
 def get_exceptions():
