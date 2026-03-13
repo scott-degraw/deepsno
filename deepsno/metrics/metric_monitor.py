@@ -260,3 +260,43 @@ class EffectiveCMonitor(MetricMonitor):
     def compute(self, global_step: int) -> None:
         self.writer.add_scalar(f"{self.name_prefix}/c_av", self.c_av, global_step=global_step)
         self.writer.add_scalar(f"{self.name_prefix}/c_water", self.c_water, global_step=global_step)
+
+
+class SinkhornConvergenceMonitor(MetricMonitor):
+    def __init__(
+        self,
+        run: wandb.Run,
+        loss_fn: nn.Module,
+        name_prefix: str = "sinkhorn_convergence",
+    ):
+        self.run = run
+        self.loss_fn = loss_fn
+        self.name_prefix = name_prefix
+        self.reset()
+
+    def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
+        if "max_delta_u" in predict:
+            delta_u = predict["max_delta_u"]
+            if isinstance(delta_u, torch.Tensor):
+                delta_u = delta_u.detach().cpu().item()
+            self.max_delta_u.append(delta_u)
+        if "max_delta_v" in predict:
+            delta_v = predict["max_delta_v"]
+            if isinstance(delta_v, torch.Tensor):
+                delta_v = delta_v.detach().cpu().item()
+            self.max_delta_v.append(delta_v)
+
+    def reset(self) -> None:
+        self.max_delta_u = []
+        self.max_delta_v = []
+
+    def compute(self, global_step: int) -> None:
+        metrics = {}
+        if self.max_delta_u:
+            metrics[f"{self.name_prefix}/max_delta_u"] = np.mean(self.max_delta_u)
+        if self.max_delta_v:
+            metrics[f"{self.name_prefix}/max_delta_v"] = np.mean(self.max_delta_v)
+        
+        if metrics:
+            self.run.log(metrics, step=global_step)
+
