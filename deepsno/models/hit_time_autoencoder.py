@@ -133,7 +133,8 @@ class InterPtsTimeWalk(nn.Module):
         return interp
 
 
-@torch.compile(dynamic=False, fullgraph=True)
+# @torch.compile(dynamic=False, fullgraph=True)
+@torch.compile()
 class HitTimeAutoEncoder(nn.Module):
     def __init__(
         self,
