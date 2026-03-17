@@ -371,7 +371,6 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             val_num_steps=train_cfg["val_num_steps"],
             max_grad_norm=train_cfg["max_grad_norm"],
             metric_monitor=monitor,
-            profile=train_cfg["profile"],
             autocast_dtype=autocast_dtype,
         )
 

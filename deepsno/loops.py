@@ -11,7 +11,6 @@ from torch.utils import _pytree as pytree
 from torch.utils import data
 
 from deepsno.metrics.metric_monitor import MetricMonitor
-from deepsno.utils.profiling import LoopProfiler
 
 TQDM_KWARGS = {
     "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar}]{r_bar}",
@@ -138,32 +137,12 @@ def train(
     train_unnorm: bool = False,
     val_norm: bool = False,
     max_grad_norm: float = 0.0,
-    memory_unit: str = "MiB",
-    profile: bool = False,
-    profiling_unit: str = "ms",
     metric_monitor: MetricMonitor | None = None,
     autocast_dtype: torch.dtype = torch.float32,
 ):
     device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(exist_ok=True, parents=True)
-
-    profiler = LoopProfiler(
-        writer=run,
-        profiles=[
-            "train_data_load",
-            "data_to_device",
-            "forward_pass",
-            "loss_calc",
-            "backward_pass",
-            "step_total",
-            "validation",
-            "model_save",
-        ],
-        cuda_sync="cuda" in device.type,
-        profiling_unit=profiling_unit,
-        disable=not profile,
-    )
 
     model.to(device)
     model.train()
@@ -178,12 +157,8 @@ def train(
     first_dset_print = True
     with tqdm.tqdm(desc="Train", total=num_steps, **TQDM_KWARGS) as progress_bar:
         while training:
-            profiler.start("step_total")
-            profiler.start("train_data_load")
-
             for inputs, truth in train_dataloader:
                 dset_size += len(next(iter(inputs.values())))
-                profiler.stop("train_data_load")
                 step_num += 1
                 log_this_step = step_num % log_interval == 0
 
@@ -191,45 +166,34 @@ def train(
 
                 optimizer.zero_grad()
 
-                profiler.start("data_to_device")
                 inputs = to_device(inputs, device)
                 truth = to_device(truth, device)
-                profiler.stop("data_to_device")
 
                 if not model.output_unnorm:
                     truth = model.output_normalize(truth)
 
-                profiler.start("forward_pass")
                 predict = model(**inputs)
-                profiler.stop("forward_pass")
 
-                profiler.start("loss_calc")
                 loss = loss_fn(predict, truth)
                 rolling_loss += loss.item()
                 if not torch.isfinite(loss):
                     raise ValueError("Training loss is not finite")
-                profiler.stop("loss_calc")
                 if log_this_step:
                     run.log({"Loss/train": rolling_loss / log_interval}, step=step_num)
                     rolling_loss = 0.0
 
-                profiler.start("backward_pass")
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
                 optimizer.step()
-                profiler.stop("backward_pass")
 
                 if scheduler is not None:
                     scheduler.step()
                     if log_this_step:
                         run.log({"learning_rate": scheduler.get_last_lr()[0]}, step=step_num)
 
-                profiler.stop("step_total")
-
                 if step_num % val_num_steps == 0:
                     del inputs, truth, predict, loss
                     log_this_step = True
-                    profiler.start("validation")
                     val_loss = validate(
                         val_dataloader,
                         device=device,
@@ -239,7 +203,6 @@ def train(
                         metric_monitor=metric_monitor,
                         val_norm=val_norm,
                     )
-                    profiler.stop("validation")
 
                     model.train()
                     model.output_unnorm = train_unnorm
@@ -251,7 +214,6 @@ def train(
                     if val_metric_is_inverted:
                         val_loss = -val_loss
 
-                    profiler.start("model_save")
                     state_dict = {
                         "sub_epoch": sub_epoch,
                         "model": detach_to_cpu(model.state_dict()),
@@ -262,14 +224,11 @@ def train(
                     filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
 
                     torch.save(state_dict, checkpoint_dir / filename)
-                    profiler.stop("model_save")
 
                     sub_epoch += 1
 
                 if log_this_step:
                     run.log({}, step=step_num, commit=True)
-                profiler.start("step_total")
-                profiler.start("train_data_load")
 
                 if step_num >= num_steps:
                     training = False
