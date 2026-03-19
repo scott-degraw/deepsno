@@ -7,6 +7,7 @@ import fsspec
 import numba as nb
 import numpy as np
 import torch
+import torch.distributed as dist
 import uproot
 from torch.utils import _pytree as pytree
 from torch.utils.data import IterableDataset
@@ -81,17 +82,29 @@ class UprootMultiFileDataset(IterableDataset):
             worker_id = worker_info.id
             n_workers = worker_info.num_workers
 
-        if self.debug:
-            print(f"Worker {worker_id + 1} of {n_workers} starting.")
+        # DDP rank-based sharding: each rank gets a disjoint subset of files.
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+        else:
+            rank = 0
+            world_size = 1
 
-        self.seed += worker_id
+        # Combine rank and local-worker dimensions into a single global index.
+        global_worker_id = rank * n_workers + worker_id
+        total_workers = world_size * n_workers
+
+        if self.debug:
+            print(f"Worker {worker_id + 1} of {n_workers} (rank {rank}/{world_size}) starting.")
+
+        self.seed += global_worker_id
 
         if self.generator is None:
             self.generator = np.random.default_rng(self.seed)
 
         file_slice = slice(
-            len(file_paths) * worker_id // n_workers,
-            len(file_paths) * (worker_id + 1) // n_workers,
+            len(file_paths) * global_worker_id // total_workers,
+            len(file_paths) * (global_worker_id + 1) // total_workers,
         )
 
         file_paths = file_paths[file_slice]
