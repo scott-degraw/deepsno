@@ -8,7 +8,6 @@ import tempfile
 from importlib.resources import files
 from pathlib import Path
 from typing import Iterable
-from warnings import warn
 
 import jsonargparse
 import torch
@@ -55,9 +54,6 @@ class Tee:
 class UncommittedChangesError(RuntimeError):
     pass
 
-
-class UncommittedChangesWarning(RuntimeWarning):
-    pass
 
 
 class MismatchedGitHash(RuntimeError):
@@ -184,15 +180,9 @@ def build_parser() -> ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def resolve_git_hash(cfg: dict) -> str:
-    """Validate and return the git hash, respecting ``--force``."""
-    if cfg["force"]:
-        warn(
-            "Running in 'force' mode. Git commit hash may not reflect state of working tree.",
-            UncommittedChangesWarning,
-        )
-        return get_git_hash(raise_exception=False)
+    """Validate and return the git hash."""
 
-    git_hash = get_git_hash(raise_exception=True)
+    git_hash = get_git_hash(raise_exception=not cfg.get("force", False))
     if cfg["git_hash"] is not None and git_hash != cfg["git_hash"]:
         raise MismatchedGitHash(
             f"Git hash '{cfg['git_hash']}' does not match the git hash of the "
