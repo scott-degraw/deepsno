@@ -22,7 +22,7 @@ class UprootMultiFileDataset(IterableDataset):
         cut: str | None = None,
         seed: int = 42,
         buffer_size: int = 100,
-        cache: bool = False,
+        cache: bool | str = False,
         debug: bool = False,
     ) -> None:
         if expressions is None:
@@ -117,8 +117,9 @@ class UprootMultiFileDataset(IterableDataset):
         self.n_entries = 0
 
         if self.cache:
+            cache_storage = self.cache if isinstance(self.cache, str) else "data_cache"
             fs = fsspec.filesystem(
-                "simplecache", target_protocol="file", cache_storage="data_cache"
+                "simplecache", target_protocol="file", cache_storage=cache_storage
             )
             open_context = fs.open
         else:
