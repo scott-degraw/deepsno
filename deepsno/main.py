@@ -12,10 +12,12 @@ from warnings import warn
 
 import jsonargparse
 import torch
+import torch.distributed as dist
 import wandb
 from jsonargparse import ArgumentParser, set_loader
 from jsonargparse import typing as ptyping
 from torch import nn, optim
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from deepsno.loops import predict, train
 from deepsno.metrics import metric_monitor
@@ -126,8 +128,6 @@ def _build_train_parser() -> ArgumentParser:
     p.add_argument("--optimizer", type=dict, required=True)
     p.add_argument("--scheduler", type=dict, required=False)
     p.add_argument("--max_grad_norm", type=float, default=0.0)
-    p.add_argument("--train_unnorm", action="store_true")
-    p.add_argument("--val_norm", action="store_true")
 
     # validation
     p.add_argument("--val_metric", type=Metric, required=True)
@@ -262,6 +262,20 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
 
     train_cfg = cfg["train"]
 
+    # DDP setup — triggered automatically when launched with torchrun.
+    if dist.is_available() and "RANK" in os.environ:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        dist.init_process_group(backend="nccl", device_id=local_rank)
+        rank = dist.get_rank()
+        device = torch.device(f"cuda:{local_rank}")
+        torch.cuda.set_device(local_rank)
+    else:
+        rank = 0
+        local_rank = None
+        device = torch.device(train_cfg["device"])
+
+    is_main = rank == 0
+
     torch.manual_seed(train_cfg["seed"])
 
     # Dry-run overrides
@@ -270,10 +284,14 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
         train_cfg["val_num_steps"] = 2
         train_cfg["checkpoint_dir"] = Path(tempfile.gettempdir()) / "dry_run"
         train_cfg["wandb_disable"] = True
-        shutil.rmtree(train_cfg["checkpoint_dir"], ignore_errors=True)
+        if is_main:
+            shutil.rmtree(train_cfg["checkpoint_dir"], ignore_errors=True)
 
     model_save_dir = Path(train_cfg["checkpoint_dir"])
-    model_save_dir.mkdir(parents=True, exist_ok=True)
+    if is_main:
+        model_save_dir.mkdir(parents=True, exist_ok=True)
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()  # ensure directory exists before all ranks proceed
 
     # Instantiate the model
     initialize_norm_dict(cfg["model"])
@@ -282,6 +300,17 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
     model: nn.Module = cfg["model"]
 
     train_cfg = cfg["train"]
+
+    if dist.is_available() and dist.is_initialized():
+        world_size = dist.get_world_size()
+        for key in ("train_dataloader", "val_dataloader"):
+            dl_cfg = train_cfg[key]
+            bs = dl_cfg["init_args"]["batch_size"]
+            if bs % world_size != 0:
+                raise ValueError(
+                    f"{key} batch_size {bs} is not divisible by world_size {world_size}"
+                )
+            dl_cfg["init_args"]["batch_size"] = bs // world_size
 
     train_cfg["train_dataloader"] = instantiate(train_cfg["train_dataloader"])
     train_cfg["val_dataloader"] = instantiate(train_cfg["val_dataloader"])
@@ -315,18 +344,23 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
         ckpt = Path(train_cfg["ckpt"])
         if ckpt.is_dir():
             ckpt = get_best_ckpt(ckpt)
-        state_dict = torch.load(ckpt, map_location=train_cfg["device"], weights_only=True)
+        state_dict = torch.load(ckpt, map_location=device, weights_only=True)
         ckpt_keys = train_cfg["ckpt_keys"]
         if "model" in ckpt_keys:
             model.load_state_dict(state_dict["model"], strict=True)
-            model.to(train_cfg["device"])
         if "optimizer" in ckpt_keys:
             optimizer.load_state_dict(state_dict["optimizer"])
         if "scheduler" in ckpt_keys:
             scheduler.load_state_dict(state_dict["scheduler"])
 
-    # Save the config
-    parser.save(save_cfg, model_save_dir / "config.yaml", overwrite=True)
+    # Move to device then wrap with DDP if multi-GPU.
+    model.to(device)
+    if local_rank is not None:
+        model = DDP(model, device_ids=[local_rank])
+
+    # Save the config (rank 0 only)
+    if is_main:
+        parser.save(save_cfg, model_save_dir / "config.yaml", overwrite=True)
 
     # Autocast dtype
     try:
@@ -334,8 +368,8 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
     except AttributeError:
         raise ValueError(f"Invalid autocast dtype: {train_cfg['autocast_dtype']}")
 
-    # Wandb
-    mode = "disabled" if (train_cfg["wandb_disable"] or train_cfg["dry_run"]) else "online"
+    # Wandb — disabled on non-main ranks
+    mode = "disabled" if (not is_main or train_cfg["wandb_disable"] or train_cfg["dry_run"]) else "online"
 
     with wandb.init(
         entity=train_cfg["entity"],
@@ -345,35 +379,34 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
         config=save_cfg,
         mode=mode,
     ) as run:
-        package_root = Path(files("deepsno"))
-        run.log_code(root=package_root, include_fn=lambda path: path.endswith(".py"))
-        print(f"Saving model config and checkpoints to {model_save_dir.resolve()}")
-        print(f"Number of trainable parameters: {num_params}")
+        if is_main:
+            package_root = Path(files("deepsno"))
+            run.log_code(root=package_root, include_fn=lambda path: path.endswith(".py"))
+            print(f"Saving model config and checkpoints to {model_save_dir.resolve()}")
+            print(f"Number of trainable parameters: {num_params}")
 
-        monitor = _instantiate_monitors(train_cfg, run)
+        monitor = _instantiate_monitors(train_cfg, run) if is_main else None
 
         train(
             checkpoint_dir=model_save_dir / "ckpt",
             run=run,
             log_interval=train_cfg["log_interval"],
             model=model,
-            device=torch.device(train_cfg["device"]),
+            device=device,
             train_dataloader=train_cfg["train_dataloader"],
             val_dataloader=train_cfg["val_dataloader"],
             num_steps=train_cfg["num_steps"],
             optimizer=optimizer,
             loss_fn=train_cfg["loss_fn"],
             scheduler=scheduler,
-            train_unnorm=train_cfg["train_unnorm"],
-            val_norm=train_cfg["val_norm"],
             val_metric=train_cfg["val_metric"],
             val_metric_is_inverted=train_cfg["val_metric_is_inverted"],
             val_num_steps=train_cfg["val_num_steps"],
             max_grad_norm=train_cfg["max_grad_norm"],
             metric_monitor=monitor,
             autocast_dtype=autocast_dtype,
+            rank=rank,
         )
-
 
 def run_predict(cfg: dict, parser: ArgumentParser) -> None:
     """Run the prediction workflow."""
@@ -450,15 +483,15 @@ def main():
         # Use os._exit to skip wandb cleanup (avoids hangs) and exit with
         # the conventional Ctrl+C code 130.  Close the log file first since
         # finally blocks are bypassed by os._exit.
+        os._exit(130)
+    finally:
+        if dist.is_available() and dist.is_initialized():
+            dist.destroy_process_group()
         if log_fh is not None:
             log_fh.flush()
             log_fh.close()
-        os._exit(130)
-    finally:
-        if log_fh is not None:
             sys.stdout = sys.__stdout__
             sys.stderr = sys.__stderr__
-            log_fh.close()
 
 
 if __name__ == "__main__":

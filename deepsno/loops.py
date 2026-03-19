@@ -3,14 +3,23 @@ from pathlib import Path
 from typing import Iterable
 
 import torch
+import torch.distributed as dist
 import tqdm
 import uproot
 import wandb
 from torch import nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils import _pytree as pytree
 from torch.utils import data
 
 from deepsno.metrics.metric_monitor import MetricMonitor
+
+def _unwrap(model: nn.Module) -> nn.Module:
+    """Unwrap a DistributedDataParallel model to get the underlying module."""
+    if isinstance(model, DDP):
+        return model.module
+    return model
+
 
 TQDM_KWARGS = {
     "bar_format": "{desc:<10} {percentage:>5.1f}% |[{bar}]{r_bar}",
@@ -52,7 +61,6 @@ def predict(
 ):
     model.to(device)
     model.eval()
-    model.output_unnorm = True
 
     first_batch = True
     for inputs, entries in tqdm.tqdm(dataloader, desc="Test", **TQDM_KWARGS):
@@ -86,11 +94,9 @@ def validate(
     metric: object,
     global_step: int | None = None,
     metric_monitor: MetricMonitor | None = None,
-    val_norm: bool = False,
 ) -> float:
     model.to(device)
     model.eval()
-    model.output_unnorm = not val_norm
 
     if metric_monitor is not None:
         if global_step is None:
@@ -105,9 +111,6 @@ def validate(
 
         predict = model(**inputs)
 
-        if not model.output_unnorm:
-            truth = model.output_normalize(truth)
-
         metric.update(predict, truth)
 
         if metric_monitor is not None:
@@ -116,7 +119,14 @@ def validate(
     if metric_monitor is not None:
         metric_monitor.compute(global_step)
 
-    return metric.compute()
+    val = metric.compute()
+
+    if dist.is_available() and dist.is_initialized():
+        val_tensor = torch.tensor(val, dtype=torch.float64, device=device)
+        dist.all_reduce(val_tensor, op=dist.ReduceOp.AVG)
+        val = val_tensor.item()
+
+    return val
 
 
 def train(
@@ -134,19 +144,19 @@ def train(
     val_num_steps: int,
     num_steps: int | None = None,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
-    train_unnorm: bool = False,
-    val_norm: bool = False,
     max_grad_norm: float = 0.0,
     metric_monitor: MetricMonitor | None = None,
     autocast_dtype: torch.dtype = torch.float32,
+    rank: int = 0,
 ):
+    is_main = rank == 0
     device = torch.device(device)
     checkpoint_dir = Path(checkpoint_dir)
-    checkpoint_dir.mkdir(exist_ok=True, parents=True)
+    if is_main:
+        checkpoint_dir.mkdir(exist_ok=True, parents=True)
 
     model.to(device)
     model.train()
-    model.output_unnorm = train_unnorm
     loss_fn.to(device)
 
     sub_epoch = 0
@@ -155,7 +165,7 @@ def train(
     rolling_loss = 0.0
     dset_size = 0
     first_dset_print = True
-    with tqdm.tqdm(desc="Train", total=num_steps, **TQDM_KWARGS) as progress_bar:
+    with tqdm.tqdm(desc="Train", total=num_steps, disable=not is_main, **TQDM_KWARGS) as progress_bar:
         while training:
             for inputs, truth in train_dataloader:
                 dset_size += len(next(iter(inputs.values())))
@@ -169,8 +179,7 @@ def train(
                 inputs = to_device(inputs, device)
                 truth = to_device(truth, device)
 
-                if not model.output_unnorm:
-                    truth = model.output_normalize(truth)
+                truth = _unwrap(model).output_normalize(truth)
 
                 predict = model(**inputs)
 
@@ -178,7 +187,7 @@ def train(
                 rolling_loss += loss.item()
                 if not torch.isfinite(loss):
                     raise ValueError("Training loss is not finite")
-                if log_this_step:
+                if log_this_step and is_main:
                     run.log({"Loss/train": rolling_loss / log_interval}, step=step_num)
                     rolling_loss = 0.0
 
@@ -188,7 +197,7 @@ def train(
 
                 if scheduler is not None:
                     scheduler.step()
-                    if log_this_step:
+                    if log_this_step and is_main:
                         run.log({"learning_rate": scheduler.get_last_lr()[0]}, step=step_num)
 
                 if step_num % val_num_steps == 0:
@@ -200,42 +209,44 @@ def train(
                         model=model,
                         metric=val_metric,
                         global_step=step_num,
-                        metric_monitor=metric_monitor,
-                        val_norm=val_norm,
+                        metric_monitor=metric_monitor if is_main else None,
                     )
 
                     model.train()
-                    model.output_unnorm = train_unnorm
 
                     if not math.isfinite(val_loss):
                         raise ValueError("Validation loss is not finite")
-                    run.log({"Loss/val": val_loss}, step=step_num)
+
+                    if is_main:
+                        run.log({"Loss/val": val_loss}, step=step_num)
 
                     if val_metric_is_inverted:
                         val_loss = -val_loss
 
-                    state_dict = {
-                        "sub_epoch": sub_epoch,
-                        "model": detach_to_cpu(model.state_dict()),
-                        "optimizer": detach_to_cpu(optimizer.state_dict()),
-                        "scheduler": None if scheduler is None else detach_to_cpu(scheduler.state_dict()),
-                    }
+                    if is_main:
+                        state_dict = {
+                            "sub_epoch": sub_epoch,
+                            "model": detach_to_cpu(_unwrap(model).state_dict()),
+                            "optimizer": detach_to_cpu(optimizer.state_dict()),
+                            "scheduler": None if scheduler is None else detach_to_cpu(scheduler.state_dict()),
+                        }
 
-                    filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
+                        filename = f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt"
 
-                    torch.save(state_dict, checkpoint_dir / filename)
+                        torch.save(state_dict, checkpoint_dir / filename)
 
                     sub_epoch += 1
 
-                if log_this_step:
+                if log_this_step and is_main:
                     run.log({}, step=step_num, commit=True)
 
                 if step_num >= num_steps:
                     training = False
                     break
 
-            if first_dset_print:
+            if first_dset_print and is_main:
                 print(f"Dataset size: {dset_size}")
                 first_dset_print = False
 
-    print("Training completed")
+    if is_main:
+        print("Training completed")

@@ -7,6 +7,7 @@ from typing import Hashable, Iterable, Iterator
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import uproot as ur
 from torch.utils.data import IterableDataset
 
@@ -70,13 +71,23 @@ class ChunkedUprootDataset(IterableDataset):
 
         tree_size = self.event_tree.num_entries
 
-        worker_block_size = tree_size // self.num_workers
-        worker_begin_index = self.worker_id * worker_block_size
-        if self.worker_id == self.num_workers - 1:
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+        else:
+            rank = 0
+            world_size = 1
+
+        global_worker_id = rank * self.num_workers + self.worker_id
+        total_workers = world_size * self.num_workers
+
+        worker_block_size = tree_size // total_workers
+        worker_begin_index = global_worker_id * worker_block_size
+        if global_worker_id == total_workers - 1:
             worker_end_index = tree_size
             worker_block_size = worker_end_index - worker_begin_index
         else:
-            worker_end_index = (self.worker_id + 1) * worker_block_size
+            worker_end_index = (global_worker_id + 1) * worker_block_size
 
         self.buffer_size = min(self.buffer_size, worker_block_size)
         buffer = {field: np.empty(self.buffer_size, dtype=np.object_) for field in self.expressions}
