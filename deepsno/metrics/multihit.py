@@ -180,6 +180,29 @@ class HungarianVertexLoss(nn.Module):
         return sum(losses.values()) / len(losses.values())
 
 
+def marginal_convergence(
+    T: torch.Tensor,
+    mu: torch.Tensor,
+    nu: torch.Tensor,
+    eps_num: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Max relative error of the transport plan's row/col sums vs. target marginals.
+
+    Args:
+        T:  Transport plan (..., M, N)
+        mu: Row marginal (..., M)
+        nu: Col marginal (..., N)
+    Returns:
+        row_conv: max_i(|sum_j T_ij - mu_i| / mu_i)
+        col_conv: max_j(|sum_i T_ij - nu_j| / nu_j)
+    """
+    # row_conv = ((T.sum(-1) - mu).abs() / (mu + eps_num)).max()
+    # col_conv = ((T.sum(-2) - nu).abs() / (nu + eps_num)).max()
+    row_conv = (T.sum(-1) - mu).abs().max()
+    col_conv = (T.sum(-2) - nu).abs().max()
+    return row_conv, col_conv
+
+
 def sinkhorn_log(
     C: torch.Tensor,
     mu: torch.Tensor,
@@ -199,8 +222,8 @@ def sinkhorn_log(
         eps_num: Small constant for numerical safety
     Returns:
         T: Transport plan (..., M, N)
-        max_delta_u: Max change in u
-        max_delta_v: Max change in v
+        row_conv: Max normalized row-marginal error, max_i(|T.sum(-1) - mu|_i / mu_i)
+        col_conv: Max normalized col-marginal error, max_j(|T.sum(-2) - nu|_j / nu_j)
     """
     log_mu = torch.log(mu + eps_num)  # (..., M)
     log_nu = torch.log(nu + eps_num)  # (..., N)
@@ -209,18 +232,23 @@ def sinkhorn_log(
     # Initialise dual variables
     u = torch.zeros_like(log_mu)  # (..., M)
     v = torch.zeros_like(log_nu)  # (..., N)
+    i = torch.zeros((), dtype=torch.int32, device=C.device)
 
-    for _ in range(n_iters):
-        u_prev = u
-        v_prev = v
-        v = log_nu - torch.logsumexp(log_K + u[..., :, None], dim=-2)
-        u = log_mu - torch.logsumexp(log_K + v[..., None, :], dim=-1)
+    def cond_fn(i: torch.Tensor, u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return i < n_iters
 
-    max_delta_u = torch.max(torch.abs(u.detach() - u_prev.detach()))
-    max_delta_v = torch.max(torch.abs(v.detach() - v_prev.detach()))
+    def body_fn(i: torch.Tensor, u: torch.Tensor, v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        new_v = log_nu - torch.logsumexp(log_K + u[..., :, None], dim=-2)
+        new_u = log_mu - torch.logsumexp(log_K + new_v[..., None, :], dim=-1)
+        return i + 1, new_u, new_v
+
+    _, u, v = torch.while_loop(cond_fn, body_fn, (i, u, v))
 
     log_T = log_K + u[..., :, None] + v[..., None, :]
-    return torch.exp(log_T), max_delta_u, max_delta_v
+    T = torch.exp(log_T)
+
+    row_conv, col_conv = marginal_convergence(T, mu, nu, eps_num)
+    return T, row_conv, col_conv
 
 
 @torch.compile
@@ -271,9 +299,12 @@ class SinkhornVertexLoss(nn.Module):
         self,
         predict: dict[str, torch.Tensor],
         truth: dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """Compute the pairwise cost matrix C[..., i, j] = cost(pred_i, truth_j).
-        Shape: (..., N_pred, N_truth)
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        """Compute per-component and combined pairwise cost matrices.
+
+        Returns:
+            components: dict of individual cost matrices (..., N_pred, N_truth)
+            C: combined (weighted) cost matrix (..., N_pred, N_truth)
         """
         cross_predict = {
             "position": predict["position"][..., :, None, :],
@@ -286,11 +317,8 @@ class SinkhornVertexLoss(nn.Module):
             "energy": truth["energy"][..., None, :],
         }
 
-        for pkey, tkey in zip(
-            ["position", "time", "energy"],
-            ["position", "time", "energy"],
-        ):
-            cross_predict[pkey], cross_truth[tkey] = torch.broadcast_tensors(cross_predict[pkey], cross_truth[tkey])
+        for key in ["position", "time", "energy"]:
+            cross_predict[key], cross_truth[key] = torch.broadcast_tensors(cross_predict[key], cross_truth[key])
 
         energy_norm = cross_truth["energy"] / (cross_truth["energy"].sum(-1, keepdim=True) + self.eps_num)
 
@@ -304,14 +332,63 @@ class SinkhornVertexLoss(nn.Module):
         energy_loss = F.mse_loss(cross_predict["energy"], cross_truth["energy"], reduction="none")
         energy_loss = energy_loss / energy_loss.shape[-1]
 
-        costs = {
-            "position": pos_loss,
-            "time": time_loss,
-            "energy": energy_loss,
+        components = {"position": pos_loss, "time": time_loss, "energy": energy_loss}
+        C = sum(self.apply_weights(components).values())  # (..., N_pred, N_truth)
+        return components, C
+
+    def losses(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        """Compute per-component Sinkhorn losses for monitoring.
+
+        The transport plan T is computed from the combined (weighted) cost C.
+        Each component loss is then <T, C_k> — the transport-weighted average
+        of that component's pairwise costs.
+
+        Returns a dict of scalar losses: {"position", "time", "energy"}.
+        """
+        components, C = self.cross_costs(predict, truth)
+        norm_C = C / (torch.median(C.flatten(-2, -1), dim=-1).values[..., None, None] + self.eps_num)
+
+        # ------------------------------------------------------------------
+        # Build marginals from energy
+        # nu (truth side):  ground-truth energy distribution over true vertices
+        # mu (predict side): predicted energy distribution over predicted slots
+        # ------------------------------------------------------------------
+        nu = torch.ones_like(truth["energy"], dtype=torch.float32)
+
+        not_exists = truth["energy"] == 0
+        zero_energy_counts = not_exists.sum(-1, keepdim=True)
+        nu[not_exists] = 0
+        first_not_exists = torch.argmax(not_exists.float(), dim=-1, keepdim=True)
+        nu = nu.scatter(-1, first_not_exists, zero_energy_counts.float())
+
+        nu = nu / (nu.sum(-1, keepdim=True) + self.eps_num)
+
+        mu = torch.ones_like(predict["time"], dtype=torch.float32)
+        mu = mu / (mu.sum(-1, keepdim=True) + self.eps_num)
+
+        T, row_conv, col_conv = sinkhorn_log(
+            C=norm_C,
+            mu=mu,
+            nu=nu,
+            epsilon=self.epsilon,
+            n_iters=self.n_iters,
+            eps_num=self.eps_num,
+        )
+        # We don't want the gradients to flow through the iterations themselves
+        T = T.detach()
+
+        # TODO: Think if you should include the regularization term here.
+        batch_size = float(max(1, T.shape[0] if T.dim() > 2 else 1))
+        n_vertices = truth["energy"].shape[-1]
+        return {
+            **{k: (T * c).sum() * n_vertices / batch_size for k, c in components.items()},
+            "sinkhorn_row_conv": row_conv.detach(),
+            "sinkhorn_col_conv": col_conv.detach(),
         }
-        costs = self.apply_weights(costs)
-        costs = sum(costs.values())  # (..., N_pred, N_truth)
-        return costs
 
     def forward(
         self,
@@ -320,40 +397,16 @@ class SinkhornVertexLoss(nn.Module):
     ) -> torch.Tensor:
         """Compute the Sinkhorn loss.
 
-        The loss is the Frobenius inner product < T, C > where T is the
-        (soft) transport plan and C is the pairwise cost matrix.
+        The loss is the sum of transport-weighted per-component costs.
+        Plan T sums to 1 per batch element, so <T, C> is a correctly-normalized
+        weighted average of pairwise costs.
 
         Returns a scalar loss.
         """
-        C = self.cross_costs(predict, truth)  # (..., N_pred, N_truth)
-        norm_C = C / (C.flatten(-2, -1).max(-1).values[..., None, None] + self.eps_num)
-
-        # ------------------------------------------------------------------
-        # Build marginals from energy
-        # nu (truth side):  ground-truth energy distribution over true vertices
-        # mu (predict side): predicted energy distribution over predicted slots
-        # ------------------------------------------------------------------
-
-        # Uniform marginal for truth vertices
-        N_truth = truth["energy"].shape[-1]
-        nu = torch.ones_like(truth["energy"], dtype=torch.float32) / N_truth
-
-        # Uniform marginal for predictions
-        N_pred = predict["time"].shape[-1]
-        mu = torch.ones_like(predict["time"], dtype=torch.float32) / N_pred
-
-        T, delta_u, delta_v = sinkhorn_log(norm_C, mu, nu, self.epsilon, self.n_iters, self.eps_num)
-
-        predict["max_delta_u"] = delta_u
-        predict["max_delta_v"] = delta_v
-
-        # Plan T sums to 1 per batch element and <T, C> is a correctly-normalized weighted
-        # average of pairwise costs — no additional vertex-count divisor needed.
-        # sum over (N_pred, N_truth), then average over batch
-        loss = (T * C).sum(dim=(-2, -1))
-
-        batch_size = float(max(1, loss.numel()))
-        return loss.sum() / batch_size
+        all_losses = self.losses(predict, truth)
+        component_losses = {k: v for k, v in all_losses.items() if not k.startswith("sinkhorn_")}
+        weighted = self.apply_weights(component_losses)
+        return sum(weighted.values())
 
 
 def cardinality_error(
