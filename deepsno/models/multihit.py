@@ -5,6 +5,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+import torch._ops
 
 from deepsno.models import transformers
 
@@ -206,8 +207,12 @@ class ObjectDecoderLayerVarlen(nn.Module):
             bias: Whether to use bias in linear layers.
         """
         super().__init__()
-        self.self_attn  = transformers.MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
-        self.cross_attn = transformers.MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
+        self.self_attn = transformers.MABVarlen(
+            dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout
+        )
+        self.cross_attn = transformers.MABVarlen(
+            dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout
+        )
 
     def forward(
         self,
@@ -231,14 +236,20 @@ class ObjectDecoderLayerVarlen(nn.Module):
             Updated queries of shape ``(B * n_queries, dim)``.
         """
         queries = self.self_attn(
-            queries, queries,
-            cu_seqlens_q, cu_seqlens_q,
-            max_seqlen_q, max_seqlen_q,
+            queries,
+            queries,
+            cu_seqlens_q,
+            cu_seqlens_q,
+            max_seqlen_q,
+            max_seqlen_q,
         )
         queries = self.cross_attn(
-            queries, encoder_out,
-            cu_seqlens_q, cu_seqlens_enc,
-            max_seqlen_q, max_seqlen_enc,
+            queries,
+            encoder_out,
+            cu_seqlens_q,
+            cu_seqlens_enc,
+            max_seqlen_q,
+            max_seqlen_enc,
         )
         return queries
 
@@ -293,36 +304,35 @@ class ObjectDecoderVarlen(nn.Module):
         self.n_queries = n_queries
         self.query_tokens = nn.Embedding(n_queries, embedding_dim=dim)
 
-        self.layers = nn.ModuleList([
-            ObjectDecoderLayerVarlen(dim, num_heads, dim_feedforward, dropout, bias)
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [ObjectDecoderLayerVarlen(dim, num_heads, dim_feedforward, dropout, bias) for _ in range(num_layers)]
+        )
 
-        self.output_unnorm    = False
-        self.position_shift   = position_shift
-        self.position_scale   = position_scale
-        self.time_shift       = time_shift
-        self.time_scale       = time_scale
-        self.energy_scale     = energy_scale
+        self.output_unnorm = False
+        self.position_shift = position_shift
+        self.position_scale = position_scale
+        self.time_shift = time_shift
+        self.time_scale = time_scale
+        self.energy_scale = energy_scale
 
         def _w2s(w):
             return -np.log(w)
 
         grad = dynamic_task_weighting
-        self.log_pos_sigma2   = nn.Parameter(torch.tensor([_w2s(position_weight)]), requires_grad=grad)
-        self.log_time_sigma2  = nn.Parameter(torch.tensor([_w2s(time_weight)]),     requires_grad=grad)
-        self.log_class_sigma2 = nn.Parameter(torch.tensor([_w2s(class_weight)]),    requires_grad=grad)
+        self.log_pos_sigma2 = nn.Parameter(torch.tensor([_w2s(position_weight)]), requires_grad=grad)
+        self.log_time_sigma2 = nn.Parameter(torch.tensor([_w2s(time_weight)]), requires_grad=grad)
+        self.log_class_sigma2 = nn.Parameter(torch.tensor([_w2s(class_weight)]), requires_grad=grad)
 
     def output_normalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x["position"] = (x["position"] - self.position_shift) / self.position_scale
-        x["time"]     = (x["time"]     - self.time_shift)     / self.time_scale
-        x["energy"]   =  x["energy"]   / self.energy_scale
+        x["time"] = (x["time"] - self.time_shift) / self.time_scale
+        x["energy"] = x["energy"] / self.energy_scale
         return x
 
     def output_unnormalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x["position"] = x["position"] * self.position_scale + self.position_shift
-        x["time"]     = x["time"]     * self.time_scale     + self.time_shift
-        x["energy"]   = x["energy"]   * self.energy_scale
+        x["time"] = x["time"] * self.time_scale + self.time_shift
+        x["energy"] = x["energy"] * self.energy_scale
         return x
 
     def forward(
@@ -344,16 +354,12 @@ class ObjectDecoderVarlen(nn.Module):
         dim = self.query_tokens.embedding_dim
 
         # Expand query tokens across the batch: (B * n_queries, dim)
-        q = (
-            self.query_tokens.weight
-            .unsqueeze(0)
-            .expand(batch_size, -1, -1)
-            .reshape(-1, dim)
-        )
+        q = self.query_tokens.weight.unsqueeze(0).expand(batch_size, -1, -1).reshape(-1, dim)
 
         # Uniform cu_seqlens for query tokens
         cu_seqlens_q = torch.arange(
-            0, (batch_size + 1) * self.n_queries,
+            0,
+            (batch_size + 1) * self.n_queries,
             step=self.n_queries,
             device=encoder_out.device,
             dtype=cu_seqlens_enc.dtype,
@@ -364,7 +370,6 @@ class ObjectDecoderVarlen(nn.Module):
             q = layer(q, encoder_out, cu_seqlens_q, cu_seqlens_enc, max_seqlen_q, max_seqlen_enc)
 
         return q.view(batch_size, self.n_queries, dim)
-
 
 
 class ObjectFFNHead(nn.Module):
@@ -476,9 +481,7 @@ class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
     def __init__(self, *args, waveform_n_bins: int, **kwargs):
         super().__init__(*args, waveform_n_bins=waveform_n_bins, **kwargs)
         model_dim = self.pmt_embed.embedding_dim
-        self.hit_time_embed = nn.Embedding(
-            waveform_n_bins, embedding_dim=model_dim, dtype=self.pmt_embed.weight.dtype
-        )
+        self.hit_time_embed = nn.Embedding(waveform_n_bins, embedding_dim=model_dim, dtype=self.pmt_embed.weight.dtype)
 
     def _embed_hits(
         self,
@@ -489,17 +492,13 @@ class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
     ) -> torch.Tensor:
         # Sum binned hit-time embeddings per PMT, then add PMT embedding
         hit_time_embed = self.hit_time_embed(hit_times)
-        hit_time_embed = torch.segment_reduce(
-            hit_time_embed, reduce="sum", lengths=pmt_id_counts, axis=-2
-        )
+        hit_time_embed = torch.segment_reduce(hit_time_embed, reduce="sum", lengths=pmt_id_counts, axis=-2)
         x = hit_time_embed + self.pmt_embed(pmt_ids)
         x = (pmt_ids != 0).unsqueeze(-1) * x
         return x
 
     def forward(self, pmt_ids, hit_times, mask, pmt_id_counts, **kwargs):
-        return super().forward(
-            pmt_ids, hit_times, mask, pmt_id_counts=pmt_id_counts, **kwargs
-        )
+        return super().forward(pmt_ids, hit_times, mask, pmt_id_counts=pmt_id_counts, **kwargs)
 
 
 class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
@@ -520,9 +519,7 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
     def __init__(self, *args, waveform_n_bins: int, **kwargs):
         super().__init__(*args, waveform_n_bins=waveform_n_bins, **kwargs)
         model_dim = self.pmt_embed.embedding_dim
-        self.hit_time_embed = nn.Embedding(
-            waveform_n_bins, embedding_dim=model_dim, dtype=self.pmt_embed.weight.dtype
-        )
+        self.hit_time_embed = nn.Embedding(waveform_n_bins, embedding_dim=model_dim, dtype=self.pmt_embed.weight.dtype)
 
     def _embed_hits(
         self,
@@ -552,7 +549,7 @@ class MultiHit(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
-        self.head    = head
+        self.head = head
         self._output_unnorm = self.decoder.output_unnorm
 
         torch.set_float32_matmul_precision("high")
@@ -576,8 +573,8 @@ class MultiHit(nn.Module):
         with torch.autocast("cuda", dtype=torch.bfloat16):
             encoded, cu_seqlens, max_seqlen = self.encoder(**kwargs, mask=kwargs["pmt_ids"] != 0)
             queries = self.decoder(encoded, cu_seqlens, max_seqlen)  # (B, n_queries, dim)
-        
-        output  = self.head(queries.float())
+
+        output = self.head(queries.float())
 
         if self.decoder.output_unnorm:
             output = self.decoder.output_unnormalize(output)
@@ -586,7 +583,7 @@ class MultiHit(nn.Module):
             **output,
             "log_sigma2": {
                 "position": self.decoder.log_pos_sigma2,
-                "time":     self.decoder.log_time_sigma2,
-                "exists":   self.decoder.log_class_sigma2,
+                "time": self.decoder.log_time_sigma2,
+                "exists": self.decoder.log_class_sigma2,
             },
         }
