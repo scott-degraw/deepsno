@@ -297,10 +297,12 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             dl_cfg = train_cfg[key]
             bs = dl_cfg["init_args"]["batch_size"]
             if bs % world_size != 0:
-                raise ValueError(
-                    f"{key} batch_size {bs} is not divisible by world_size {world_size}"
-                )
+                raise ValueError(f"{key} batch_size {bs} is not divisible by world_size {world_size}")
             dl_cfg["init_args"]["batch_size"] = bs // world_size
+            nw = dl_cfg["init_args"]["num_workers"]
+            if nw % world_size != 0:
+                raise ValueError(f"{key} num_workers {nw} is not divisible by world_size {world_size}")
+            dl_cfg["init_args"]["num_workers"] = nw // world_size
 
     train_cfg["train_dataloader"] = instantiate(train_cfg["train_dataloader"])
     train_cfg["val_dataloader"] = instantiate(train_cfg["val_dataloader"])
