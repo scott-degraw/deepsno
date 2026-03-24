@@ -11,6 +11,8 @@ condor_logs/
 condor/
 configs/
 
+slurm/
+
 *.db
 
 # Python ignore
