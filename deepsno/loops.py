@@ -14,6 +14,7 @@ from torch.utils import data
 
 from deepsno.metrics.metric_monitor import MetricMonitor
 
+
 def _unwrap(model: nn.Module) -> nn.Module:
     """Unwrap a DistributedDataParallel model to get the underlying module."""
     if isinstance(model, DDP):
@@ -26,6 +27,7 @@ TQDM_KWARGS = {
     "ascii": " =",
     "unit": "batch",
     "dynamic_ncols": True,
+    "smoothing": 0.0,
 }
 
 
