@@ -266,7 +266,7 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
 
     is_main = rank == 0
 
-    torch.manual_seed(train_cfg["seed"])
+    torch.manual_seed(train_cfg["seed"] + rank)
 
     # Dry-run overrides
     if train_cfg["dry_run"]:
