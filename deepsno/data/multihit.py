@@ -66,11 +66,7 @@ class UprootMultiFileDataset(IterableDataset):
             print(f"Worker {worker_id + 1} of {n_workers}: {msg}")
 
     def __iter__(self):
-        file_paths = (
-            glob.glob(self.file_paths)
-            if isinstance(self.file_paths, str)
-            else self.file_paths
-        )
+        file_paths = glob.glob(self.file_paths) if isinstance(self.file_paths, str) else self.file_paths
         if len(file_paths) == 0:
             raise ValueError("No files found!")
         worker_info = torch.utils.data.get_worker_info()
@@ -118,9 +114,7 @@ class UprootMultiFileDataset(IterableDataset):
 
         if self.cache:
             cache_storage = self.cache if isinstance(self.cache, str) else "data_cache"
-            fs = fsspec.filesystem(
-                "simplecache", target_protocol="file", cache_storage=cache_storage
-            )
+            fs = fsspec.filesystem("simplecache", target_protocol="file", cache_storage=cache_storage)
             open_context = fs.open
         else:
             open_context = open
@@ -140,17 +134,13 @@ class UprootMultiFileDataset(IterableDataset):
                     buffer.append(entry)
                     continue
                 elif len(buffer) > self.buffer_size:
-                    raise ValueError(
-                        f"Buffer size exceeded! Size is {len(buffer)} but should be {self.buffer_size}."
-                    )
+                    raise ValueError(f"Buffer size exceeded! Size is {len(buffer)} but should be {self.buffer_size}.")
 
                 buffer_i = self.generator.choice(self.buffer_size)
                 if len(buffer) < 1:
                     raise ValueError("Buffer is empty!")
                 if len(buffer) != self.buffer_size:
-                    raise ValueError(
-                        f"Buffer is not full!. Size is {len(buffer)} but should be {self.buffer_size}."
-                    )
+                    raise ValueError(f"Buffer is not full!. Size is {len(buffer)} but should be {self.buffer_size}.")
 
                 self.debug_print(f"Yielding event {self.n_entries}")
 
@@ -185,9 +175,7 @@ def pad_array(
     if pad_width == 0:
         return array
     if pad_width < 0:
-        sampled_indices = generator.choice(
-            array.shape[axis], size=pad_length, replace=False
-        )
+        sampled_indices = generator.choice(array.shape[axis], size=pad_length, replace=False)
         return np.take(array, sampled_indices, axis=axis)
     else:
         indexer = array.ndim * [slice(None)]
@@ -201,9 +189,7 @@ def pad_array(
 
 
 @nb.njit
-def hist_jagged(
-    x: ak.Array, bin_width: float, low: float, counts: np.ndarray
-) -> np.ndarray:
+def hist_jagged(x: ak.Array, bin_width: float, low: float, counts: np.ndarray) -> np.ndarray:
     for i in range(len(x)):
         row = x[i]
         for j in range(len(row)):
@@ -222,9 +208,7 @@ def voxelise_line(
     active: np.ndarray | None = None,
 ):
     if active is None:
-        active = np.zeros(
-            (len(edges[0]), len(edges[1]), len(edges[2]), len(edges[3])), dtype=np.bool
-        )
+        active = np.zeros((len(edges[0]), len(edges[1]), len(edges[2]), len(edges[3])), dtype=np.bool)
 
     voxel_centers = [0.5 * (edges[:-1] + edges[1:]) for edges in edges]
 
@@ -247,16 +231,12 @@ def voxelise_line(
         z_planes = edges[coord_i][low_z_i : high_z_i + 1]
 
         # Parametrise straight line with lambd in [0, 1] and find intersections with planes
-        lambd = (z_planes - first_pos[coord_i]) / (
-            last_pos[coord_i] - first_pos[coord_i]
-        )
+        lambd = (z_planes - first_pos[coord_i]) / (last_pos[coord_i] - first_pos[coord_i])
         lambd = np.clip(lambd, 0, 1)
 
         # Find the intercepts in all len(edges) coordinates
         # (len(edges), N_intercepts)
-        intercepts = (
-            lambd * (last_pos[:, None] - first_pos[:, None]) + first_pos[:, None]
-        )
+        intercepts = lambd * (last_pos[:, None] - first_pos[:, None]) + first_pos[:, None]
 
         # # Find the voxel indices for each intercept
         # # (len(edges), N_intercepts)
@@ -279,16 +259,12 @@ def voxelise_line(
         # Get the voxel centers for each valid intercept and add to list
         for j in range(edge_is.shape[1]):
             if edge_valid[j]:
-                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = (
-                    True
-                )
+                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = True
 
         edge_is[coord_i] -= 1
         for j in range(1, edge_is.shape[1]):
             if edge_valid[j]:
-                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = (
-                    True
-                )
+                active[edge_is[0, j], edge_is[1, j], edge_is[2, j], edge_is[3, j]] = True
 
     return active
 
@@ -313,9 +289,7 @@ def voxelise_track(
     return active
 
 
-def voxelise_tracks(
-    tracks: ak.Array, edges: list[np.ndarray], active: np.ndarray | None = None
-):
+def voxelise_tracks(tracks: ak.Array, edges: list[np.ndarray], active: np.ndarray | None = None):
     for track in tracks:
         positions = track["steps"]["position"].to_numpy()
         times = track["steps"]["time"].to_numpy()
@@ -328,15 +302,11 @@ def voxelise_tracks(
 
 def voxel_vertices(active: np.ndarray, centers: list[np.ndarray]):
     vertex_indices = np.nonzero(active)
-    vertex_positions = np.stack(
-        [centers[i][vertex_indices[i]] for i in range(len(centers))], axis=1
-    )
+    vertex_positions = np.stack([centers[i][vertex_indices[i]] for i in range(len(centers))], axis=1)
     return vertex_positions
 
 
-def voxelise_points(
-    points: np.ndarray, edges: list[np.ndarray], *aux_values
-) -> np.ndarray:
+def voxelise_points(points: np.ndarray, edges: list[np.ndarray], *aux_values) -> np.ndarray:
     spacings = np.array([e[1] - e[0] for e in edges], dtype=np.float32)
     lows = np.array([e[0] for e in edges], dtype=np.float32)
     max_edge_indices = np.array([len(e) - 1 for e in edges], dtype=np.int64)
@@ -348,9 +318,7 @@ def voxelise_points(
     indices = indices[good_indices].astype(np.int64)
     indices, uniq_2_non_uniq_indices = np.unique(indices, axis=0, return_inverse=True)
 
-    vertex_positions = np.stack(
-        [centers[i][indices[:, i]] for i in range(len(edges))], axis=1
-    )
+    vertex_positions = np.stack([centers[i][indices[:, i]] for i in range(len(edges))], axis=1)
 
     if aux_values:
         reduced_aux_values = []
@@ -362,9 +330,7 @@ def voxelise_points(
             value = value[sort_i]
 
             # For each label on non unique vector find the number of these elements and their starting point
-            _, uniq_label_start_indices = np.unique(
-                uniq_2_non_uniq_indices, return_index=True
-            )
+            _, uniq_label_start_indices = np.unique(uniq_2_non_uniq_indices, return_index=True)
             value = np.add.reduceat(value, uniq_label_start_indices)
 
             reduced_aux_values.append(value)
@@ -414,23 +380,14 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
             dtype=np.float32,
         )
         self.edges = [
-            np.arange(
-                -radius, radius + self.pos_spacing, self.pos_spacing, dtype=np.float32
-            )
-            for _ in range(3)
+            np.arange(-radius, radius + self.pos_spacing, self.pos_spacing, dtype=np.float32) for _ in range(3)
         ]
-        self.edges += [
-            np.arange(0, 40 + self.time_spacing, self.time_spacing, dtype=np.float32)
-        ]
+        self.edges += [np.arange(0, 40 + self.time_spacing, self.time_spacing, dtype=np.float32)]
         self.lows = np.array([e[0] for e in self.edges], dtype=np.float32)
         self.centers = [0.5 * (e[:-1] + e[1:]) for e in self.edges]
-        self.max_edge_indices = np.array(
-            [len(e) - 1 for e in self.edges], dtype=np.int64
-        )
+        self.max_edge_indices = np.array([len(e) - 1 for e in self.edges], dtype=np.int64)
 
-    def _make_pmt_inputs(
-        self, pmt_ids: np.ndarray, hit_times: np.ndarray
-    ) -> dict[str, np.ndarray]:
+    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
         """
         Build the ``inputs`` dict from sorted, padded ``pmt_ids`` and
         ``hit_times`` arrays (each of length ``max_context_len``).
@@ -462,9 +419,7 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
 
             # --- truncate or pad to max_context_len ---
             if len(pmt_ids) > self.max_context_len:
-                shuffle_indices = self.generator.choice(
-                    len(pmt_ids), size=self.max_context_len, replace=False
-                )
+                shuffle_indices = self.generator.choice(len(pmt_ids), size=self.max_context_len, replace=False)
                 pmt_ids = pmt_ids[shuffle_indices]
                 hit_times = hit_times[shuffle_indices]
             else:
@@ -481,9 +436,7 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
             inputs = self._make_pmt_inputs(pmt_ids, hit_times)
 
             # --- truth building ---
-            tracks = entry["tracks"][
-                entry["tracks"]["deposited_energy"] > self.min_energy
-            ]
+            tracks = entry["tracks"][entry["tracks"]["deposited_energy"] > self.min_energy]
             if len(tracks) == 0:
                 warn(
                     f"No tracks with deposited energy > {self.min_energy} in event "
@@ -499,17 +452,13 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
             )
 
             energy = ak.flatten(tracks["steps"]["deposited_energy"]).to_numpy()
-            vertex_positions, energy = voxelise_points(
-                vertex_positions, self.edges, energy
-            )
+            vertex_positions, energy = voxelise_points(vertex_positions, self.edges, energy)
             energy_selector = energy > self.min_energy
             vertex_positions = vertex_positions[energy_selector]
             energy = energy[energy_selector]
 
             if vertex_positions.shape[0] == 0:
-                warn(
-                    f"No vertices found in event {entry['mc_index'].item()} in file {file_path}"
-                )
+                warn(f"No vertices found in event {entry['mc_index'].item()} in file {file_path}")
 
             energy_sort_i = np.argsort(-energy)
             energy = energy[energy_sort_i]
@@ -521,9 +470,7 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
                 vertex_positions = vertex_positions[: self.max_n_vertices]
                 exists = exists[: self.max_n_vertices]
 
-            pad_kwargs = dict(
-                pad_length=self.max_n_vertices, axis=0, generator=self.generator
-            )
+            pad_kwargs = dict(pad_length=self.max_n_vertices, axis=0, generator=self.generator)
             exists = pad_array(exists, **pad_kwargs)
             vertices = pad_array(vertex_positions, **pad_kwargs)
             energy = pad_array(energy, **pad_kwargs)
@@ -560,9 +507,7 @@ class MultiHitDatasetUnique(MultiHitDatasetBase):
     ``torch.segment_reduce`` to aggregate hit-time embeddings per PMT.
     """
 
-    def _make_pmt_inputs(
-        self, pmt_ids: np.ndarray, hit_times: np.ndarray
-    ) -> dict[str, np.ndarray]:
+    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
         uniq_pmt_ids, pmt_id_counts = np.unique(pmt_ids, return_counts=True)
         pad_tuple = (0, self.n_pmts - len(uniq_pmt_ids))
         uniq_pmt_ids = np.pad(uniq_pmt_ids, pad_tuple)
@@ -583,9 +528,7 @@ class MultiHitDatasetExpanded(MultiHitDatasetBase):
     than aggregated per-PMT features.
     """
 
-    def _make_pmt_inputs(
-        self, pmt_ids: np.ndarray, hit_times: np.ndarray
-    ) -> dict[str, np.ndarray]:
+    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
         return {
             "pmt_ids": pmt_ids,
             "hit_times": hit_times,
