@@ -471,6 +471,14 @@ def main():
         elif cfg["subcommand"] == "predict":
             run_predict(cfg, parser)
 
+    except UncommittedChangesError:
+        print(
+            "Error: working tree has uncommitted changes.\n"
+            "Please commit or stash your changes before running, "
+            "or pass --force to skip this check.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except KeyboardInterrupt:
         print("KeyboardInterrupt received. Exiting.", file=sys.stderr)
         # Use os._exit to skip wandb cleanup (avoids hangs) and exit with
