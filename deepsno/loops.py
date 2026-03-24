@@ -63,6 +63,7 @@ def predict(
 ):
     model.to(device)
     model.eval()
+    _unwrap(model).output_unnorm = True
 
     first_batch = True
     for inputs, entries in tqdm.tqdm(dataloader, desc="Test", **TQDM_KWARGS):
@@ -113,6 +114,7 @@ def validate(
 
         predict = model(**inputs)
 
+        truth = _unwrap(model).output_normalize(truth)
         metric.update(predict, truth)
 
         if metric_monitor is not None:
