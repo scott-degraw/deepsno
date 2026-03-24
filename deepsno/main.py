@@ -9,7 +9,6 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Iterable
 
-import jsonargparse
 import torch
 import torch.distributed as dist
 import wandb
@@ -32,6 +31,7 @@ LOADER = "jinja_yaml"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class Tee:
     """Write to both a file and another stream simultaneously."""
 
@@ -53,7 +53,6 @@ class Tee:
 
 class UncommittedChangesError(RuntimeError):
     pass
-
 
 
 class MismatchedGitHash(RuntimeError):
@@ -94,6 +93,7 @@ def initialize_norm_dict(model_cfg: dict):
 # ---------------------------------------------------------------------------
 # Parser construction
 # ---------------------------------------------------------------------------
+
 
 def _build_train_parser() -> ArgumentParser:
     """Build and return the ``train`` subcommand parser."""
@@ -159,11 +159,16 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--model", type=nn.Module, required=True)
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
-        "--git_hash", type=str, required=False,
+        "--git_hash",
+        type=str,
+        required=False,
         help="If given, will check if current repository matches this hash.",
     )
     parser.add_argument(
-        "--log_file", type=Path, required=False, default=None,
+        "--log_file",
+        type=Path,
+        required=False,
+        default=None,
         help="If given, redirect stdout and stderr to this file.",
     )
 
@@ -178,14 +183,14 @@ def build_parser() -> ArgumentParser:
 # Git hash resolution
 # ---------------------------------------------------------------------------
 
+
 def resolve_git_hash(cfg: dict) -> str:
     """Validate and return the git hash."""
 
     git_hash = get_git_hash(raise_exception=not cfg.get("force", False))
     if cfg["git_hash"] is not None and git_hash != cfg["git_hash"]:
         raise MismatchedGitHash(
-            f"Git hash '{cfg['git_hash']}' does not match the git hash of the "
-            f"current working tree: '{git_hash}'"
+            f"Git hash '{cfg['git_hash']}' does not match the git hash of the current working tree: '{git_hash}'"
         )
     return git_hash
 
@@ -193,6 +198,7 @@ def resolve_git_hash(cfg: dict) -> str:
 # ---------------------------------------------------------------------------
 # Predict-specific config resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_predict_paths(cfg: dict) -> None:
     """Resolve checkpoint, config, and output paths for the predict subcommand (in-place)."""
@@ -220,6 +226,7 @@ def _resolve_predict_paths(cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 # Subcommand runners
 # ---------------------------------------------------------------------------
+
 
 def _instantiate_monitors(cfg: dict, run: wandb.sdk.wandb_run.Run) -> metric_monitor.MetricMonitor | None:
     """Instantiate metric monitors from the config, if any."""
@@ -392,6 +399,7 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             rank=rank,
         )
 
+
 def run_predict(cfg: dict, parser: ArgumentParser) -> None:
     """Run the prediction workflow."""
     import uproot
@@ -438,6 +446,7 @@ def run_predict(cfg: dict, parser: ArgumentParser) -> None:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main():
     log_fh = None
