@@ -113,7 +113,6 @@ def _build_train_parser() -> ArgumentParser:
     p.add_argument("--train_dataloader", type=dict)
     p.add_argument("--val_dataloader", type=dict)
     p.add_argument("--num_steps", type=int, required=False)
-    p.add_argument("--autocast_dtype", type=str, required=False, default="float32")
 
     # checkpoint resume
     p.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=False)
@@ -354,12 +353,6 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
     if is_main:
         parser.save(save_cfg, model_save_dir / "config.yaml", overwrite=True)
 
-    # Autocast dtype
-    try:
-        autocast_dtype = getattr(torch, train_cfg["autocast_dtype"])
-    except AttributeError:
-        raise ValueError(f"Invalid autocast dtype: {train_cfg['autocast_dtype']}")
-
     # Wandb — disabled on non-main ranks
     mode = "disabled" if (not is_main or train_cfg["wandb_disable"] or train_cfg["dry_run"]) else "online"
 
@@ -396,7 +389,6 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             val_num_steps=train_cfg["val_num_steps"],
             max_grad_norm=train_cfg["max_grad_norm"],
             metric_monitor=monitor,
-            autocast_dtype=autocast_dtype,
             rank=rank,
         )
 

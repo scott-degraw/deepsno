@@ -146,7 +146,6 @@ def train(
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     max_grad_norm: float = 0.0,
     metric_monitor: MetricMonitor | None = None,
-    autocast_dtype: torch.dtype = torch.float32,
     rank: int = 0,
 ):
     is_main = rank == 0
