@@ -537,3 +537,49 @@ class MultiHitDatasetExpanded(MultiHitDatasetBase):
 
 # Backward-compatible alias
 MultiHitDataset = MultiHitDatasetUnique
+
+
+class MultiHitVarlenCollate:
+    """Callable collate class that converts padded per-item hit sequences into the
+    flat varlen format expected by flash attention / varlen attention kernels.
+
+    Zero-padded hits (where ``pmt_ids == 0``) are stripped from each sequence.
+    All tensors whose leading dimension matches the hit sequence length are
+    concatenated into flat ``(total_hits,)`` tensors; other tensors (e.g.
+    ``pmt_id_counts`` in :class:`MultiHitDatasetUnique`) are stacked normally.
+
+    The returned ``inputs`` dict contains ``cu_seqlens`` (Int32, shape
+    ``(B+1,)``) and ``max_seqlen`` (int) alongside the flat hit tensors.
+
+    Usage in config::
+
+        collate_fn:
+            class_path: deepsno.data.multihit.MultiHitVarlenCollate
+    """
+
+    def __call__(self, batch: list) -> tuple[dict, dict]:
+        inputs_list, truth_list = zip(*batch)
+
+        seqlens: list[int] = []
+        masked_keys: set[str] | None = None
+        accum: dict[str, list[torch.Tensor]] = {}
+
+        for inputs in inputs_list:
+            mask = inputs["pmt_ids"] != 0
+            n_valid = int(mask.sum())
+            seqlens.append(n_valid)
+            if masked_keys is None:
+                masked_keys = {key for key, val in inputs.items() if val.shape == mask.shape}
+            for key, val in inputs.items():
+                accum.setdefault(key, []).append(val[mask] if key in masked_keys else val)
+
+        cu_seqlens = torch.zeros(len(seqlens) + 1, dtype=torch.int32)
+        cu_seqlens[1:] = torch.tensor(seqlens, dtype=torch.int32).cumsum(0)
+
+        collated_inputs = {
+            key: (torch.cat(vals) if key in masked_keys else torch.stack(vals)) for key, vals in accum.items()
+        }
+        collated_inputs["cu_seqlens"] = cu_seqlens
+        collated_inputs["max_seqlen"] = max(seqlens)
+
+        return collated_inputs, torch.utils.data.default_collate(list(truth_list))

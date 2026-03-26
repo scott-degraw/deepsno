@@ -432,34 +432,33 @@ class MultiHitPMTEncoderBase(nn.Module):
         self.time_shift = time_shift
 
     def hit_time_normalize(self, hit_times: torch.Tensor) -> torch.Tensor:
-        return (hit_times - self.time_shift) / self.time_scale
+        return (torch.log(hit_times) - self.time_shift) / self.time_scale
 
-    def _embed_hits(self, pmt_ids, hit_times, **kwargs) -> torch.Tensor:
-        """Return ``(B, n_pmts, model_dim)`` per-PMT feature tensor."""
+    def _embed_hits(self, pmt_ids: torch.Tensor, hit_times: torch.Tensor) -> torch.Tensor:
+        """Return ``(total_hits, model_dim)`` per-hit feature tensor."""
         raise NotImplementedError
 
     def forward(
         self,
         pmt_ids: torch.Tensor,
         hit_times: torch.Tensor,
-        mask: torch.Tensor,
-        **kwargs,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
         """
         Args:
-            pmt_ids: ``(B, L)`` integer PMT indices.
-            hit_times: Hit-time data; shape/dtype depends on subclass.
-            mask: ``(B, L)`` boolean validity mask (``True`` = valid PMT/hit).
-            **kwargs: Additional inputs forwarded to :meth:`_embed_hits`.
+            pmt_ids: ``(total_hits,)`` flat PMT indices from
+                :func:`~deepsno.data.multihit.multihit_varlen_collate`.
+            hit_times: ``(total_hits,)`` flat hit times.
+            cu_seqlens: Int32 ``(B+1,)`` cumulative sequence lengths.
+            max_seqlen: Maximum sequence length across the batch.
 
         Returns:
             ``(encoded, cu_seqlens, max_seqlen)`` where ``encoded`` is
-            ``(total_valid, model_dim)`` packed, and ``cu_seqlens`` /
-            ``max_seqlen`` are the varlen bookkeeping tensors for the decoder.
+            ``(total_hits, model_dim)`` packed.
         """
-        x = self._embed_hits(pmt_ids, hit_times, **kwargs)
-        x_flat, cu_seqlens, max_seqlen = transformers.padded_to_varlen(x, mask)
-        encoded = self.encoder(x_flat, cu_seqlens, max_seqlen)
+        x = self._embed_hits(pmt_ids, hit_times)
+        encoded = self.encoder(x, cu_seqlens, max_seqlen)
         return encoded, cu_seqlens, max_seqlen
 
 
@@ -483,13 +482,7 @@ class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
         model_dim = self.pmt_embed.embedding_dim
         self.hit_time_embed = nn.Embedding(waveform_n_bins, embedding_dim=model_dim, dtype=self.pmt_embed.weight.dtype)
 
-    def _embed_hits(
-        self,
-        pmt_ids: torch.Tensor,
-        hit_times: torch.Tensor,
-        pmt_id_counts: torch.Tensor,
-        **kwargs,
-    ) -> torch.Tensor:
+    def _embed_hits(self, pmt_ids: torch.Tensor, hit_times: torch.Tensor, pmt_id_counts: torch.Tensor) -> torch.Tensor:
         # Sum binned hit-time embeddings per PMT, then add PMT embedding
         hit_time_embed = self.hit_time_embed(hit_times)
         hit_time_embed = torch.segment_reduce(hit_time_embed, reduce="sum", lengths=pmt_id_counts, axis=-2)
@@ -497,8 +490,17 @@ class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
         x = (pmt_ids != 0).unsqueeze(-1) * x
         return x
 
-    def forward(self, pmt_ids, hit_times, mask, pmt_id_counts, **kwargs):
-        return super().forward(pmt_ids, hit_times, mask, pmt_id_counts=pmt_id_counts, **kwargs)
+    def forward(
+        self,
+        pmt_ids: torch.Tensor,
+        hit_times: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+        pmt_id_counts: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        x = self._embed_hits(pmt_ids, hit_times, pmt_id_counts)
+        encoded = self.encoder(x, cu_seqlens, max_seqlen)
+        return encoded, cu_seqlens, max_seqlen
 
 
 class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
@@ -569,9 +571,15 @@ class MultiHit(nn.Module):
         self._output_unnorm = value
         self.decoder.output_unnorm = value
 
-    def forward(self, **kwargs) -> dict[str, torch.Tensor]:
+    def forward(
+        self,
+        pmt_ids: torch.Tensor,
+        hit_times: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_seqlen: int,
+    ) -> dict[str, torch.Tensor]:
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            encoded, cu_seqlens, max_seqlen = self.encoder(**kwargs, mask=kwargs["pmt_ids"] != 0)
+            encoded, cu_seqlens, max_seqlen = self.encoder(pmt_ids, hit_times, cu_seqlens, max_seqlen)
             queries = self.decoder(encoded, cu_seqlens, max_seqlen)  # (B, n_queries, dim)
 
         output = self.head(queries.float())
