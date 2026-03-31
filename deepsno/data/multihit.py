@@ -410,12 +410,9 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
             pmt_ids = pmt_ids[selector]
             hit_times = hit_times[selector]
 
-            hit_times = np.log(hit_times)
+            if np.any(~np.isfinite(np.log(hit_times))):
+                raise ValueError("Bad log hit times")
 
-            hit_times = np.searchsorted(self.time_edges, hit_times) - 1
-            bad_hit_time_idx = (hit_times < 0) | (hit_times >= len(self.time_edges))
-            pmt_ids = pmt_ids[~bad_hit_time_idx]
-            hit_times = hit_times[~bad_hit_time_idx]
 
             # --- truncate or pad to max_context_len ---
             if len(pmt_ids) > self.max_context_len:

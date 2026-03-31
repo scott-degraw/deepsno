@@ -2,22 +2,13 @@ from contextlib import nullcontext
 
 import numpy as np
 import torch
+import torch._ops
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
-import torch._ops
 
 from deepsno.models import transformers
 
-print("Implement swiglu")
-print("Implement RMSnorm")
-print("Implement dummy token")
-print("Think about time scaling")
-print("Check that activation layers are each being initialized right")
-print("Look at inputting encodings at each layer")
-print("Consider post norm")
-print("Give encoder a final layer norm?")
-print("Remove the initial object decoder")
 
 
 class MultiHeadAttention(nn.Module):
@@ -373,17 +364,17 @@ class ObjectDecoderVarlen(nn.Module):
 
 
 class ObjectFFNHead(nn.Module):
-    def __init__(self, model_dim: int, dropout: float = 0.0):
+    def __init__(self, model_dim: int, dropout: float = 0.1, bias: bool = True, eps=1e-5):
         super().__init__()
-        self.dropout = nn.Dropout(dropout)
-        # output dimension: 1 (exists logit) + 3 (position) + 1 (time) + 1 (energy) = 6
-        self.linear = nn.Linear(model_dim, 6)
-        # self.linear2 = nn.Linear(model_dim * 2, model_dim)
-        # self.activation = nn.ReLU()
-        # self.dropout = nn.Dropout(dropout)
+
+        self.decoder = nn.Sequential(
+            nn.Linear(model_dim, model_dim),
+            nn.GELU(),
+            nn.Linear(model_dim, 6),
+        )
 
     def forward(self, x: torch.Tensor):
-        x = self.linear(self.dropout(x))
+        x = self.decoder(x)
 
         return {
             "exists_logit": x[..., 0],
@@ -518,19 +509,21 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
         - ``hit_times``: ``(B, max_context_len)`` binned hit-time indices.
     """
 
-    def __init__(self, *args, waveform_n_bins: int, **kwargs):
+    def __init__(self, *args, waveform_n_bins: int, time_embed_dropout: float = 0.1, **kwargs):
         super().__init__(*args, waveform_n_bins=waveform_n_bins, **kwargs)
         model_dim = self.pmt_embed.embedding_dim
-        self.hit_time_embed = nn.Embedding(waveform_n_bins, embedding_dim=model_dim, dtype=self.pmt_embed.weight.dtype)
 
-    def _embed_hits(
-        self,
-        pmt_ids: torch.Tensor,
-        hit_times: torch.Tensor,
-        **kwargs,
-    ) -> torch.Tensor:
-        x = self.hit_time_embed(hit_times) + self.pmt_embed(pmt_ids)
-        x = (pmt_ids != 0).unsqueeze(-1) * x
+        self.hit_time_embed = nn.Sequential(
+            nn.Linear(1, model_dim),
+            nn.Tanh(),
+            nn.Dropout(time_embed_dropout),
+            nn.Linear(model_dim, model_dim),
+        )
+
+    def _embed_hits(self, pmt_ids: torch.Tensor, hit_times: torch.Tensor) -> torch.Tensor:
+        hit_times = self.hit_time_normalize(hit_times)
+        x = self.hit_time_embed(hit_times.unsqueeze(-1))
+        x = x + self.pmt_embed(pmt_ids)
         return x
 
 
@@ -538,7 +531,7 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
 MultiHitPMTEncoder = MultiHitPMTEncoderUnique
 
 
-@torch.compile()
+@torch.compile(dynamic=False, fullgraph=True)
 class MultiHit(nn.Module):
     def __init__(self, encoder: nn.Module, decoder: nn.Module, head: nn.Module):
         """
