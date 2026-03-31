@@ -27,7 +27,7 @@ TQDM_KWARGS = {
     "ascii": " =",
     "unit": "batch",
     "dynamic_ncols": True,
-    "smoothing": 0.0,
+    "smoothing": 0.3,
 }
 
 
@@ -67,7 +67,7 @@ def predict(
 
     first_batch = True
     for inputs, entries in tqdm.tqdm(dataloader, desc="Test", **TQDM_KWARGS):
-        inputs = pytree.tree_map(lambda x: x.to(device), inputs)
+        inputs = to_device(inputs, device)
 
         predicts = model(**inputs)
         if keys is not None:
