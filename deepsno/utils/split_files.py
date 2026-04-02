@@ -54,7 +54,7 @@ def split_files(
         for file in split_files:
             symlink_path = dest_dir / file.name
             symlink_path.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(src=file, dst=symlink_path)
+            os.symlink(src=file.resolve(), dst=symlink_path.resolve())
 
 
 if __name__ == "__main__":
@@ -101,4 +101,3 @@ if __name__ == "__main__":
         sys.exit(1)
 
     split_files(splits=args.splits, dirs=args.dirs, files=files, seed=args.seed, force=args.force)
-
