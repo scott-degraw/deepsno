@@ -399,7 +399,7 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             package_root = Path(files("deepsno"))
             run.log_code(root=package_root, include_fn=lambda path: path.endswith(".py"))
             print(f"Saving model config and checkpoints to {model_save_dir.resolve()}")
-            print(f"Number of trainable parameters: {num_params}")
+            print(f"Number of trainable parameters: {num_params:,}")
 
         monitor = _instantiate_monitors(train_cfg, run) if is_main else None
 
