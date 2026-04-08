@@ -413,7 +413,6 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
             if np.any(~np.isfinite(np.log(hit_times))):
                 raise ValueError("Bad log hit times")
 
-
             # --- truncate or pad to max_context_len ---
             if len(pmt_ids) > self.max_context_len:
                 shuffle_indices = self.generator.choice(len(pmt_ids), size=self.max_context_len, replace=False)
@@ -471,12 +470,17 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
             exists = pad_array(exists, **pad_kwargs)
             vertices = pad_array(vertex_positions, **pad_kwargs)
             energy = pad_array(energy, **pad_kwargs)
+
             vertices = {
                 "position": vertices[:, :3],
                 "time": vertices[:, 3],
                 "energy": energy,
                 "exists": exists,
             }
+
+            for key, val in vertices.items():
+                if not np.isfinite(val).all():
+                    raise ValueError(f"Non-finite vertex {key} values")
 
             vertex_shuffle_i = self.generator.permutation(self.max_n_vertices)
             vertices = pytree.tree_map(lambda x: x[vertex_shuffle_i], vertices)
