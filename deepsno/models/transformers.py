@@ -37,7 +37,7 @@ def padded_to_varlen(
         out = model(x_flat, cu_seqlens, max_seqlen)
     """
     # seqlens: (batch_size,) – number of valid tokens per sample
-    seqlens = mask.sum(dim=1)                                     # (B,)
+    seqlens = mask.sum(dim=1)  # (B,)
     # Use the statically-known padded length as a conservative upper bound for
     # max_seqlen.  This avoids a data-dependent .item() call, which would cause
     # a graph break under torch.compile.
@@ -49,7 +49,7 @@ def padded_to_varlen(
     cu_seqlens = F.pad(seqlens.cumsum(dim=0).to(torch.int32), (1, 0))
 
     # Pack only the valid elements (mask == True) row-by-row
-    x_flat = x[mask]                                              # (total, D)
+    x_flat = x[mask]  # (total, D)
 
     return x_flat, cu_seqlens, max_seqlen
 
@@ -96,7 +96,10 @@ class MABVarlen(nn.Module):
     Multihead Attention Block tailored for variable-length inputs (varlen).
     Utilizes flash_attn_varlen_func for memory-efficient attention over packed sequences.
     """
-    def __init__(self, dim: int, num_heads: int, bias: bool = True, dim_feedforward: int | None = None, dropout: float = 0.0):
+
+    def __init__(
+        self, dim: int, num_heads: int, bias: bool = True, dim_feedforward: int | None = None, dropout: float = 0.0
+    ):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
@@ -118,17 +121,17 @@ class MABVarlen(nn.Module):
             nn.Linear(dim, dim_feedforward, bias=bias),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, dim, bias=bias)
+            nn.Linear(dim_feedforward, dim, bias=bias),
         )
 
     def forward(
-        self, 
-        q_x: torch.Tensor, 
-        kv_x: torch.Tensor, 
-        cu_seqlens_q: torch.Tensor, 
-        cu_seqlens_k: torch.Tensor, 
-        max_seqlen_q: int, 
-        max_seqlen_k: int
+        self,
+        q_x: torch.Tensor,
+        kv_x: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_k: torch.Tensor,
+        max_seqlen_q: int,
+        max_seqlen_k: int,
     ):
         """
         Args:
@@ -144,12 +147,12 @@ class MABVarlen(nn.Module):
         v = self.v_proj(kv_x).view(-1, self.num_heads, self.head_dim)
 
         if varlen_attn is None:
-            raise NotImplementedError(
-                "torch.nn.attention.varlen.varlen_attn is not available in your PyTorch version."
-            )
+            raise NotImplementedError("torch.nn.attention.varlen.varlen_attn is not available in your PyTorch version.")
 
         attn_out = varlen_attn(
-            q, k, v,
+            q,
+            k,
+            v,
             cu_seq_q=cu_seqlens_q,
             cu_seq_k=cu_seqlens_k,
             max_q=max_seqlen_q,
@@ -166,7 +169,10 @@ class SABVarlen(nn.Module):
     """
     Self-Attention Block for varlen inputs.
     """
-    def __init__(self, dim: int, num_heads: int, bias: bool = True, dim_feedforward: int | None = None, dropout: float = 0.0):
+
+    def __init__(
+        self, dim: int, num_heads: int, bias: bool = True, dim_feedforward: int | None = None, dropout: float = 0.0
+    ):
         super().__init__()
         self.mab = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
 
@@ -184,7 +190,16 @@ class PMAVarlen(nn.Module):
     """
     Pooling by Multihead Attention tailored for varlen inputs.
     """
-    def __init__(self, dim: int, num_heads: int, num_seeds: int = 1, bias: bool = True, dim_feedforward: int | None = None, dropout: float = 0.0):
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        num_seeds: int = 1,
+        bias: bool = True,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.num_seeds = num_seeds
         self.S = nn.Parameter(torch.Tensor(1, num_seeds, dim))
@@ -198,7 +213,7 @@ class PMAVarlen(nn.Module):
             cu_seqlens: Int32 tensor of shape (batch_size + 1,)
             max_seqlen: Max sequence length for x
         Returns:
-            Tensor of shape (batch_size * num_seeds, dim) 
+            Tensor of shape (batch_size * num_seeds, dim)
             Representing the pooled features packed for the batch
         """
         batch_size = cu_seqlens.shape[0] - 1
@@ -209,8 +224,7 @@ class PMAVarlen(nn.Module):
 
         # Create cumulative seqlens for the seeds: [0, num_seeds, 2*num_seeds, ...]
         cu_seqlens_q = torch.arange(
-            0, (batch_size + 1) * self.num_seeds, step=self.num_seeds,
-            device=x.device, dtype=cu_seqlens.dtype
+            0, (batch_size + 1) * self.num_seeds, step=self.num_seeds, device=x.device, dtype=cu_seqlens.dtype
         )
         max_seqlen_q = self.num_seeds
 
@@ -259,13 +273,14 @@ class ISABVarlen(nn.Module):
         self.mab1 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
         self.mab2 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
 
-    def _inducing_cu_seqlens(
-        self, batch_size: int, device: torch.device, dtype: torch.dtype
-    ) -> torch.Tensor:
+    def _inducing_cu_seqlens(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """Uniform cu_seqlens for the inducing points: [0, m, 2m, …, B*m]."""
         return torch.arange(
-            0, (batch_size + 1) * self.num_inducing,
-            step=self.num_inducing, device=device, dtype=dtype,
+            0,
+            (batch_size + 1) * self.num_inducing,
+            step=self.num_inducing,
+            device=device,
+            dtype=dtype,
         )
 
     def forward(
@@ -300,6 +315,7 @@ class ISABVarlen(nn.Module):
 # Encoders
 # ---------------------------------------------------------------------------
 
+
 class SetEncoderVarlen(nn.Module):
     """
     Set encoder using stacked :class:`SABVarlen` blocks.
@@ -331,14 +347,14 @@ class SetEncoderVarlen(nn.Module):
         """
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_hidden)
-        self.sabs = nn.ModuleList([
-            SABVarlen(dim_hidden, num_heads, dim_feedforward=dim_feedforward, dropout=dropout)
-            for _ in range(num_sabs)
-        ])
+        self.sabs = nn.ModuleList(
+            [
+                SABVarlen(dim_hidden, num_heads, dim_feedforward=dim_feedforward, dropout=dropout)
+                for _ in range(num_sabs)
+            ]
+        )
 
-    def forward(
-        self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
         """
         Args:
             x: ``(total_elements, dim_in)`` packed feature tensor.
@@ -398,9 +414,7 @@ class SetEncoderVarlenPadded(nn.Module):
     ):
         super().__init__()
         self.fill_value = fill_value
-        self.encoder = SetEncoderVarlen(
-            dim_in, dim_hidden, num_heads, num_sabs, dim_feedforward, dropout
-        )
+        self.encoder = SetEncoderVarlen(dim_in, dim_hidden, num_heads, num_sabs, dim_feedforward, dropout)
 
     def forward(
         self,
@@ -453,14 +467,14 @@ class InducedSetEncoderVarlen(nn.Module):
         """
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_hidden)
-        self.isabs = nn.ModuleList([
-            ISABVarlen(dim_hidden, num_heads, num_inducing, dim_feedforward=dim_feedforward, dropout=dropout)
-            for _ in range(num_isabs)
-        ])
+        self.isabs = nn.ModuleList(
+            [
+                ISABVarlen(dim_hidden, num_heads, num_inducing, dim_feedforward=dim_feedforward, dropout=dropout)
+                for _ in range(num_isabs)
+            ]
+        )
 
-    def forward(
-        self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
         """
         Args:
             x: ``(total_elements, dim_in)`` packed feature tensor.
@@ -479,6 +493,7 @@ class InducedSetEncoderVarlen(nn.Module):
 # ---------------------------------------------------------------------------
 # Pooling
 # ---------------------------------------------------------------------------
+
 
 class SetPoolingVarlen(nn.Module):
     """
@@ -517,9 +532,7 @@ class SetPoolingVarlen(nn.Module):
             nn.Linear(dim_hidden, dim_out),
         )
 
-    def forward(
-        self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
         """
         Args:
             x: ``(total_elements, dim_hidden)`` encoded feature tensor.
@@ -538,6 +551,7 @@ class SetPoolingVarlen(nn.Module):
 # ---------------------------------------------------------------------------
 # Full models (encoder + pooling composed)
 # ---------------------------------------------------------------------------
+
 
 class SetTransformerVarlen(nn.Module):
     """
@@ -572,16 +586,10 @@ class SetTransformerVarlen(nn.Module):
                 Defaults to ``4 * dim_hidden`` if not set.
         """
         super().__init__()
-        self.encoder = SetEncoderVarlen(
-            dim_in, dim_hidden, num_heads, num_sabs, dim_feedforward
-        )
-        self.pooling = SetPoolingVarlen(
-            dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward
-        )
+        self.encoder = SetEncoderVarlen(dim_in, dim_hidden, num_heads, num_sabs, dim_feedforward)
+        self.pooling = SetPoolingVarlen(dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward)
 
-    def forward(
-        self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
         """
         Args:
             x: ``(total_elements, dim_in)`` packed feature tensor.
@@ -630,16 +638,10 @@ class InducedSetTransformerVarlen(nn.Module):
                 Defaults to ``4 * dim_hidden`` if not set.
         """
         super().__init__()
-        self.encoder = InducedSetEncoderVarlen(
-            dim_in, dim_hidden, num_heads, num_inducing, num_isabs, dim_feedforward
-        )
-        self.pooling = SetPoolingVarlen(
-            dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward
-        )
+        self.encoder = InducedSetEncoderVarlen(dim_in, dim_hidden, num_heads, num_inducing, num_isabs, dim_feedforward)
+        self.pooling = SetPoolingVarlen(dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward)
 
-    def forward(
-        self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
         """
         Args:
             x: ``(total_elements, dim_in)`` packed feature tensor.
