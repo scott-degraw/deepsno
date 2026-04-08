@@ -10,7 +10,6 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from deepsno.models import transformers
 
 
-
 class MultiHeadAttention(nn.Module):
     def __init__(
         self,
@@ -270,6 +269,7 @@ class ObjectDecoderVarlen(nn.Module):
         time_shift: float = 0.0,
         time_scale: float = 1.0,
         energy_scale: float = 1.0,
+        energy_shift: float = 0.0,
         time_weight: float = 1.0,
         position_weight: float = 1.0,
         class_weight: float = 1.0,
@@ -286,7 +286,7 @@ class ObjectDecoderVarlen(nn.Module):
             bias: Whether to use bias in linear layers.
             position_shift / position_scale: Output (un)normalisation for position.
             time_shift / time_scale: Output (un)normalisation for time.
-            energy_scale: Output (un)normalisation for energy.
+            energy_shift / energy_scale: Output (un)normalisation for energy.
             time_weight / position_weight / class_weight: Initial task-loss
                 weights, converted to log-sigma² parameters.
             dynamic_task_weighting: If ``True`` sigma² are learnable parameters.
@@ -304,6 +304,7 @@ class ObjectDecoderVarlen(nn.Module):
         self.position_scale = position_scale
         self.time_shift = time_shift
         self.time_scale = time_scale
+        self.energy_shift = energy_shift
         self.energy_scale = energy_scale
 
         def _w2s(w):
@@ -317,13 +318,13 @@ class ObjectDecoderVarlen(nn.Module):
     def output_normalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x["position"] = (x["position"] - self.position_shift) / self.position_scale
         x["time"] = (x["time"] - self.time_shift) / self.time_scale
-        x["energy"] = x["energy"] / self.energy_scale
+        x["energy"] = (x["energy"] - self.energy_shift) / self.energy_scale
         return x
 
     def output_unnormalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x["position"] = x["position"] * self.position_scale + self.position_shift
         x["time"] = x["time"] * self.time_scale + self.time_shift
-        x["energy"] = x["energy"] * self.energy_scale
+        x["energy"] = x["energy"] * self.energy_scale + self.energy_shift
         return x
 
     def forward(
