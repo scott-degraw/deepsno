@@ -154,6 +154,8 @@ def train(
     max_grad_norm: float = 0.0,
     metric_monitor: MetricMonitor | None = None,
     rank: int = 0,
+    initial_step: int = 0,
+    initial_sub_epoch: int = 0,
     train_norm: bool = True,
     val_norm: bool = True,
 ):
@@ -168,13 +170,15 @@ def train(
     _unwrap(model).output_unnorm = not train_norm
     loss_fn.to(device)
 
-    sub_epoch = 0
+    sub_epoch = initial_sub_epoch
     training = True
-    step_num = 0
+    step_num = initial_step
     rolling_loss = 0.0
     dset_size = 0
     first_dset_print = True
-    with tqdm.tqdm(desc="Train", total=num_steps, disable=not is_main, **TQDM_KWARGS) as progress_bar:
+    with tqdm.tqdm(
+        desc="Train", total=num_steps, initial=initial_step, disable=not is_main, **TQDM_KWARGS
+    ) as progress_bar:
         while training:
             for inputs, truth in train_dataloader:
                 dset_size += len(next(iter(inputs.values())))
@@ -188,7 +192,8 @@ def train(
                 inputs = to_device(inputs, device)
                 truth = to_device(truth, device)
 
-                truth = _unwrap(model).output_normalize(truth)
+                if train_norm:
+                    truth = _unwrap(model).output_normalize(truth)
 
                 predict = model(**inputs)
 
@@ -237,6 +242,7 @@ def train(
                     if is_main:
                         state_dict = {
                             "sub_epoch": sub_epoch,
+                            "step_num": step_num,
                             "model": detach_to_cpu(_unwrap(model).state_dict()),
                             "optimizer": detach_to_cpu(optimizer.state_dict()),
                             "scheduler": None if scheduler is None else detach_to_cpu(scheduler.state_dict()),

@@ -53,6 +53,39 @@ def convert_byte_units(size: int, unit: str, original_unit: str = "B"):
     return convert_units(size, unit, original_unit, unit_values)
 
 
+def get_latest_ckpt(checkpoint_dir: str | Path) -> Path:
+    """Return the checkpoint with the highest sub_epoch number."""
+    checkpoint_dir = Path(checkpoint_dir)
+
+    if not checkpoint_dir.is_dir():
+        raise NotADirectoryError(f"Checkpoint directory: '{checkpoint_dir}' is not an existing directory")
+
+    sub_epoch_pattern = re.compile(r"sub_epoch=(\d+).*\.pt")
+
+    latest_ckpt = None
+    max_sub_epoch = -1
+
+    for path in checkpoint_dir.iterdir():
+        if path.is_file():
+            match = re.match(sub_epoch_pattern, path.name)
+            if match is None:
+                continue
+
+            sub_epoch = int(match.group(1))
+
+            if sub_epoch > max_sub_epoch:
+                max_sub_epoch = sub_epoch
+                latest_ckpt = path
+
+    if latest_ckpt is None:
+        raise RuntimeError(
+            f"No checkpoint with valid filename found in {checkpoint_dir}. "
+            "Filename must contain 'sub_epoch=<n>' substring."
+        )
+
+    return latest_ckpt
+
+
 def get_best_ckpt(checkpoint_dir: str | Path) -> Path:
     checkpoint_dir = Path(checkpoint_dir)
 

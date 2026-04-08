@@ -22,7 +22,7 @@ from deepsno.metrics import metric_monitor
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
 from deepsno.utils.config_parse import check_instantiate_keys, get_class, instantiate
-from deepsno.utils.train import get_best_ckpt
+from deepsno.utils.train import get_best_ckpt, get_latest_ckpt
 
 LOADER = "jinja_yaml"
 
@@ -115,6 +115,7 @@ def _build_train_parser() -> ArgumentParser:
     p.add_argument("--num_steps", type=int, required=False)
 
     # checkpoint resume
+    p.add_argument("--resume", action="store_true", default=False)
     p.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=False)
     p.add_argument("--ckpt_keys", type=str, nargs="+", required=False)
 
@@ -123,6 +124,10 @@ def _build_train_parser() -> ArgumentParser:
     p.add_argument("--optimizer", type=dict, required=True)
     p.add_argument("--scheduler", type=dict, required=False)
     p.add_argument("--max_grad_norm", type=float, default=0.0)
+
+    # normalisation
+    p.add_argument("--train_norm", type=bool, default=True)
+    p.add_argument("--val_norm", type=bool, default=True)
 
     # validation
     p.add_argument("--val_metric", type=Metric, required=True)
@@ -337,8 +342,27 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
     else:
         scheduler = None
 
-    # Load checkpoint state dicts
-    if train_cfg["ckpt"] is not None:
+    initial_step = 0
+    initial_sub_epoch = 0
+
+    # Resume from crash: load latest checkpoint and restore full training state
+    if train_cfg["resume"]:
+        ckpt_dir = model_save_dir / "ckpt"
+        if ckpt_dir.is_dir() and any(ckpt_dir.iterdir()):
+            ckpt = get_latest_ckpt(ckpt_dir)
+            print(f"Resuming from checkpoint: {ckpt}")
+            state_dict = torch.load(ckpt, map_location=device, weights_only=True)
+            model.load_state_dict(state_dict["model"], strict=True)
+            optimizer.load_state_dict(state_dict["optimizer"])
+            if scheduler is not None and state_dict.get("scheduler") is not None:
+                scheduler.load_state_dict(state_dict["scheduler"])
+            initial_step = state_dict.get("step_num", 0)
+            initial_sub_epoch = state_dict["sub_epoch"] + 1
+        else:
+            print("No checkpoints found; starting from scratch.")
+
+    # Load checkpoint state dicts (fine-tuning / partial load)
+    elif train_cfg["ckpt"] is not None:
         ckpt = Path(train_cfg["ckpt"])
         if ckpt.is_dir():
             ckpt = get_best_ckpt(ckpt)
@@ -397,6 +421,10 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             max_grad_norm=train_cfg["max_grad_norm"],
             metric_monitor=monitor,
             rank=rank,
+            initial_step=initial_step,
+            initial_sub_epoch=initial_sub_epoch,
+            train_norm=train_cfg["train_norm"],
+            val_norm=train_cfg["val_norm"],
         )
 
 
