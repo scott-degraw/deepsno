@@ -97,9 +97,11 @@ def validate(
     metric: object,
     global_step: int | None = None,
     metric_monitor: MetricMonitor | None = None,
+    normalize_truth: bool = True,
 ) -> float:
     model.to(device)
     model.eval()
+    _unwrap(model).output_unnorm = not normalize_truth
 
     if metric_monitor is not None:
         if global_step is None:
@@ -114,7 +116,8 @@ def validate(
 
         predict = model(**inputs)
 
-        truth = _unwrap(model).output_normalize(truth)
+        if normalize_truth:
+            truth = _unwrap(model).output_normalize(truth)
         metric.update(predict, truth)
 
         if metric_monitor is not None:
@@ -151,6 +154,8 @@ def train(
     max_grad_norm: float = 0.0,
     metric_monitor: MetricMonitor | None = None,
     rank: int = 0,
+    train_norm: bool = True,
+    val_norm: bool = True,
 ):
     is_main = rank == 0
     device = torch.device(device)
@@ -160,6 +165,7 @@ def train(
 
     model.to(device)
     model.train()
+    _unwrap(model).output_unnorm = not train_norm
     loss_fn.to(device)
 
     sub_epoch = 0
@@ -213,9 +219,11 @@ def train(
                         metric=val_metric,
                         global_step=step_num,
                         metric_monitor=metric_monitor if is_main else None,
+                        normalize_truth=val_norm,
                     )
 
                     model.train()
+                    _unwrap(model).output_unnorm = not train_norm
 
                     if not math.isfinite(val_loss):
                         raise ValueError("Validation loss is not finite")
