@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 from typing import Iterable
+import time
 
 import torch
 import torch.distributed as dist
@@ -49,6 +50,37 @@ def detach_to_cpu(d: dict) -> dict:
             return x
 
     return pytree.tree_map(lambda x: to(x), d)
+
+
+def bench_dataloader(dataloader: data.DataLoader, num_steps: int | None = None) -> None:
+    """Iterate a dataloader and print throughput statistics."""
+    batch_times = []
+    samples_per_batch = []
+    t_start = time.perf_counter()
+    t_batch = t_start
+
+    for i, (inputs, _) in enumerate(tqdm.tqdm(dataloader, total=num_steps, desc="Bench", **TQDM_KWARGS)):
+        t_now = time.perf_counter()
+        batch_times.append(t_now - t_batch)
+        t_batch = t_now
+        samples_per_batch.append(len(next(iter(inputs.values()))))
+        if num_steps is not None and i + 1 >= num_steps:
+            break
+
+    total_time = time.perf_counter() - t_start
+    n_batches = len(batch_times)
+    n_samples = sum(samples_per_batch)
+    batch_times_t = torch.tensor(batch_times)
+
+    print(f"\n--- Dataloader benchmark ({n_batches} batches, {n_samples} samples) ---")
+    print(f"  Total time     : {total_time:.2f} s")
+    print(f"  Throughput     : {n_samples / total_time:.1f} samples/s  |  {n_batches / total_time:.2f} batches/s")
+    print(
+        f"  Batch time     : mean {batch_times_t.mean():.3f} s  "
+        f"std {batch_times_t.std():.3f} s  "
+        f"min {batch_times_t.min():.3f} s  "
+        f"max {batch_times_t.max():.3f} s"
+    )
 
 
 @torch.inference_mode()
