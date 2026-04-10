@@ -1,0 +1,1 @@
+from deepsno.utils.config_parse import instantiate

@@ -172,7 +172,7 @@ class TransformerEncoder(nn.Module):
 
 class ObjectDecoderLayerVarlen(nn.Module):
     """
-    Single transformer decoder layer backed by :class:`~deepsno.models.transformers.MABVarlen`.
+    Single transformer decoder layer backed by :class:`~deepsno.models.transformers.ISABVarlen`.
 
     Applies two MAB blocks in sequence:
 
@@ -198,10 +198,18 @@ class ObjectDecoderLayerVarlen(nn.Module):
         """
         super().__init__()
         self.self_attn = transformers.MABVarlen(
-            dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout
+            dim,
+            num_heads,
+            bias=bias,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
         )
         self.cross_attn = transformers.MABVarlen(
-            dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout
+            dim,
+            num_heads,
+            bias=bias,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
         )
 
     def forward(

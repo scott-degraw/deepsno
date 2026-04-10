@@ -17,7 +17,7 @@ from jsonargparse import typing as ptyping
 from torch import nn, optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from deepsno.loops import predict, train
+from deepsno.loops import bench_dataloader, predict, train
 from deepsno.metrics import metric_monitor
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
@@ -142,6 +142,14 @@ def _build_train_parser() -> ArgumentParser:
     return p
 
 
+def _build_bench_parser() -> ArgumentParser:
+    """Build and return the ``bench`` subcommand parser."""
+    p = ArgumentParser(parser_mode=LOADER)
+    p.add_argument("--train_dataloader", type=dict, required=True)
+    p.add_argument("--num_steps", type=int, required=False, default=None)
+    return p
+
+
 def _build_predict_parser() -> ArgumentParser:
     """Build and return the ``predict`` subcommand parser."""
     p = ArgumentParser(parser_mode=LOADER)
@@ -180,6 +188,7 @@ def build_parser() -> ArgumentParser:
     subcommands = parser.add_subcommands()
     subcommands.add_subcommand("train", _build_train_parser())
     subcommands.add_subcommand("predict", _build_predict_parser())
+    subcommands.add_subcommand("bench", _build_bench_parser())
 
     return parser
 
@@ -428,6 +437,13 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
         )
 
 
+def run_bench(cfg: dict) -> None:
+    """Iterate the train dataloader and report throughput."""
+    bench_cfg = cfg["bench"]
+    dataloader = instantiate(bench_cfg["train_dataloader"])
+    bench_dataloader(dataloader, num_steps=bench_cfg["num_steps"])
+
+
 def run_predict(cfg: dict, parser: ArgumentParser) -> None:
     """Run the prediction workflow."""
     import uproot
@@ -498,6 +514,8 @@ def main():
             run_train(cfg, parser)
         elif cfg["subcommand"] == "predict":
             run_predict(cfg, parser)
+        elif cfg["subcommand"] == "bench":
+            run_bench(cfg)
 
     except UncommittedChangesError:
         print(
