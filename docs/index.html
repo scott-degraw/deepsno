@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SNO+ Tracking Performance</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+      background: #f8fafc;
+      color: #1a202c;
+    }
+    h1 { margin-bottom: 0.25rem; }
+    p { color: #4a5568; margin-top: 0.25rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+    }
+    .grid a {
+      display: block;
+      padding: 1rem;
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      text-decoration: none;
+      color: #2d3748;
+      text-align: center;
+      font-weight: 500;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .grid a:hover {
+      background: #ebf4ff;
+      border-color: #4299e1;
+      color: #2b6cb0;
+    }
+  </style>
+</head>
+<body>
+  <h1>SNO+ Tracking Performance</h1>
+  <p>Interactive 3D visualizations of predicted vs. truth particle tracks from the SNO+ detector.</p>
+  <div class="grid" id="grid"></div>
+  <script>
+    const grid = document.getElementById('grid');
+    for (let i = 0; i < 10; i++) {
+      const a = document.createElement('a');
+      a.href = `event_${i}.html`;
+      a.textContent = `Event ${i}`;
+      grid.appendChild(a);
+    }
+  </script>
+</body>
+</html>
