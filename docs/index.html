@@ -3,54 +3,168 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SNO+ Tracking Performance</title>
+  <title>Multi electron scintillator imaging</title>
   <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
       font-family: system-ui, sans-serif;
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 2rem 1rem;
       background: #f8fafc;
       color: #1a202c;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
     }
-    h1 { margin-bottom: 0.25rem; }
-    p { color: #4a5568; margin-top: 0.25rem; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 0.75rem;
-      margin-top: 1.5rem;
-    }
-    .grid a {
-      display: block;
-      padding: 1rem;
+
+    header {
+      padding: 0.75rem 1.25rem;
       background: white;
+      border-bottom: 1px solid #e2e8f0;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
+    header .subtitle { font-size: 0.8rem; color: #718096; margin-bottom: 0.5rem; }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 1.25rem;
+    }
+    .legend dt {
+      display: inline;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #4a5568;
+    }
+    .legend dd {
+      display: inline;
+      font-size: 0.75rem;
+      color: #718096;
+      margin-left: 0.25rem;
+    }
+    .legend dt::after { content: ""; }
+    .legend .item { white-space: nowrap; }
+
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    nav {
+      width: 140px;
+      flex-shrink: 0;
+      background: white;
+      border-right: 1px solid #e2e8f0;
+      overflow-y: auto;
+      padding: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    nav button {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      background: none;
       border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      text-decoration: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
       color: #2d3748;
+      text-align: left;
+      transition: background 0.1s, border-color 0.1s, color 0.1s;
+    }
+    nav button:hover  { background: #ebf4ff; border-color: #90cdf4; }
+    nav button.active { background: #ebf4ff; border-color: #4299e1; color: #2b6cb0; font-weight: 600; }
+
+    .viewer {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: #f8fafc;
+    }
+
+    .placeholder {
       text-align: center;
-      font-weight: 500;
-      transition: background 0.15s, border-color 0.15s;
+      color: #a0aec0;
     }
-    .grid a:hover {
-      background: #ebf4ff;
-      border-color: #4299e1;
-      color: #2b6cb0;
+    .placeholder p { margin-top: 0.5rem; font-size: 0.9rem; }
+
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: none;
     }
+    iframe.visible { display: block; }
   </style>
 </head>
 <body>
-  <h1>SNO+ Tracking Performance</h1>
-  <p>Interactive 3D visualizations of predicted vs. truth particle tracks from the SNO+ detector.</p>
-  <div class="grid" id="grid"></div>
+  <header>
+    <h1>Multi electron scintillator imaging</h1>
+    <p class="subtitle">Interactive 3D predicted vs. truth particle tracks</p>
+    <dl class="legend">
+      <span class="item"><dt>Solid lines</dt><dd>Truth tracks</dd></span>
+      <span class="item"><dt>Diamond points</dt><dd>Neural network predictions</dd></span>
+      <span class="item"><dt>Track / point color</dt><dd>Time</dd></span>
+      <span class="item"><dt>Voxel color</dt><dd>Truth energy deposited</dd></span>
+      <span class="item"><dt>Voxel size</dt><dd>5 cm</dd></span>
+      <span class="item"><dt>Hover</dt><dd>Time &amp; energy deposited</dd></span>
+    </dl>
+  </header>
+  <div class="layout">
+    <nav id="nav"></nav>
+    <div class="viewer" id="viewer">
+      <div class="placeholder">
+        <svg width="48" height="48" fill="none" stroke="#cbd5e0" stroke-width="1.5" viewBox="0 0 24 24">
+          <path d="M12 3l9 4.5v9L12 21l-9-4.5v-9L12 3z"/>
+          <path d="M12 3v18M3 7.5l9 4.5 9-4.5"/>
+        </svg>
+        <p>Select an event</p>
+      </div>
+    </div>
+  </div>
+
   <script>
-    const grid = document.getElementById('grid');
-    for (let i = 0; i < 10; i++) {
-      const a = document.createElement('a');
-      a.href = `event_${i}.html`;
-      a.textContent = `Event ${i}`;
-      grid.appendChild(a);
+    const N = 10;
+    const nav = document.getElementById('nav');
+    const viewer = document.getElementById('viewer');
+    const iframes = [];
+    let active = null;
+
+    for (let i = 0; i < N; i++) {
+      // pre-create iframes but don't set src yet
+      const iframe = document.createElement('iframe');
+      viewer.appendChild(iframe);
+      iframes.push(iframe);
+
+      const btn = document.createElement('button');
+      btn.textContent = `Event ${i}`;
+      btn.addEventListener('click', () => select(i, btn));
+      nav.appendChild(btn);
+    }
+
+    function select(i, btn) {
+      // load iframe src on first click
+      if (!iframes[i].src || iframes[i].src === window.location.href) {
+        iframes[i].src = `event_${i}.html`;
+      }
+
+      // hide placeholder
+      const placeholder = viewer.querySelector('.placeholder');
+      if (placeholder) placeholder.remove();
+
+      // swap visible iframe
+      iframes.forEach(f => f.classList.remove('visible'));
+      iframes[i].classList.add('visible');
+
+      // update active button
+      nav.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      active = i;
     }
   </script>
 </body>
