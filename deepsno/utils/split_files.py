@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import random
+import shutil
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -50,7 +51,10 @@ def split_files(
         dest_dir = Path(dest_dir)
         if dest_dir.exists() and not force:
             raise FileExistsError(f"Destination directory {dest_dir} exists. Use --force to overwrite.")
-        dest_dir.unlink(missing_ok=True)
+        if dest_dir.is_symlink():
+            dest_dir.unlink()
+        elif dest_dir.is_dir():
+            shutil.rmtree(dest_dir)
         for file in split_files:
             symlink_path = dest_dir / file.name
             symlink_path.parent.mkdir(parents=True, exist_ok=True)
