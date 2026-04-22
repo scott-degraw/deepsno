@@ -19,7 +19,7 @@ class UprootMultiFileDataset(IterableDataset):
         file_paths: str | Iterable[str],
         tree_name: str,
         expressions: Iterable[str] | None = None,
-        filter_name: list[str] | None = None,
+        filter_name: Iterable[str] | None = None,
         cut: str | None = None,
         seed: int = 42,
         buffer_size: int = 100,
@@ -33,8 +33,8 @@ class UprootMultiFileDataset(IterableDataset):
         else:
             self.file_paths = file_paths
         self.tree_name = tree_name
-        self.expressions = set(expressions)
-        self.filter_name = filter_name
+        self.expressions = set(expressions) if expressions is not None else set()
+        self.filter_name = set(filter_name) if filter_name is not None else set()
         self.cut = cut
         self.seed = seed
         self.buffer_size = buffer_size
@@ -126,8 +126,9 @@ class UprootMultiFileDataset(IterableDataset):
 
             with open_context(file, mode="rb") as f:
                 with uproot.open(f) as ntuple:
-                    exprs = self.expressions or None
-                    arrays = ntuple[self.tree_name].arrays(exprs, filter_name=self.filter_name)
+                    expr = self.expressions if self.expressions else None
+                    filter_name = self.filter_name if self.filter_name else None
+                    arrays = ntuple[self.tree_name].arrays(expr, filter_name=filter_name)
 
             empty = True
             for entry in arrays:
@@ -371,7 +372,7 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
         self.n_waveform_bins = n_waveform_bins
         self.n_pmts = n_pmts
 
-        self.expressions.update(["hit_times", "npe", "mc_index", "tracks*"])
+        self.filter_name.update(["hit_times", "npe", "mc_index", "tracks*"])
         self.max_context_len = max_context_len
         self.max_n_vertices = max_n_vertices
         self.min_energy = min_energy
@@ -579,7 +580,7 @@ class MultiHitVertexDataset(UprootMultiFileDataset):
         self.time_jitter_min = time_jitter_min
         self.time_jitter_max = time_jitter_max
         # filter_name with a regex loads vertices sub-branches and reconstructs nesting
-        self.filter_name = ["hit_times", "hit_ids", "mc_index", "npe", "/vertices\\..*/"]
+        self.filter_name.update(["hit_times", "hit_ids", "mc_index", "npe", "/vertices\\..*/"])
 
     def __iter__(self):
         for entry, file_path in super().__iter__():
