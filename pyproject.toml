@@ -25,7 +25,6 @@ dependencies = [
     "papermill>=2.6.0",
     "particle>=0.26.0",
     "plotly>=6.5.0",
-    "pyvista[all,jupyter]>=0.47.1",
     "ruff>=0.15.5",
     "scikit-learn>=1.8.0",
     "scipy>=1.16.3",
