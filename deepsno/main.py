@@ -156,7 +156,7 @@ def _build_predict_parser() -> ArgumentParser:
     p.add_argument("--keys", type=str, nargs="+")
     p.add_argument("--ckpt", type=ptyping.path_type("dr") | ptyping.Path_fr, required=True)
     p.add_argument("--ckpt_config", type=ptyping.Path_fr, required=False)
-    p.add_argument("--output_path", type=ptyping.Path_fc, required=False)
+    p.add_argument("--output_path", type=Path, required=False)
     p.add_argument("--device", type=str, required=True)
     p.add_argument("--dataloader", type=dict, required=True)
     p.add_argument("--dataset_len", type=int, required=False)

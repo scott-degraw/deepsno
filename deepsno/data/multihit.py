@@ -19,6 +19,7 @@ class UprootMultiFileDataset(IterableDataset):
         file_paths: str | Iterable[str],
         tree_name: str,
         expressions: Iterable[str] | None = None,
+        filter_name: list[str] | None = None,
         cut: str | None = None,
         seed: int = 42,
         buffer_size: int = 100,
@@ -33,6 +34,7 @@ class UprootMultiFileDataset(IterableDataset):
             self.file_paths = file_paths
         self.tree_name = tree_name
         self.expressions = set(expressions)
+        self.filter_name = filter_name
         self.cut = cut
         self.seed = seed
         self.buffer_size = buffer_size
@@ -124,7 +126,8 @@ class UprootMultiFileDataset(IterableDataset):
 
             with open_context(file, mode="rb") as f:
                 with uproot.open(f) as ntuple:
-                    arrays = ntuple[self.tree_name].arrays(self.expressions)
+                    exprs = self.expressions or None
+                    arrays = ntuple[self.tree_name].arrays(exprs, filter_name=self.filter_name)
 
             empty = True
             for entry in arrays:
@@ -538,6 +541,119 @@ class MultiHitDatasetExpanded(MultiHitDatasetBase):
 
 # Backward-compatible alias
 MultiHitDataset = MultiHitDatasetUnique
+
+
+class MultiHitVertexDataset(UprootMultiFileDataset):
+    """
+    Dataset for the flat hit_times/hit_ids schema with raw vertex truth data.
+
+    Unlike MultiHitDatasetBase, this reads hits from flat per-hit arrays rather
+    than nested per-PMT arrays, and uses the 'vertices' branch directly instead
+    of voxelising tracks.
+
+    Outputs:
+        inputs: pmt_ids, hit_times — each (max_context_len,), sorted by pmt_id
+        truth:  position (max_n_vertices, 3), time (max_n_vertices,),
+                energy (max_n_vertices,), exists (max_n_vertices,),
+                mc_index, npe, file_path
+    """
+
+    def __init__(
+        self,
+        max_context_len: int,
+        max_n_vertices: int,
+        min_hit_time: float = 0.0,
+        max_hit_time: float = 300.0,
+        min_energy: float = 0.0,
+        time_jitter_min: float = 0.0,
+        time_jitter_max: float = 0.0,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.max_context_len = max_context_len
+        self.max_n_vertices = max_n_vertices
+        self.min_hit_time = min_hit_time
+        self.max_hit_time = max_hit_time
+        self.min_energy = min_energy
+        self.time_jitter_min = time_jitter_min
+        self.time_jitter_max = time_jitter_max
+        # filter_name with a regex loads vertices sub-branches and reconstructs nesting
+        self.filter_name = ["hit_times", "hit_ids", "mc_index", "npe", "/vertices\\..*/"]
+
+    def __iter__(self):
+        for entry, file_path in super().__iter__():
+            hit_times = entry["hit_times"].to_numpy()
+            pmt_ids = entry["hit_ids"].to_numpy()
+
+            selector = (hit_times > self.min_hit_time) & (hit_times < self.max_hit_time)
+            hit_times = hit_times[selector]
+            pmt_ids = pmt_ids[selector]
+
+            if self.time_jitter_min != self.time_jitter_max:
+                jitter = self.generator.uniform(self.time_jitter_min, self.time_jitter_max)
+                hit_times = hit_times + jitter
+            else:
+                jitter = 0.0
+
+            if len(pmt_ids) > self.max_context_len:
+                shuffle_indices = self.generator.choice(len(pmt_ids), size=self.max_context_len, replace=False)
+                pmt_ids = pmt_ids[shuffle_indices]
+                hit_times = hit_times[shuffle_indices]
+            else:
+                pad_n = self.max_context_len - len(pmt_ids)
+                pmt_ids = np.pad(pmt_ids, (0, pad_n))
+                hit_times = np.pad(hit_times, (0, pad_n))
+
+            sort_idx = np.argsort(pmt_ids)
+            pmt_ids = pmt_ids[sort_idx]
+            hit_times = hit_times[sort_idx]
+
+            inputs = {"pmt_ids": pmt_ids, "hit_times": hit_times}
+
+            # Vertex truth — already the actual interaction vertices
+            verts = entry["vertices"]
+            positions = ak.to_numpy(verts["position"])  # (n_verts, 3)
+            times = ak.to_numpy(verts["time"])  # (n_verts,)
+            energies = ak.to_numpy(verts["energy"])  # (n_verts,)
+
+            times = times + jitter
+
+            energy_mask = energies > self.min_energy
+            positions = positions[energy_mask]
+            times = times[energy_mask]
+            energies = energies[energy_mask]
+
+            energy_sort_i = np.argsort(-energies)
+            positions = positions[energy_sort_i]
+            times = times[energy_sort_i]
+            energies = energies[energy_sort_i]
+            exists = np.ones(len(energies), dtype=bool)
+
+            if len(energies) > self.max_n_vertices:
+                positions = positions[: self.max_n_vertices]
+                times = times[: self.max_n_vertices]
+                energies = energies[: self.max_n_vertices]
+                exists = exists[: self.max_n_vertices]
+
+            pad_kwargs = dict(pad_length=self.max_n_vertices, axis=0, generator=self.generator)
+            vertex_shuffle_i = self.generator.permutation(self.max_n_vertices)
+
+            vertices = {
+                "position": pad_array(positions, **pad_kwargs)[vertex_shuffle_i],
+                "time": pad_array(times, **pad_kwargs)[vertex_shuffle_i],
+                "energy": pad_array(energies, **pad_kwargs)[vertex_shuffle_i],
+                "exists": pad_array(exists, **pad_kwargs)[vertex_shuffle_i],
+            }
+
+            truth = {
+                **pytree.tree_map(torch.from_numpy, vertices),
+                "mc_index": entry["mc_index"].item(),
+                "npe": entry["npe"].item(),
+                "file_path": file_path,
+            }
+
+            yield pytree.tree_map(torch.from_numpy, inputs), truth
 
 
 class MultiHitVarlenCollate:

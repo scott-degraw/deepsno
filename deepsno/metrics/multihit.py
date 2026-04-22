@@ -119,6 +119,7 @@ class HungarianVertexLoss(nn.Module):
         """Return matched predict/truth dicts (for external use, e.g. visualisation)."""
         with torch.no_grad():
             C = vertex_cost_matrix(predict, truth, weights=self.weights, eps_num=self.epsilon)
+
         pred_i, truth_i = self.bipartite_matching(C.cpu().numpy())
         device = truth["exists"].device
         pred_i = pred_i.to(device)
@@ -295,6 +296,10 @@ class SinkhornVertexLoss(nn.Module):
 
         Returns a dict of scalar losses: {"position", "time", "energy"}.
         """
+
+        beta = 5
+        truth = truth.copy()
+        truth["energy"] = beta * torch.log(1 + truth["energy"] / beta)
         components, C = self.cross_costs(predict, truth)
 
         # ------------------------------------------------------------------
@@ -338,7 +343,6 @@ class SinkhornVertexLoss(nn.Module):
 
         # TODO: Think if you should include the regularization term here.
         batch_size = torch.prod(torch.tensor(T.shape[:-2], dtype=torch.float32)) if T.dim() > 2 else 1.0
-        n_vertices = truth["energy"].shape[-1]
         components = {k: (T * c).sum() / batch_size for k, c in components.items()}
 
         if self.unbiased:

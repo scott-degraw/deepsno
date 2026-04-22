@@ -540,7 +540,7 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
 MultiHitPMTEncoder = MultiHitPMTEncoderUnique
 
 
-@torch.compile(dynamic=False, fullgraph=True)
+@torch.compile(dynamic=True, fullgraph=True)
 class MultiHit(nn.Module):
     def __init__(self, encoder: nn.Module, decoder: nn.Module, head: nn.Module):
         """
