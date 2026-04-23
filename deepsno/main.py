@@ -135,6 +135,9 @@ def _build_train_parser() -> ArgumentParser:
     p.add_argument("--val_metric_is_inverted", action="store_true")
     p.add_argument("--metric_monitors", type=dict | Iterable[dict], required=False)
 
+    # DDP scaling
+    p.add_argument("--scale_by_world_size", type=bool, default=True)
+
     # misc
     p.add_argument("--dry_run", action="store_true")
     p.add_argument("--profile", action="store_true")
@@ -311,7 +314,7 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
 
     train_cfg = cfg["train"]
 
-    if dist.is_available() and dist.is_initialized():
+    if dist.is_available() and dist.is_initialized() and train_cfg["scale_by_world_size"]:
         world_size = dist.get_world_size()
         for key in ("train_dataloader", "val_dataloader"):
             dl_cfg = train_cfg[key]
