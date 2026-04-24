@@ -23,6 +23,7 @@ class UprootMultiFileDataset(IterableDataset):
         cut: str | None = None,
         seed: int = 42,
         buffer_size: int = 100,
+        shuffle: bool = True,
         cache: bool | str = False,
         debug: bool = False,
     ) -> None:
@@ -40,6 +41,7 @@ class UprootMultiFileDataset(IterableDataset):
         self.cut = cut
         self.seed = seed
         self.buffer_size = buffer_size
+        self.shuffle = shuffle
         self.generator = None
         self.debug = debug
         self.cache = cache
@@ -97,10 +99,9 @@ class UprootMultiFileDataset(IterableDataset):
         if self.debug:
             print(f"Worker {worker_id + 1} of {n_workers} (rank {rank}/{world_size}) starting.")
 
-        self.seed += global_worker_id
-
         if self.generator is None:
-            self.generator = np.random.default_rng(self.seed)
+            epoch_seed = torch.initial_seed() % (2**31)
+            self.generator = np.random.default_rng(self.seed + global_worker_id + epoch_seed)
 
         file_slice = slice(
             len(file_paths) * global_worker_id // total_workers,
@@ -111,7 +112,7 @@ class UprootMultiFileDataset(IterableDataset):
         if len(file_paths) == 0:
             raise ValueError("No files assigned to this worker!")
 
-        shuffled_file_indices = self.generator.permutation(len(file_paths))
+        file_indices = self.generator.permutation(len(file_paths)) if self.shuffle else range(len(file_paths))
 
         buffer = []
         self.n_entries = 0
@@ -123,7 +124,7 @@ class UprootMultiFileDataset(IterableDataset):
         else:
             open_context = open
 
-        for file_index in shuffled_file_indices:
+        for file_index in file_indices:
             file = file_paths[file_index]
 
             with open_context(file, mode="rb") as f:
@@ -136,6 +137,9 @@ class UprootMultiFileDataset(IterableDataset):
             for entry in arrays:
                 empty = False
                 entry = (entry, file)
+                if not self.shuffle:
+                    yield entry
+                    continue
                 if len(buffer) < self.buffer_size:
                     buffer.append(entry)
                     continue
@@ -158,11 +162,11 @@ class UprootMultiFileDataset(IterableDataset):
             if empty:
                 raise ValueError(f"No entries found in file {file}!")
 
-        self.debug_print("Flushing buffer")
-        # Flush out the rest of the buffer
-        permutations = self.generator.permutation(len(buffer))
-        for buffer_i in permutations:
-            yield buffer[buffer_i]
+        if self.shuffle:
+            self.debug_print("Flushing buffer")
+            permutations = self.generator.permutation(len(buffer))
+            for buffer_i in permutations:
+                yield buffer[buffer_i]
 
 
 def pad_array(
