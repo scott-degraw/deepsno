@@ -30,6 +30,8 @@ class UprootMultiFileDataset(IterableDataset):
             expressions = set()
         if isinstance(file_paths, str):
             self.file_paths = glob.glob(file_paths)
+            if len(self.file_paths) == 0:
+                raise FileNotFoundError(f"No files found in: {file_paths}")
         else:
             self.file_paths = file_paths
         self.tree_name = tree_name
@@ -70,7 +72,7 @@ class UprootMultiFileDataset(IterableDataset):
     def __iter__(self):
         file_paths = glob.glob(self.file_paths) if isinstance(self.file_paths, str) else self.file_paths
         if len(file_paths) == 0:
-            raise ValueError("No files found!")
+            raise FileNotFoundError(f"No files found in: {self.file_paths}")
         worker_info = torch.utils.data.get_worker_info()
 
         if worker_info is None:
