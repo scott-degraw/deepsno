@@ -1,5 +1,6 @@
 #!/usr/bin/env -S python3 -u
 
+import copy
 import os
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ from jsonargparse import ArgumentParser, set_loader
 from jsonargparse import typing as ptyping
 from torch import nn, optim
 from torch.nn.parallel import DistributedDataParallel as DDP
-
+from deepsno.loops import _unwrap, bench_dataloader, predict, train
 from deepsno.loops import bench_dataloader, predict, train
 from deepsno.metrics import metric_monitor
 from deepsno.metrics.metrics import Metric
@@ -139,7 +140,7 @@ def _build_train_parser() -> ArgumentParser:
     p.add_argument("--scale_by_world_size", type=bool, default=True)
 
     # misc
-    p.add_argument("--dry_run", action="store_true")
+    p.add_argument("--dry_run", type=str, choices=["none", "only", "before"], default="none")
     p.add_argument("--profile", action="store_true")
 
     return p
@@ -291,14 +292,7 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
 
     torch.manual_seed(train_cfg["seed"] + rank)
 
-    # Dry-run overrides
-    if train_cfg["dry_run"]:
-        train_cfg["num_steps"] = 3
-        train_cfg["val_num_steps"] = 2
-        train_cfg["checkpoint_dir"] = Path(tempfile.gettempdir()) / "dry_run"
-        train_cfg["wandb_disable"] = True
-        if is_main:
-            shutil.rmtree(train_cfg["checkpoint_dir"], ignore_errors=True)
+    dry_run = train_cfg["dry_run"]
 
     model_save_dir = Path(train_cfg["checkpoint_dir"])
     if is_main:
@@ -396,8 +390,49 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
     if is_main:
         parser.save(save_cfg, model_save_dir / "config.yaml", overwrite=True)
 
+    if dry_run in ("only", "before"):
+        dry_run_dir = Path(tempfile.gettempdir()) / "dry_run"
+        if is_main:
+            shutil.rmtree(dry_run_dir, ignore_errors=True)
+        initial_state = {
+            "model": copy.deepcopy(_unwrap(model).state_dict()),
+            "optimizer": copy.deepcopy(optimizer.state_dict()),
+            "scheduler": copy.deepcopy(scheduler.state_dict()) if scheduler is not None else None,
+        }
+        with wandb.init(mode="disabled") as dry_run_wandb:
+            train(
+                checkpoint_dir=dry_run_dir / "ckpt",
+                run=dry_run_wandb,
+                log_interval=1,
+                model=model,
+                device=device,
+                train_dataloader=train_cfg["train_dataloader"],
+                val_dataloader=train_cfg["val_dataloader"],
+                num_steps=3,
+                steps_per_epoch=None,
+                val_num_steps=3,
+                optimizer=optimizer,
+                loss_fn=train_cfg["loss_fn"],
+                scheduler=scheduler,
+                val_metric=train_cfg["val_metric"],
+                val_metric_is_inverted=train_cfg["val_metric_is_inverted"],
+                max_grad_norm=train_cfg["max_grad_norm"],
+                rank=rank,
+                train_norm=train_cfg["train_norm"],
+                val_norm=train_cfg["val_norm"],
+            )
+        _unwrap(model).load_state_dict(initial_state["model"])
+        optimizer.load_state_dict(initial_state["optimizer"])
+        if scheduler is not None:
+            scheduler.load_state_dict(initial_state["scheduler"])
+        if is_main:
+            print("Dry run passed.")
+
+    if dry_run == "only":
+        return
+
     # Wandb — disabled on non-main ranks
-    mode = "disabled" if (not is_main or train_cfg["wandb_disable"] or train_cfg["dry_run"]) else "online"
+    mode = "disabled" if (not is_main or train_cfg["wandb_disable"]) else "online"
 
     with wandb.init(
         entity=train_cfg["entity"],
