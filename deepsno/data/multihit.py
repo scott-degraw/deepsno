@@ -423,15 +423,11 @@ class MultiHitDatasetBase(UprootMultiFileDataset):
             if np.any(~np.isfinite(np.log(hit_times))):
                 raise ValueError("Bad log hit times")
 
-            # --- truncate or pad to max_context_len ---
+            # --- truncate to max_context_len ---
             if len(pmt_ids) > self.max_context_len:
                 shuffle_indices = self.generator.choice(len(pmt_ids), size=self.max_context_len, replace=False)
                 pmt_ids = pmt_ids[shuffle_indices]
                 hit_times = hit_times[shuffle_indices]
-            else:
-                pad_tuple = (0, self.max_context_len - len(pmt_ids))
-                pmt_ids = np.pad(pmt_ids, pad_tuple)
-                hit_times = np.pad(hit_times, pad_tuple)
 
             # sort by PMT id so subclasses can rely on ordering
             sort_idx = np.argsort(pmt_ids)
@@ -607,10 +603,6 @@ class MultiHitVertexDataset(UprootMultiFileDataset):
                 shuffle_indices = self.generator.choice(len(pmt_ids), size=self.max_context_len, replace=False)
                 pmt_ids = pmt_ids[shuffle_indices]
                 hit_times = hit_times[shuffle_indices]
-            else:
-                pad_n = self.max_context_len - len(pmt_ids)
-                pmt_ids = np.pad(pmt_ids, (0, pad_n))
-                hit_times = np.pad(hit_times, (0, pad_n))
 
             sort_idx = np.argsort(pmt_ids)
             pmt_ids = pmt_ids[sort_idx]
