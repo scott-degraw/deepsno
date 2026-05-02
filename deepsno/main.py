@@ -17,8 +17,8 @@ from jsonargparse import ArgumentParser, set_loader
 from jsonargparse import typing as ptyping
 from torch import nn, optim
 from torch.nn.parallel import DistributedDataParallel as DDP
+
 from deepsno.loops import _unwrap, bench_dataloader, predict, train
-from deepsno.loops import bench_dataloader, predict, train
 from deepsno.metrics import metric_monitor
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
@@ -130,7 +130,8 @@ def _build_train_parser() -> ArgumentParser:
     p.add_argument("--train_norm", type=bool, default=True)
     p.add_argument("--val_norm", type=bool, default=True)
 
-    # validation
+    # epoch / validation
+    p.add_argument("--steps_per_epoch", type=int, required=False)
     p.add_argument("--val_metric", type=Metric, required=True)
     p.add_argument("--val_num_steps", type=int, required=False)
     p.add_argument("--val_metric_is_inverted", action="store_true")
@@ -459,12 +460,13 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             train_dataloader=train_cfg["train_dataloader"],
             val_dataloader=train_cfg["val_dataloader"],
             num_steps=train_cfg["num_steps"],
+            steps_per_epoch=train_cfg.get("steps_per_epoch"),
             optimizer=optimizer,
             loss_fn=train_cfg["loss_fn"],
             scheduler=scheduler,
             val_metric=train_cfg["val_metric"],
             val_metric_is_inverted=train_cfg["val_metric_is_inverted"],
-            val_num_steps=train_cfg["val_num_steps"],
+            val_num_steps=train_cfg.get("val_num_steps"),
             max_grad_norm=train_cfg["max_grad_norm"],
             metric_monitor=monitor,
             rank=rank,
