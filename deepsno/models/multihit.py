@@ -8,6 +8,7 @@ from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from deepsno.models import transformers
+from deepsno.models.transformers import VarlenTensor
 
 
 class MultiHeadAttention(nn.Module):
@@ -212,44 +213,19 @@ class ObjectDecoderLayerVarlen(nn.Module):
             dropout=dropout,
         )
 
-    def forward(
-        self,
-        queries: torch.Tensor,
-        encoder_out: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_enc: torch.Tensor,
-        max_seqlen_q: int,
-        max_seqlen_enc: int,
-    ) -> torch.Tensor:
+    def forward(self, q: VarlenTensor, enc: VarlenTensor) -> VarlenTensor:
         """
         Args:
-            queries: ``(B * n_queries, dim)`` packed query tensor.
-            encoder_out: ``(total_hits, dim)`` packed encoder output.
-            cu_seqlens_q: Int32 ``(B + 1,)`` uniform cumulative lengths for queries.
-            cu_seqlens_enc: Int32 ``(B + 1,)`` variable cumulative lengths for encoder hits.
-            max_seqlen_q: Maximum query length (equal to ``n_queries``).
-            max_seqlen_enc: Maximum hit sequence length.
+            q: Query :class:`~deepsno.models.transformers.VarlenTensor` —
+               ``(B * n_queries, dim)`` packed, uniform cu_seqlens.
+            enc: Encoder :class:`~deepsno.models.transformers.VarlenTensor` —
+                 ``(total_hits, dim)`` packed, variable cu_seqlens.
 
         Returns:
-            Updated queries of shape ``(B * n_queries, dim)``.
+            :class:`~deepsno.models.transformers.VarlenTensor` with the same structure as ``q``.
         """
-        queries = self.self_attn(
-            queries,
-            queries,
-            cu_seqlens_q,
-            cu_seqlens_q,
-            max_seqlen_q,
-            max_seqlen_q,
-        )
-        queries = self.cross_attn(
-            queries,
-            encoder_out,
-            cu_seqlens_q,
-            cu_seqlens_enc,
-            max_seqlen_q,
-            max_seqlen_enc,
-        )
-        return queries
+        q = self.self_attn(q, q)
+        return self.cross_attn(q, enc)
 
 
 class ObjectDecoderVarlen(nn.Module):
@@ -335,41 +311,32 @@ class ObjectDecoderVarlen(nn.Module):
         x["energy"] = x["energy"] * self.energy_scale + self.energy_shift
         return x
 
-    def forward(
-        self,
-        encoder_out: torch.Tensor,
-        cu_seqlens_enc: torch.Tensor,
-        max_seqlen_enc: int,
-    ) -> torch.Tensor:
+    def forward(self, enc_vt: VarlenTensor) -> torch.Tensor:
         """
         Args:
-            encoder_out: ``(total_hits, dim)`` packed encoder output.
-            cu_seqlens_enc: Int32 ``(B + 1,)`` cumulative hit sequence lengths.
-            max_seqlen_enc: Maximum hit sequence length across the batch.
+            enc_vt: :class:`~deepsno.models.transformers.VarlenTensor` of packed
+                encoder output, shape ``(total_hits, dim)``.
 
         Returns:
             ``(batch_size, n_queries, dim)`` refined query embeddings.
         """
-        batch_size = cu_seqlens_enc.shape[0] - 1
+        batch_size = enc_vt.cu_seqlens.shape[0] - 1
         dim = self.query_tokens.embedding_dim
 
-        # Expand query tokens across the batch: (B * n_queries, dim)
         q = self.query_tokens.weight.unsqueeze(0).expand(batch_size, -1, -1).reshape(-1, dim)
-
-        # Uniform cu_seqlens for query tokens
         cu_seqlens_q = torch.arange(
             0,
             (batch_size + 1) * self.n_queries,
             step=self.n_queries,
-            device=encoder_out.device,
-            dtype=cu_seqlens_enc.dtype,
+            device=enc_vt.data.device,
+            dtype=enc_vt.cu_seqlens.dtype,
         )
-        max_seqlen_q = self.n_queries
+        q_vt = VarlenTensor(q, cu_seqlens_q, self.n_queries)
 
         for layer in self.layers:
-            q = layer(q, encoder_out, cu_seqlens_q, cu_seqlens_enc, max_seqlen_q, max_seqlen_enc)
+            q_vt = layer(q_vt, enc_vt)
 
-        return q.view(batch_size, self.n_queries, dim)
+        return q_vt.data.view(batch_size, self.n_queries, dim)
 
 
 class ObjectFFNHead(nn.Module):
@@ -438,28 +405,20 @@ class MultiHitPMTEncoderBase(nn.Module):
         """Return ``(total_hits, model_dim)`` per-hit feature tensor."""
         raise NotImplementedError
 
-    def forward(
-        self,
-        pmt_ids: torch.Tensor,
-        hit_times: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+    def forward(self, hits: VarlenTensor, hit_times: torch.Tensor) -> VarlenTensor:
         """
         Args:
-            pmt_ids: ``(total_hits,)`` flat PMT indices from
-                :func:`~deepsno.data.multihit.multihit_varlen_collate`.
+            hits: :class:`~deepsno.models.transformers.VarlenTensor` whose
+                ``data`` field holds ``(total_hits,)`` flat PMT indices.
             hit_times: ``(total_hits,)`` flat hit times.
-            cu_seqlens: Int32 ``(B+1,)`` cumulative sequence lengths.
-            max_seqlen: Maximum sequence length across the batch.
 
         Returns:
-            ``(encoded, cu_seqlens, max_seqlen)`` where ``encoded`` is
-            ``(total_hits, model_dim)`` packed.
+            :class:`~deepsno.models.transformers.VarlenTensor` with
+            ``(total_hits, model_dim)`` packed data.
         """
-        x = self._embed_hits(pmt_ids, hit_times)
-        encoded = self.encoder(x, cu_seqlens, max_seqlen)
-        return encoded, cu_seqlens, max_seqlen
+        x = self._embed_hits(hits.data, hit_times)
+        # x = self.encoder(hits._replace(data=x)).data
+        return hits._replace(data=x)
 
 
 class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
@@ -490,17 +449,9 @@ class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
         x = (pmt_ids != 0).unsqueeze(-1) * x
         return x
 
-    def forward(
-        self,
-        pmt_ids: torch.Tensor,
-        hit_times: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-        pmt_id_counts: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, int]:
-        x = self._embed_hits(pmt_ids, hit_times, pmt_id_counts)
-        encoded = self.encoder(x, cu_seqlens, max_seqlen)
-        return encoded, cu_seqlens, max_seqlen
+    def forward(self, hits: VarlenTensor, hit_times: torch.Tensor, pmt_id_counts: torch.Tensor) -> VarlenTensor:
+        x = self._embed_hits(hits.data, hit_times, pmt_id_counts)
+        return self.encoder(hits._replace(data=x))
 
 
 class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
@@ -573,16 +524,10 @@ class MultiHit(nn.Module):
         self._output_unnorm = value
         self.decoder.output_unnorm = value
 
-    def forward(
-        self,
-        pmt_ids: torch.Tensor,
-        hit_times: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-    ) -> dict[str, torch.Tensor]:
+    def forward(self, hits: VarlenTensor, hit_times: torch.Tensor) -> dict[str, torch.Tensor]:
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            encoded, cu_seqlens, max_seqlen = self.encoder(pmt_ids, hit_times, cu_seqlens, max_seqlen)
-            queries = self.decoder(encoded, cu_seqlens, max_seqlen)  # (B, n_queries, dim)
+            enc_vt = self.encoder(hits, hit_times)
+            queries = self.decoder(enc_vt)  # (B, n_queries, dim)
 
         output = self.head(queries.float())
 

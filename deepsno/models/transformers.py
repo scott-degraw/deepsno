@@ -1,3 +1,5 @@
+from typing import NamedTuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,10 +10,24 @@ except ImportError:
     varlen_attn = None
 
 
+class VarlenTensor(NamedTuple):
+    """Bundles a packed flat tensor with its varlen bookkeeping.
+
+    Fields:
+        data:       ``(total_elements, dim)`` packed feature tensor.
+        cu_seqlens: Int32 ``(B + 1,)`` cumulative sequence lengths.
+        max_seqlen: Maximum sequence length across the batch.
+    """
+
+    data: torch.Tensor
+    cu_seqlens: torch.Tensor
+    max_seqlen: int
+
+
 def padded_to_varlen(
     x: torch.Tensor,
     mask: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, int]:
+) -> "VarlenTensor":
     """Convert padded rectangular tensors from a dataloader to the flat varlen
     format expected by :class:`SetTransformerVarlen` (and its sub-modules).
 
@@ -22,19 +38,12 @@ def padded_to_varlen(
               entry indicates a *valid* (non-padding) element.
 
     Returns:
-        A 3-tuple ``(x_flat, cu_seqlens, max_seqlen)`` where
-
-        * ``x_flat``     – ``(total_elements, dim)`` packed feature tensor.
-        * ``cu_seqlens`` – Int32 tensor of shape ``(batch_size + 1,)``
-                           containing the cumulative sequence lengths, suitable
-                           for passing directly to ``varlen_attn``.
-        * ``max_seqlen`` – Python int giving the longest valid sequence in the
-                           batch; required by ``varlen_attn``.
+        :class:`VarlenTensor` with ``data``, ``cu_seqlens``, and ``max_seqlen``.
 
     Example::
 
-        x_flat, cu_seqlens, max_seqlen = padded_to_varlen(x_pad, mask)
-        out = model(x_flat, cu_seqlens, max_seqlen)
+        vt = padded_to_varlen(x_pad, mask)
+        out = model(vt)
     """
     # seqlens: (batch_size,) – number of valid tokens per sample
     seqlens = mask.sum(dim=1)  # (B,)
@@ -51,7 +60,7 @@ def padded_to_varlen(
     # Pack only the valid elements (mask == True) row-by-row
     x_flat = x[mask]  # (total, D)
 
-    return x_flat, cu_seqlens, max_seqlen
+    return VarlenTensor(x_flat, cu_seqlens, max_seqlen)
 
 
 def varlen_to_padded(
@@ -78,9 +87,9 @@ def varlen_to_padded(
 
     Example::
 
-        x_flat, cu_seqlens, max_seqlen = padded_to_varlen(x_pad, mask)
-        encoded_flat = encoder(x_flat, cu_seqlens, max_seqlen)
-        encoded_pad  = varlen_to_padded(encoded_flat, mask)
+        vt = padded_to_varlen(x_pad, mask)
+        encoded_vt = encoder(vt)
+        encoded_pad = varlen_to_padded(encoded_vt.data, mask)
     """
     B, L = mask.shape
     D = x_flat.shape[-1]
@@ -124,45 +133,36 @@ class MABVarlen(nn.Module):
             nn.Linear(dim_feedforward, dim, bias=bias),
         )
 
-    def forward(
-        self,
-        q_x: torch.Tensor,
-        kv_x: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_k: torch.Tensor,
-        max_seqlen_q: int,
-        max_seqlen_k: int,
-    ):
+    def forward(self, q: "VarlenTensor", k: "VarlenTensor") -> "VarlenTensor":
         """
         Args:
-            q_x: Tensor of shape (total_q, dim) containing packed queries.
-            kv_x: Tensor of shape (total_k, dim) containing packed keys/values.
-            cu_seqlens_q: Int32 tensor of shape (batch_size + 1,) containing cumulative seqlens for queries.
-            cu_seqlens_k: Int32 tensor of shape (batch_size + 1,) containing cumulative seqlens for keys/values.
-            max_seqlen_q: Maximum sequence length in the batch for queries.
-            max_seqlen_k: Maximum sequence length in the batch for keys/values.
+            q: Query :class:`VarlenTensor` — ``(total_q, dim)`` packed data.
+            k: Key/value :class:`VarlenTensor` — ``(total_k, dim)`` packed data.
+
+        Returns:
+            :class:`VarlenTensor` with the same sequence structure as ``q``.
         """
-        q = self.q_proj(q_x).view(-1, self.num_heads, self.head_dim)
-        k = self.k_proj(kv_x).view(-1, self.num_heads, self.head_dim)
-        v = self.v_proj(kv_x).view(-1, self.num_heads, self.head_dim)
+        q_proj = self.q_proj(q.data).view(-1, self.num_heads, self.head_dim)
+        k_proj = self.k_proj(k.data).view(-1, self.num_heads, self.head_dim)
+        v_proj = self.v_proj(k.data).view(-1, self.num_heads, self.head_dim)
 
         if varlen_attn is None:
             raise NotImplementedError("torch.nn.attention.varlen.varlen_attn is not available in your PyTorch version.")
 
         attn_out = varlen_attn(
-            q,
-            k,
-            v,
-            cu_seq_q=cu_seqlens_q,
-            cu_seq_k=cu_seqlens_k,
-            max_q=max_seqlen_q,
-            max_k=max_seqlen_k,
+            q_proj,
+            k_proj,
+            v_proj,
+            cu_seq_q=q.cu_seqlens,
+            cu_seq_k=k.cu_seqlens,
+            max_q=q.max_seqlen,
+            max_k=k.max_seqlen,
         )
 
         attn_out = attn_out.view(-1, self.dim)
-        out = self.norm1(q_x + self.dropout(self.out_proj(attn_out)))
+        out = self.norm1(q.data + self.dropout(self.out_proj(attn_out)))
         out = self.norm2(out + self.dropout(self.ffn(out)))
-        return out
+        return VarlenTensor(out, q.cu_seqlens, q.max_seqlen)
 
 
 class SABVarlen(nn.Module):
@@ -176,14 +176,8 @@ class SABVarlen(nn.Module):
         super().__init__()
         self.mab = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int):
-        """
-        Args:
-            x: Tensor of shape (total_elements, dim)
-            cu_seqlens: Int32 tensor of shape (batch_size + 1,)
-            max_seqlen: Int representing the maximum sequence length
-        """
-        return self.mab(x, x, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen)
+    def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
+        return self.mab(vt, vt)
 
 
 class PMAVarlen(nn.Module):
@@ -206,29 +200,20 @@ class PMAVarlen(nn.Module):
         nn.init.xavier_uniform_(self.S)
         self.mab = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
+    def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
         Args:
-            x: Tensor of shape (total_elements, dim)
-            cu_seqlens: Int32 tensor of shape (batch_size + 1,)
-            max_seqlen: Max sequence length for x
+            vt: :class:`VarlenTensor` of shape ``(total_elements, dim)``.
+
         Returns:
-            Tensor of shape (batch_size * num_seeds, dim)
-            Representing the pooled features packed for the batch
+            Tensor of shape ``(batch_size * num_seeds, dim)``.
         """
-        batch_size = cu_seqlens.shape[0] - 1
-
-        # Expand learnable seeds for the whole batch and flatten
-        # Shape: (batch_size * num_seeds, dim)
+        batch_size = vt.cu_seqlens.shape[0] - 1
         s = self.S.expand(batch_size, -1, -1).reshape(-1, self.S.shape[-1])
-
-        # Create cumulative seqlens for the seeds: [0, num_seeds, 2*num_seeds, ...]
         cu_seqlens_q = torch.arange(
-            0, (batch_size + 1) * self.num_seeds, step=self.num_seeds, device=x.device, dtype=cu_seqlens.dtype
+            0, (batch_size + 1) * self.num_seeds, step=self.num_seeds, device=vt.data.device, dtype=vt.cu_seqlens.dtype
         )
-        max_seqlen_q = self.num_seeds
-
-        return self.mab(s, x, cu_seqlens_q, cu_seqlens, max_seqlen_q, max_seqlen)
+        return self.mab(VarlenTensor(s, cu_seqlens_q, self.num_seeds), vt).data
 
 
 class ISABVarlen(nn.Module):
@@ -283,32 +268,21 @@ class ISABVarlen(nn.Module):
             dtype=dtype,
         )
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        max_seqlen: int,
-    ) -> torch.Tensor:
+    def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
         """
         Args:
-            x: Packed tensor of shape ``(total_elements, dim)``.
-            cu_seqlens: Int32 tensor of shape ``(batch_size + 1,)``.
-            max_seqlen: Maximum set size across the batch.
+            vt: :class:`VarlenTensor` of shape ``(total_elements, dim)``.
 
         Returns:
-            Tensor of the same shape as ``x``.
+            :class:`VarlenTensor` of the same shape as the input.
         """
-        batch_size = cu_seqlens.shape[0] - 1
+        batch_size = vt.cu_seqlens.shape[0] - 1
+        ind_data = self.I.expand(batch_size, -1, -1).reshape(-1, self.I.shape[-1])
+        cu_seqlens_ind = self._inducing_cu_seqlens(batch_size, vt.data.device, vt.cu_seqlens.dtype)
+        ind_vt = VarlenTensor(ind_data, cu_seqlens_ind, self.num_inducing)
 
-        # Expand inducing points: (batch_size * num_inducing, dim)
-        I = self.I.expand(batch_size, -1, -1).reshape(-1, self.I.shape[-1])
-        cu_seqlens_ind = self._inducing_cu_seqlens(batch_size, x.device, cu_seqlens.dtype)
-
-        # H = MAB(I, X) — shape (batch_size * num_inducing, dim)
-        H = self.mab1(I, x, cu_seqlens_ind, cu_seqlens, self.num_inducing, max_seqlen)
-
-        # out = MAB(X, H) — shape (total_elements, dim)
-        return self.mab2(x, H, cu_seqlens, cu_seqlens_ind, max_seqlen, self.num_inducing)
+        H_vt = self.mab1(ind_vt, vt)
+        return self.mab2(vt, H_vt)
 
 
 # ---------------------------------------------------------------------------
@@ -354,20 +328,18 @@ class SetEncoderVarlen(nn.Module):
             ]
         )
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
+    def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
         """
         Args:
-            x: ``(total_elements, dim_in)`` packed feature tensor.
-            cu_seqlens: Int32 ``(batch_size + 1,)`` cumulative sequence lengths.
-            max_seqlen: Maximum set size across the batch.
+            vt: :class:`VarlenTensor` with ``(total_elements, dim_in)`` data.
 
         Returns:
-            ``(total_elements, dim_hidden)`` encoded feature tensor.
+            :class:`VarlenTensor` with ``(total_elements, dim_hidden)`` data.
         """
-        x = self.proj(x)
+        vt = VarlenTensor(self.proj(vt.data), vt.cu_seqlens, vt.max_seqlen)
         for sab in self.sabs:
-            x = sab(x, cu_seqlens, max_seqlen)
-        return x
+            vt = sab(vt)
+        return vt
 
 
 class SetEncoderVarlenPadded(nn.Module):
@@ -431,9 +403,8 @@ class SetEncoderVarlenPadded(nn.Module):
             ``(batch_size, max_len, dim_hidden)`` encoded tensor.  Padding
             positions are filled with ``self.fill_value`` (default ``0.0``).
         """
-        x_flat, cu_seqlens, max_seqlen = padded_to_varlen(x, mask)
-        encoded_flat = self.encoder(x_flat, cu_seqlens, max_seqlen)
-        return varlen_to_padded(encoded_flat, mask, fill_value=self.fill_value)
+        enc_vt = self.encoder(padded_to_varlen(x, mask))
+        return varlen_to_padded(enc_vt.data, mask, fill_value=self.fill_value)
 
 
 class InducedSetEncoderVarlen(nn.Module):
@@ -474,20 +445,18 @@ class InducedSetEncoderVarlen(nn.Module):
             ]
         )
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
+    def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
         """
         Args:
-            x: ``(total_elements, dim_in)`` packed feature tensor.
-            cu_seqlens: Int32 ``(batch_size + 1,)`` cumulative sequence lengths.
-            max_seqlen: Maximum set size across the batch.
+            vt: :class:`VarlenTensor` with ``(total_elements, dim_in)`` data.
 
         Returns:
-            ``(total_elements, dim_hidden)`` encoded feature tensor.
+            :class:`VarlenTensor` with ``(total_elements, dim_hidden)`` data.
         """
-        x = self.proj(x)
+        vt = VarlenTensor(self.proj(vt.data), vt.cu_seqlens, vt.max_seqlen)
         for isab in self.isabs:
-            x = isab(x, cu_seqlens, max_seqlen)
-        return x
+            vt = isab(vt)
+        return vt
 
 
 # ---------------------------------------------------------------------------
@@ -532,19 +501,16 @@ class SetPoolingVarlen(nn.Module):
             nn.Linear(dim_hidden, dim_out),
         )
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
+    def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
         Args:
-            x: ``(total_elements, dim_hidden)`` encoded feature tensor.
-            cu_seqlens: Int32 ``(batch_size + 1,)`` cumulative sequence lengths.
-            max_seqlen: Maximum set size across the batch.
+            vt: :class:`VarlenTensor` with ``(total_elements, dim_hidden)`` data.
 
         Returns:
             ``(batch_size, dim_out)`` per-set predictions.
         """
-        batch_size = cu_seqlens.shape[0] - 1
-        x = self.pma(x, cu_seqlens, max_seqlen)
-        x = x.view(batch_size, -1)
+        batch_size = vt.cu_seqlens.shape[0] - 1
+        x = self.pma(vt).view(batch_size, -1)
         return self.dec(x)
 
 
@@ -589,18 +555,15 @@ class SetTransformerVarlen(nn.Module):
         self.encoder = SetEncoderVarlen(dim_in, dim_hidden, num_heads, num_sabs, dim_feedforward)
         self.pooling = SetPoolingVarlen(dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward)
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
+    def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
         Args:
-            x: ``(total_elements, dim_in)`` packed feature tensor.
-            cu_seqlens: Int32 ``(batch_size + 1,)`` cumulative sequence lengths.
-            max_seqlen: Maximum set size across the batch.
+            vt: :class:`VarlenTensor` with ``(total_elements, dim_in)`` data.
 
         Returns:
             ``(batch_size, dim_out)`` per-set predictions.
         """
-        x = self.encoder(x, cu_seqlens, max_seqlen)
-        return self.pooling(x, cu_seqlens, max_seqlen)
+        return self.pooling(self.encoder(vt))
 
 
 class InducedSetTransformerVarlen(nn.Module):
@@ -641,15 +604,12 @@ class InducedSetTransformerVarlen(nn.Module):
         self.encoder = InducedSetEncoderVarlen(dim_in, dim_hidden, num_heads, num_inducing, num_isabs, dim_feedforward)
         self.pooling = SetPoolingVarlen(dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward)
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_seqlen: int) -> torch.Tensor:
+    def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
         Args:
-            x: ``(total_elements, dim_in)`` packed feature tensor.
-            cu_seqlens: Int32 ``(batch_size + 1,)`` cumulative sequence lengths.
-            max_seqlen: Maximum set size across the batch.
+            vt: :class:`VarlenTensor` with ``(total_elements, dim_in)`` data.
 
         Returns:
             ``(batch_size, dim_out)`` per-set predictions.
         """
-        x = self.encoder(x, cu_seqlens, max_seqlen)
-        return self.pooling(x, cu_seqlens, max_seqlen)
+        return self.pooling(self.encoder(vt))
