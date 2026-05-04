@@ -12,6 +12,8 @@ import uproot
 from torch.utils import _pytree as pytree
 from torch.utils.data import IterableDataset
 
+from deepsno.models.transformers import VarlenTensor
+
 
 class UprootMultiFileDataset(IterableDataset):
     def __init__(
@@ -664,8 +666,10 @@ class MultiHitVarlenCollate:
     concatenated into flat ``(total_hits,)`` tensors; other tensors (e.g.
     ``pmt_id_counts`` in :class:`MultiHitDatasetUnique`) are stacked normally.
 
-    The returned ``inputs`` dict contains ``cu_seqlens`` (Int32, shape
-    ``(B+1,)``) and ``max_seqlen`` (int) alongside the flat hit tensors.
+    The returned ``inputs`` dict contains a ``hits`` key holding a
+    :class:`~deepsno.models.transformers.VarlenTensor` that bundles the flat
+    ``pmt_ids``, ``cu_seqlens`` (Int32, ``(B+1,)``), and ``max_seqlen`` (int).
+    All remaining flat tensors (e.g. ``hit_times``) are included as top-level keys.
 
     Usage in config::
 
@@ -692,10 +696,8 @@ class MultiHitVarlenCollate:
         cu_seqlens = torch.zeros(len(seqlens) + 1, dtype=torch.int32)
         cu_seqlens[1:] = torch.tensor(seqlens, dtype=torch.int32).cumsum(0)
 
-        collated_inputs = {
-            key: (torch.cat(vals) if key in masked_keys else torch.stack(vals)) for key, vals in accum.items()
-        }
-        collated_inputs["cu_seqlens"] = cu_seqlens
-        collated_inputs["max_seqlen"] = max(seqlens)
+        flat = {key: (torch.cat(vals) if key in masked_keys else torch.stack(vals)) for key, vals in accum.items()}
+        pmt_ids = flat.pop("pmt_ids")
+        collated_inputs = {"hits": VarlenTensor(pmt_ids, cu_seqlens, max(seqlens)), **flat}
 
         return collated_inputs, torch.utils.data.default_collate(list(truth_list))

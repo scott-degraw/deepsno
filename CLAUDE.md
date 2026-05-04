@@ -48,8 +48,38 @@ There is no automated test suite — validation is done via wandb during trainin
 ### Data (`deepsno/data/`)
 
 - **`datasets.py`** — `ChunkedUprootDataset`: Streaming ROOT file reader with configurable buffer sizes. Handles variable-length PMT hit data.
-- **`multihit.py`** — `UprootMultiFileDataset` and multi-hit event handling with Numba JIT compilation.
+- **`multihit.py`** — Core multi-hit datasets, collation, and utilities. Key classes:
+  - `UprootMultiFileDataset` — base iterable dataset; DDP- and worker-aware file sharding, reservoir-sampling shuffle.
+  - `MultiHitDatasetBase` — adds nested per-PMT hit loading + voxelized track truth. Abstract `_make_pmt_inputs()` hook.
+  - `MultiHitDatasetExpanded` / `MultiHitDatasetUnique` — expand-per-hit and unique-PMT subclasses of the above.
+  - `MultiHitVertexDataset` — flat hit arrays (`hit_times`, `hit_ids`) + raw vertex truth from ROOT `vertices` branch.
+  - `TrackStepDataset` — flat per-PMT hit loading (same as `MultiHitDatasetBase`) + RDP-compressed track step midpoints as targets.
+  - `MultiHitVarlenCollate` — collate function converting padded per-event hits to varlen format (`cu_seqlens`, `max_seqlen`) for flash-attention kernels.
+  - `rdp_compress_track(points, epsilon_xyz, epsilon_t)` — RDP simplification for a single (N,4) [x,y,z,t] track polyline.
 - **`cuts.py`**, **`filter_pmts.py`**, **`pmt_info.py`** — Event selection, PMT quality filtering, and detector geometry.
+
+### Track step structure (ROOT MC data)
+
+In the ROOT trees produced for this project, `tracks["steps"]["position"]` stores the **END position** of each Geant4 step. The **first step is always zero-length** (step 0 = particle start, zero energy deposited). Step i represents the segment from `position[i-1]` to `position[i]` with energy `deposited_energy[i]`.
+
+Midpoints of real steps: `0.5 * (pos[:-1] + pos[1:])`, energies: `e[1:]`.
+
+### Data flow: dataset → model
+
+```
+dataset yields  (inputs, truth)
+  inputs: {"pmt_ids": (L,), "hit_times": (L,)}   — padded to max_context_len
+  truth:  {"position": (V,3), "time": (V,), "energy": (V,), "exists": (V,), ...}
+                                                  — padded to max_n_vertices
+
+MultiHitVarlenCollate converts a batch into:
+  inputs: {"pmt_ids": (total_hits,), "hit_times": (total_hits,),
+           "cu_seqlens": int32 (B+1,), "max_seqlen": int}
+  truth:  stacked normally with batch dim
+
+model(**inputs) →
+  {"exists_logit": (B,V), "position": (B,V,3), "time": (B,V), "energy": (B,V), "log_sigma2": {...}}
+```
 
 ### Metrics (`deepsno/metrics/`)
 
