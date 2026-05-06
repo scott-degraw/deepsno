@@ -1,6 +1,5 @@
 from contextlib import nullcontext
 
-import numpy as np
 import torch
 import torch._ops
 from torch import nn
@@ -254,10 +253,6 @@ class ObjectDecoderVarlen(nn.Module):
         time_scale: float = 1.0,
         energy_scale: float = 1.0,
         energy_shift: float = 0.0,
-        time_weight: float = 1.0,
-        position_weight: float = 1.0,
-        class_weight: float = 1.0,
-        dynamic_task_weighting: bool = False,
     ):
         """
         Args:
@@ -271,9 +266,6 @@ class ObjectDecoderVarlen(nn.Module):
             position_shift / position_scale: Output (un)normalisation for position.
             time_shift / time_scale: Output (un)normalisation for time.
             energy_shift / energy_scale: Output (un)normalisation for energy.
-            time_weight / position_weight / class_weight: Initial task-loss
-                weights, converted to log-sigma² parameters.
-            dynamic_task_weighting: If ``True`` sigma² are learnable parameters.
         """
         super().__init__()
         self.n_queries = n_queries
@@ -290,14 +282,6 @@ class ObjectDecoderVarlen(nn.Module):
         self.time_scale = time_scale
         self.energy_shift = energy_shift
         self.energy_scale = energy_scale
-
-        def _w2s(w):
-            return -np.log(w)
-
-        grad = dynamic_task_weighting
-        self.log_pos_sigma2 = nn.Parameter(torch.tensor([_w2s(position_weight)]), requires_grad=grad)
-        self.log_time_sigma2 = nn.Parameter(torch.tensor([_w2s(time_weight)]), requires_grad=grad)
-        self.log_class_sigma2 = nn.Parameter(torch.tensor([_w2s(class_weight)]), requires_grad=grad)
 
     def output_normalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x["position"] = (x["position"] - self.position_shift) / self.position_scale
@@ -534,11 +518,4 @@ class MultiHit(nn.Module):
         if self.decoder.output_unnorm:
             output = self.decoder.output_unnormalize(output)
 
-        return {
-            **output,
-            "log_sigma2": {
-                "position": self.decoder.log_pos_sigma2,
-                "time": self.decoder.log_time_sigma2,
-                "exists": self.decoder.log_class_sigma2,
-            },
-        }
+        return output
