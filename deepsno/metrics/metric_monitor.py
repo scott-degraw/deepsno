@@ -50,17 +50,6 @@ class MonitorCollection(MetricMonitor):
             monitor.compute(global_step)
 
 
-class TaskWeightMonitor(MetricMonitor):
-    def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
-        self.log_sigma2 = pytree.tree_map(lambda x: x.detach().cpu().item(), predict["log_sigma2"])
-
-    def reset(self) -> None:
-        self.log_sigma2 = {}
-
-    def compute(self, global_step: int) -> None:
-        weights = {f"{self.name_prefix}/{key}": np.exp(-value) for key, value in self.log_sigma2.items()}
-        self.run.log(weights, step=global_step)
-
 
 class MultiLossMonitor(MetricMonitor):
     def __init__(
