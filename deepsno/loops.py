@@ -149,7 +149,9 @@ def validate(
     metric.reset()
 
     is_main = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
-    for i, (inputs, truth) in enumerate(tqdm.tqdm(dataloader, total=num_steps, desc="Val", disable=not is_main, **TQDM_KWARGS)):
+    for i, (inputs, truth) in enumerate(
+        tqdm.tqdm(dataloader, total=num_steps, desc="Val", disable=not is_main, **TQDM_KWARGS)
+    ):
         if num_steps is not None and i >= num_steps:
             break
         inputs = to_device(inputs, device)
@@ -230,12 +232,13 @@ def train(
         predict = model(**inputs)
         loss = loss_fn(predict, truth)
 
-        if not torch.isfinite(loss):
-            raise ValueError("Training loss is not finite")
-
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
         optimizer.step()
+
+        if not torch.isfinite(loss):
+            raise ValueError("Training loss is not finite")
+
 
         if scheduler is not None:
             scheduler.step()
