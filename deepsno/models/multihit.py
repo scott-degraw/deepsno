@@ -401,8 +401,8 @@ class MultiHitPMTEncoderBase(nn.Module):
             ``(total_hits, model_dim)`` packed data.
         """
         x = self._embed_hits(hits.data, hit_times)
-        # x = self.encoder(hits._replace(data=x)).data
-        return hits._replace(data=x)
+        x = self.encoder(hits._replace(data=x))
+        return x
 
 
 class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
