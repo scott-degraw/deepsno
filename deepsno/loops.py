@@ -1,3 +1,4 @@
+import gc
 import math
 import time
 from pathlib import Path
@@ -149,6 +150,8 @@ def validate(
     metric.reset()
 
     is_main = not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+    rolling_loss = torch.tensor(0.0, device=device, dtype=torch.float64)
+    rolling_steps = 0
     for i, (inputs, truth) in enumerate(
         tqdm.tqdm(dataloader, total=num_steps, desc="Val", disable=not is_main, **TQDM_KWARGS)
     ):
@@ -166,17 +169,18 @@ def validate(
         if metric_monitor is not None:
             metric_monitor.update(predict=predict, truth=truth)
 
+        rolling_loss += metric.metric_fn(predict, truth)
+        rolling_steps += 1
+
     if metric_monitor is not None:
         metric_monitor.compute(global_step)
 
-    val = metric.compute()
+    rolling_loss = rolling_loss / rolling_steps
 
     if dist.is_available() and dist.is_initialized():
-        val_tensor = torch.tensor(val, dtype=torch.float64, device=device)
-        dist.all_reduce(val_tensor, op=dist.ReduceOp.AVG)
-        val = val_tensor.item()
+        dist.all_reduce(rolling_loss, op=dist.ReduceOp.AVG)
 
-    return val
+    return rolling_loss.item()
 
 
 def train(
@@ -203,7 +207,6 @@ def train(
     train_norm: bool = True,
     val_norm: bool = True,
 ):
-    import gc
 
     is_main = rank == 0
     device = torch.device(device)
@@ -217,8 +220,9 @@ def train(
     sub_epoch = initial_sub_epoch
     step_num = initial_step
     rolling_loss = 0.0
+    rolling_steps_in_window = 0
 
-    def train_step(inputs, truth) -> tuple[dict, dict, dict, torch.Tensor]:
+    def train_step(inputs, truth) -> float:
         model.train()
         _unwrap(model).output_unnorm = not train_norm
         optimizer.zero_grad()
@@ -239,11 +243,14 @@ def train(
         if not torch.isfinite(loss):
             raise ValueError("Training loss is not finite")
 
-
         if scheduler is not None:
             scheduler.step()
 
-        return inputs, truth, predict, loss
+        loss = loss.clone().detach()
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(loss, op=dist.ReduceOp.AVG)
+
+        return loss.item()
 
     def run_epoch_validation() -> float:
         val_loss = validate(
@@ -284,16 +291,18 @@ def train(
                 epoch_step += 1
                 log_this_step = step_num % log_interval == 0
 
-                inputs, truth, predict, loss = train_step(inputs, truth)
-                rolling_loss += loss.item()
+                rolling_loss += train_step(inputs, truth)
+                rolling_steps_in_window += 1
                 progress.update()
 
-                if log_this_step and is_main:
-                    log_dict = {"Loss/train": rolling_loss / log_interval}
+                if log_this_step:
+                    if is_main:
+                        log_dict = {"Loss/train": rolling_loss / rolling_steps_in_window}
+                        if scheduler is not None:
+                            log_dict["learning_rate"] = scheduler.get_last_lr()[0]
+                        run.log(log_dict, step=step_num, commit=False)
                     rolling_loss = 0.0
-                    if scheduler is not None:
-                        log_dict["learning_rate"] = scheduler.get_last_lr()[0]
-                    run.log(log_dict, step=step_num, commit=False)
+                    rolling_steps_in_window = 0
 
                 if num_steps is not None and step_num >= num_steps:
                     training = False
@@ -302,7 +311,6 @@ def train(
                 if steps_per_epoch is not None and epoch_step >= steps_per_epoch:
                     break
 
-            del inputs, truth, predict, loss
             gc.collect()
             val_loss = run_epoch_validation()
             if is_main:
