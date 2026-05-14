@@ -104,15 +104,22 @@
 </head>
 <body>
   <header>
-    <h1>Multi electron scintillator imaging</h1>
+    <h1>Multi electron scintillator imaging (50 - 100 MeV)</h1>
     <p class="subtitle">Interactive 3D predicted vs. truth particle tracks</p>
     <dl class="legend">
       <span class="item"><dt>Solid lines</dt><dd>Truth tracks</dd></span>
       <span class="item"><dt>Diamond points</dt><dd>Neural network predictions</dd></span>
       <span class="item"><dt>Track / point color</dt><dd>Time</dd></span>
       <span class="item"><dt>Voxel color</dt><dd>Truth energy deposited</dd></span>
-      <span class="item"><dt>Voxel size</dt><dd>5 cm</dd></span>
+      <span class="item"><dt>Voxel size</dt><dd>1 cm</dd></span>
       <span class="item"><dt>Hover</dt><dd>Time &amp; energy deposited</dd></span>
+    </dl>
+    <dl class="legend" style="margin-top:0.35rem;">
+      <span class="item"><dt>Rotate</dt><dd>Left-click &amp; drag</dd></span>
+      <span class="item"><dt>Pan</dt><dd>Right-click &amp; drag</dd></span>
+      <span class="item"><dt>Zoom</dt><dd>Scroll wheel</dd></span>
+      <span class="item"><dt>Reset view</dt><dd>Double-click</dd></span>
+      <span class="item"><dt>Toggle trace</dt><dd>Click legend item</dd></span>
     </dl>
   </header>
   <div class="layout">
@@ -142,7 +149,7 @@
       iframes.push(iframe);
 
       const btn = document.createElement('button');
-      btn.textContent = `Event ${i}`;
+      btn.textContent = `Event ${i + 1}`;
       btn.addEventListener('click', () => select(i, btn));
       nav.appendChild(btn);
     }
