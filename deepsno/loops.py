@@ -282,11 +282,30 @@ def train(
         }
         torch.save(state_dict, checkpoint_dir / f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt")
 
+    def global_done(local_done: bool) -> bool:
+        if dist.is_available() and dist.is_initialized():
+            # Gather local_done from all processes
+            tensor_done = torch.tensor(local_done, dtype=torch.uint8, device=device)
+            dist.all_reduce(tensor_done, op=dist.ReduceOp.MAX)
+            # Return True if all processes are done
+            return bool(tensor_done.item())
+        return local_done
+
     training = True
     with tqdm.tqdm(total=num_steps, desc="Train", disable=not is_main, **TQDM_KWARGS) as progress:
         while training:
             epoch_step = 0
-            for inputs, truth in train_dataloader:
+            dl_iter = iter(train_dataloader)
+            local_done = False
+            while True:
+                try:
+                    inputs, truth = next(dl_iter)
+                except StopIteration:
+                    local_done = True
+
+                if global_done(local_done):
+                    break
+
                 step_num += 1
                 epoch_step += 1
                 log_this_step = step_num % log_interval == 0
