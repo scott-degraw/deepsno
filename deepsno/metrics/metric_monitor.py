@@ -57,10 +57,14 @@ class MultiLossMonitor(MetricMonitor):
         run: wandb.Run,
         multi_loss_fn: nn.Module,
         name_prefix: str = "multi_loss",
+        scales: dict[str, float] | None = None,
+        sqrt_scaled: bool = True,
     ):
         self.run = run
         self.name_prefix = name_prefix
         self.multi_loss_fn = multi_loss_fn
+        self.scales = scales
+        self.sqrt_scaled = sqrt_scaled
         self.reset()
 
     def update(self, predict: dict[Hashable : torch.Tensor], truth: dict[Hashable : torch.Tensor]) -> None:
@@ -75,6 +79,12 @@ class MultiLossMonitor(MetricMonitor):
     def compute(self, global_step: int) -> None:
         mean_losses = {key: np.mean(values) for key, values in self.losses.items()}
         self.run.log({f"{self.name_prefix}/{key}": value for key, value in mean_losses.items()}, step=global_step)
+
+        if self.scales:
+            scaled = {key: mean_losses[key] * scale**2 for key, scale in self.scales.items() if key in mean_losses}
+            if self.sqrt_scaled:
+                scaled = {key: value**0.5 for key, value in scaled.items()}
+            self.run.log({f"{self.name_prefix}_scaled/{key}": value for key, value in scaled.items()}, step=global_step)
 
 
 class BinaryClassMonitor(MetricMonitor):
