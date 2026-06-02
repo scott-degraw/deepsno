@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from importlib.resources import files
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -77,6 +77,62 @@ def get_git_hash(raise_exception: bool = False) -> str:
     ).stdout.strip()
 
     return git_hash
+
+
+def create_training_snapshot(label: str) -> str:
+    """Snapshot the working tree (including untracked files) as a tagged git commit.
+
+    Does not modify the working tree or permanently alter the index.  If a
+    previous snapshot exists with an identical tree, it is reused (O(1) lookup
+    via ``training/tree/<tree_sha>``).  Otherwise a new commit is created and
+    tagged with both ``training/<label>`` and ``training/tree/<tree_sha>``.
+
+    Returns the snapshot commit SHA.
+    """
+    repo_dir = Path(__file__).parent.resolve()
+
+    # Capture the current index so we can restore it afterwards.
+    orig_tree = subprocess.run(
+        ["git", "write-tree"], cwd=repo_dir, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    try:
+        # Stage *everything* (tracked modifications + untracked files).
+        subprocess.run(["git", "add", "-A"], cwd=repo_dir, check=True)
+
+        snap_tree = subprocess.run(
+            ["git", "write-tree"], cwd=repo_dir, capture_output=True, text=True, check=True
+        ).stdout.strip()
+    finally:
+        # Always restore the index to its original state.
+        subprocess.run(["git", "read-tree", orig_tree], cwd=repo_dir, check=True)
+
+    # O(1) dedup: if a snapshot with this exact tree already exists, reuse it.
+    existing = subprocess.run(
+        ["git", "rev-parse", "--verify", f"refs/tags/training/tree/{snap_tree}"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    if existing.returncode == 0:
+        return existing.stdout.strip()
+
+    parent = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    snapshot_sha = subprocess.run(
+        ["git", "commit-tree", snap_tree, "-p", parent, "-m", f"training snapshot: {label}"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    subprocess.run(["git", "tag", f"training/{label}", snapshot_sha], cwd=repo_dir, check=True)
+    subprocess.run(["git", "tag", f"training/tree/{snap_tree}", snapshot_sha], cwd=repo_dir, check=True)
+
+    return snapshot_sha
 
 
 def initialize_norm_dict(model_cfg: dict):
@@ -301,9 +357,20 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
     if dist.is_available() and dist.is_initialized():
         dist.barrier()  # ensure directory exists before all ranks proceed
 
+    # Snapshot the current code state so every training run is reproducible.
+    if is_main:
+        label = datetime.now().strftime("%Y-%m-%d_%H.%M.%S")
+        snapshot_sha = create_training_snapshot(label)
+        (model_save_dir / "snapshot.txt").write_text(f"{snapshot_sha}\n")
+        print(f"Code snapshot: {snapshot_sha}")
+    else:
+        snapshot_sha = None
+
     # Instantiate the model
     initialize_norm_dict(cfg["model"])
     save_cfg: dict = cfg
+    if snapshot_sha is not None:
+        save_cfg["git_hash"] = snapshot_sha
     cfg = parser.instantiate_classes(cfg)
     model: nn.Module = cfg["model"]
 
@@ -444,8 +511,6 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
         mode=mode,
     ) as run:
         if is_main:
-            package_root = Path(files("deepsno"))
-            run.log_code(root=package_root, include_fn=lambda path: path.endswith(".py"))
             print(f"Saving model config and checkpoints to {model_save_dir.resolve()}")
             print(f"Number of trainable parameters: {num_params:,}")
 
