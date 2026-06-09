@@ -4,13 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Does
 
-DeepSno is a deep learning framework for the SNO+ particle physics detector. It provides neural network models, dataloaders, and training infrastructure to reconstruct particle interaction properties (position, time) from photomultiplier tube (PMT) detector data stored in ROOT files.
+DeepSNO is a deep learning framework for the SNO+ particle physics detector. It provides neural network models, dataloaders, and training infrastructure to reconstruct particle interaction properties (position, time) from photomultiplier tube (PMT) detector data stored in ROOT files.
+
+## Dependencies
+
+uv is used for all dependencies. It is preferred to always run with `uv run`
 
 ## Commands
 
 ```bash
 # Install (requires Python 3.13)
-pip install -e .
+uv sync
 
 # Lint / format
 ruff check deepsno/
