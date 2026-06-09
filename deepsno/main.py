@@ -13,6 +13,7 @@ from typing import Iterable
 import torch
 import torch.distributed as dist
 import wandb
+import yaml
 from jsonargparse import ArgumentParser, set_loader
 from jsonargparse import typing as ptyping
 from torch import nn, optim
@@ -368,11 +369,12 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
 
     # Instantiate the model
     initialize_norm_dict(cfg["model"])
-    save_cfg: dict = cfg
+
+    save_cfg: dict = copy.deepcopy(cfg)
     if snapshot_sha is not None:
         save_cfg["git_hash"] = snapshot_sha
-    cfg = parser.instantiate_classes(cfg)
-    model: nn.Module = cfg["model"]
+
+    model: nn.Module = instantiate(cfg["model"])
 
     train_cfg = cfg["train"]
 
@@ -389,22 +391,26 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
                 raise ValueError(f"{key} num_workers {nw} is not divisible by world_size {world_size}")
             dl_cfg["init_args"]["num_workers"] = nw // world_size
 
-    train_cfg["train_dataloader"] = instantiate(train_cfg["train_dataloader"])
-    train_cfg["val_dataloader"] = instantiate(train_cfg["val_dataloader"])
+    train_dataloader = instantiate(train_cfg["train_dataloader"])
+    val_dataloader = instantiate(train_cfg["val_dataloader"])
 
     # Optimizer
     check_instantiate_keys(train_cfg["optimizer"], "optimizer")
     optimizer_class = get_class(train_cfg["optimizer"]["class_path"])
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    loss_fn = instantiate(train_cfg["loss_fn"])
     try:
-        next(iter(train_cfg["loss_fn"].parameters()))
+        next(iter(loss_fn.parameters()))
         param_groups = [
             {"params": model.parameters()},
             {"params": train_cfg["loss_fn"].parameters()},
         ]
     except StopIteration:
         param_groups = model.parameters()
+
+    val_metric = instantiate(train_cfg["val_metric"])
 
     optimizer: optim.Optimizer = optimizer_class(param_groups, **train_cfg["optimizer"]["init_args"])
 
@@ -456,7 +462,8 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
 
     # Save the config (rank 0 only)
     if is_main:
-        parser.save(save_cfg, model_save_dir / "config.yaml", overwrite=True)
+        with open(model_save_dir / "config.yaml", "w") as f:
+            yaml.dump(save_cfg, f, sort_keys=False)
 
     if dry_run in ("only", "before"):
         dry_run_dir = Path(tempfile.gettempdir()) / "dry_run"
@@ -474,15 +481,15 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
                 log_interval=1,
                 model=model,
                 device=device,
-                train_dataloader=train_cfg["train_dataloader"],
-                val_dataloader=train_cfg["val_dataloader"],
+                train_dataloader=train_dataloader,
+                val_dataloader=val_dataloader,
                 num_steps=3,
                 steps_per_epoch=None,
                 val_num_steps=3,
                 optimizer=optimizer,
-                loss_fn=train_cfg["loss_fn"],
+                loss_fn=loss_fn,
                 scheduler=scheduler,
-                val_metric=train_cfg["val_metric"],
+                val_metric=val_metric,
                 val_metric_is_inverted=train_cfg["val_metric_is_inverted"],
                 max_grad_norm=train_cfg["max_grad_norm"],
                 rank=rank,
@@ -522,14 +529,14 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             log_interval=train_cfg["log_interval"],
             model=model,
             device=device,
-            train_dataloader=train_cfg["train_dataloader"],
-            val_dataloader=train_cfg["val_dataloader"],
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
             num_steps=train_cfg["num_steps"],
             steps_per_epoch=train_cfg.get("steps_per_epoch"),
             optimizer=optimizer,
-            loss_fn=train_cfg["loss_fn"],
+            loss_fn=loss_fn,
             scheduler=scheduler,
-            val_metric=train_cfg["val_metric"],
+            val_metric=val_metric,
             val_metric_is_inverted=train_cfg["val_metric_is_inverted"],
             val_num_steps=train_cfg.get("val_num_steps"),
             max_grad_norm=train_cfg["max_grad_norm"],
