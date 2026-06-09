@@ -4,6 +4,7 @@ from typing import Hashable, Iterable
 import hist as h
 import matplotlib.pyplot as plt
 import numpy as np
+import plotly.graph_objects as go
 import torch
 import torchmetrics as tm
 import wandb
@@ -12,6 +13,7 @@ from torch.utils import _pytree as pytree
 from torch.utils.tensorboard import SummaryWriter
 
 from deepsno.metrics.eval import fwhm
+from deepsno.viz import COLORSCALE, time_colorscale, voxel_mesh
 
 
 class MetricMonitor(ABC):
@@ -259,6 +261,150 @@ class EffectiveCMonitor(MetricMonitor):
     def compute(self, global_step: int) -> None:
         self.writer.add_scalar(f"{self.name_prefix}/c_av", self.c_av, global_step=global_step)
         self.writer.add_scalar(f"{self.name_prefix}/c_water", self.c_water, global_step=global_step)
+
+
+class EventDisplayMonitor(MetricMonitor):
+    def __init__(
+        self,
+        run: wandb.Run,
+        n_events: int = 4,
+        energy_threshold: float = 0.0,
+        voxel_size: float = 10.0,
+        position_scale: float = 1.0,
+        position_shift: float = 0.0,
+        time_scale: float = 1.0,
+        time_shift: float = 0.0,
+        energy_scale: float = 1.0,
+        energy_shift: float = 0.0,
+        name_prefix: str = "event_display",
+    ):
+        self.run = run
+        self.n_events = n_events
+        self.energy_threshold = energy_threshold
+        self.voxel_size = voxel_size
+        self.position_scale = position_scale
+        self.position_shift = position_shift
+        self.time_scale = time_scale
+        self.time_shift = time_shift
+        self.energy_scale = energy_scale
+        self.energy_shift = energy_shift
+        self.name_prefix = name_prefix
+        self.reset()
+
+    def reset(self) -> None:
+        self._predict_events: list[dict] = []
+        self._truth_events: list[dict] = []
+
+    def update(self, predict: dict[Hashable, torch.Tensor], truth: dict[Hashable, torch.Tensor]) -> None:
+        if len(self._predict_events) >= self.n_events:
+            return
+
+        needed = self.n_events - len(self._predict_events)
+        batch_size = predict["position"].shape[0]
+        take = min(needed, batch_size)
+
+        def _np(t: torch.Tensor) -> np.ndarray:
+            return t.detach().cpu().float().numpy()
+
+        for i in range(take):
+            self._predict_events.append({
+                "position": _np(predict["position"][i]),
+                "time": _np(predict["time"][i]),
+                "energy": _np(predict["energy"][i]),
+                "exists_logit": _np(predict["exists_logit"][i]),
+            })
+            self._truth_events.append({
+                "position": _np(truth["position"][i]),
+                "time": _np(truth["time"][i]),
+                "energy": _np(truth["energy"][i]),
+                "exists": _np(truth["exists"][i]).astype(bool),
+            })
+
+    def _unnorm(self, pos, t, e):
+        pos = pos * self.position_scale + self.position_shift
+        t = t * self.time_scale + self.time_shift
+        e = e * self.energy_scale + self.energy_shift
+        return pos, t, e
+
+    def _make_figure(self, pred: dict, truth: dict, event_idx: int) -> go.Figure:
+        normed_threshold = self.energy_threshold / self.energy_scale
+        pred_mask = pred["energy"] > normed_threshold
+        truth_mask = truth["exists"] & (truth["energy"] > normed_threshold)
+
+        pred_pos, pred_t, pred_e = self._unnorm(
+            pred["position"][pred_mask], pred["time"][pred_mask], pred["energy"][pred_mask]
+        )
+        truth_pos, truth_t, truth_e = self._unnorm(
+            truth["position"][truth_mask], truth["time"][truth_mask], truth["energy"][truth_mask]
+        )
+
+        all_times = np.concatenate([pred_t, truth_t]) if (len(pred_t) and len(truth_t)) else np.array([0.0, 1.0])
+        t_min, t_max = float(all_times.min()), float(all_times.max())
+        e_max = float(truth_e.max()) if len(truth_e) else 1.0
+
+        traces = []
+
+        if len(pred_pos):
+            traces.append(go.Scatter3d(
+                x=pred_pos[:, 0], y=pred_pos[:, 1], z=pred_pos[:, 2],
+                mode="markers",
+                name="Predicted",
+                marker=dict(
+                    size=4,
+                    color=time_colorscale(pred_t, t_min, t_max),
+                    symbol="diamond",
+                ),
+                customdata=np.stack([pred_t, pred_e], axis=1),
+                hovertemplate="t=%{customdata[0]:.2f} ns  E=%{customdata[1]:.0f}<extra>Predicted</extra>",
+            ))
+
+        if len(truth_pos):
+            traces.append(voxel_mesh(
+                centers=truth_pos,
+                energies=truth_e,
+                voxel_size=self.voxel_size,
+                e_max=e_max,
+                colorbar_title="Truth energy (photons)",
+                colorbar_x=-0.15,
+                opacity=0.4,
+                name="Truth voxels",
+            ))
+
+        # Ghost trace to render the time colorbar
+        traces.append(go.Scatter3d(
+            x=[None], y=[None], z=[None],
+            mode="markers",
+            marker=dict(
+                colorscale=COLORSCALE,
+                cmin=t_min,
+                cmax=t_max,
+                showscale=True,
+                colorbar=dict(title="Time (ns)", x=-0.3),
+            ),
+            hoverinfo="none",
+            showlegend=False,
+        ))
+
+        fig = go.Figure(data=traces)
+        fig.update_layout(
+            title=f"Event {event_idx + 1}  |  pred: {len(pred_pos)} pts  |  truth: {len(truth_pos)} voxels",
+            scene=dict(
+                xaxis_title="X (mm)",
+                yaxis_title="Y (mm)",
+                zaxis_title="Z (mm)",
+                aspectmode="data",
+            ),
+            height=600,
+        )
+        return fig
+
+    def compute(self, global_step: int) -> None:
+        figures = {
+            f"{self.name_prefix}/event_{i}": wandb.Plotly(self._make_figure(pred, truth, i))
+            for i, (pred, truth) in enumerate(zip(self._predict_events, self._truth_events))
+        }
+        if figures:
+            self.run.log(figures, step=global_step)
 
 
 class SinkhornConvergenceMonitor(MetricMonitor):
