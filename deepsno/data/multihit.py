@@ -1,6 +1,6 @@
 import glob
+from abc import ABC, abstractmethod
 from typing import Iterable
-from warnings import warn
 
 import awkward as ak
 import fsspec
@@ -189,15 +189,10 @@ def pad_array(
     if pad_width < 0:
         sampled_indices = generator.choice(array.shape[axis], size=pad_length, replace=False)
         return np.take(array, sampled_indices, axis=axis)
-    else:
-        indexer = array.ndim * [slice(None)]
-        indexer[axis] = slice(None, array.shape[axis])
-        padded_shape = list(array.shape)
-        padded_shape[axis] = pad_length
-        padded_array = np.zeros_like(array, shape=padded_shape)
-        padded_array[tuple(indexer)] = array
 
-        return padded_array
+    pad_widths = [(0, 0)] * array.ndim
+    pad_widths[axis] = (0, pad_width)
+    return np.pad(array, pad_widths)
 
 
 @nb.njit
@@ -307,7 +302,7 @@ def voxelise_tracks(tracks: ak.Array, edges: list[np.ndarray], active: np.ndarra
         times = track["steps"]["time"].to_numpy()
 
         positions = np.concat([positions, times[:, None]], axis=1)
-        active = voxelise_track(positions, edges, active)
+        active = voxelise_track(positions, edges, active=active)
 
     return active
 
@@ -333,322 +328,727 @@ def voxelise_points(points: np.ndarray, edges: list[np.ndarray], *aux_values) ->
     vertex_positions = np.stack([centers[i][indices[:, i]] for i in range(len(edges))], axis=1)
 
     if aux_values:
-        reduced_aux_values = []
-        for value in aux_values:
-            value = value[good_indices]
+        sort_i = np.argsort(uniq_2_non_uniq_indices)
+        sorted_inverse = uniq_2_non_uniq_indices[sort_i]
+        _, uniq_label_start_indices = np.unique(sorted_inverse, return_index=True)
 
-            sort_i = np.argsort(uniq_2_non_uniq_indices)
-            uniq_2_non_uniq_indices = uniq_2_non_uniq_indices[sort_i]
-            value = value[sort_i]
-
-            # For each label on non unique vector find the number of these elements and their starting point
-            _, uniq_label_start_indices = np.unique(uniq_2_non_uniq_indices, return_index=True)
-            value = np.add.reduceat(value, uniq_label_start_indices)
-
-            reduced_aux_values.append(value)
+        reduced_aux_values = [
+            np.add.reduceat(value[good_indices][sort_i], uniq_label_start_indices) for value in aux_values
+        ]
 
         return vertex_positions, *reduced_aux_values
     return vertex_positions
 
 
-class MultiHitDatasetBase(UprootMultiFileDataset):
-    """
-    Shared base for MultiHit datasets.
+@nb.njit(cache=True)
+def _rdp_compress_tracks_nb(
+    points: np.ndarray,
+    energies: np.ndarray,
+    init_lo: np.ndarray,
+    init_hi: np.ndarray,
+    epsilon_xyz: float,
+    epsilon_t: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Batch RDP over concatenated tracks.
 
-    Handles all data loading, hit filtering, log-time quantisation,
-    truncation/padding, and truth-building.  Subclasses implement
-    :meth:`_make_pmt_inputs` to choose how PMT data are represented.
+    init_lo/init_hi are one entry per track; the algorithm never crosses those boundaries.
+    Energy from dropped points is forward-aggregated within each track only.
+    """
+    n = len(points)
+    n_tracks = len(init_lo)
+    inv_xyz = 1.0 / epsilon_xyz
+    inv_t = 1.0 / epsilon_t
+
+    # Scale into normalised space so the distance threshold is uniformly 1.0
+    scaled = np.empty((n, 4), dtype=np.float32)
+    for i in range(n):
+        scaled[i, 0] = points[i, 0] * inv_xyz
+        scaled[i, 1] = points[i, 1] * inv_xyz
+        scaled[i, 2] = points[i, 2] * inv_xyz
+        scaled[i, 3] = points[i, 3] * inv_t
+
+    # Mark all track endpoints as kept
+    mask = np.zeros(n, dtype=np.bool_)
+    for i in range(n_tracks):
+        mask[init_lo[i]] = True
+        mask[init_hi[i]] = True
+
+    # Seed the stack with one (lo, hi) interval per track
+    stack_cap = n + n_tracks
+    stack_lo = np.empty(stack_cap, dtype=np.int64)
+    stack_hi = np.empty(stack_cap, dtype=np.int64)
+    for i in range(n_tracks):
+        stack_lo[i] = init_lo[i]
+        stack_hi[i] = init_hi[i]
+    top = n_tracks
+
+    while top > 0:
+        top -= 1
+        lo = stack_lo[top]
+        hi = stack_hi[top]
+        if hi - lo <= 1:
+            continue
+
+        s0 = scaled[hi, 0] - scaled[lo, 0]
+        s1 = scaled[hi, 1] - scaled[lo, 1]
+        s2 = scaled[hi, 2] - scaled[lo, 2]
+        s3 = scaled[hi, 3] - scaled[lo, 3]
+        seg_len_sq = s0 * s0 + s1 * s1 + s2 * s2 + s3 * s3
+        max_dist = -1.0
+        best = lo + 1
+        for i in range(lo + 1, hi):
+            d0 = scaled[i, 0] - scaled[lo, 0]
+            d1 = scaled[i, 1] - scaled[lo, 1]
+            d2 = scaled[i, 2] - scaled[lo, 2]
+            d3 = scaled[i, 3] - scaled[lo, 3]
+            if seg_len_sq < 1e-20:
+                dist = (d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3) ** 0.5
+            else:
+                tp = (d0 * s0 + d1 * s1 + d2 * s2 + d3 * s3) / seg_len_sq
+                if tp < 0.0:
+                    tp = 0.0
+                elif tp > 1.0:
+                    tp = 1.0
+                r0 = d0 - tp * s0
+                r1 = d1 - tp * s1
+                r2 = d2 - tp * s2
+                r3 = d3 - tp * s3
+                dist = (r0 * r0 + r1 * r1 + r2 * r2 + r3 * r3) ** 0.5
+            if dist > max_dist:
+                max_dist = dist
+                best = i
+
+        if max_dist >= 1.0:
+            mask[best] = True
+            stack_lo[top] = lo
+            stack_hi[top] = best
+            top += 1
+            stack_lo[top] = best
+            stack_hi[top] = hi
+            top += 1
+
+    # Forward-aggregate dropped energies onto the next kept point within each track.
+    # Track boundaries are always masked True, so aggregation never crosses tracks.
+    agg_e = energies.copy()
+    for k in range(n - 1):
+        if not mask[k]:
+            nxt = k + 1
+            while nxt < n - 1 and not mask[nxt]:
+                nxt += 1
+            agg_e[nxt] += energies[k]
+
+    # Gather kept points (boolean fancy-indexing not supported in njit)
+    m = 0
+    for i in range(n):
+        if mask[i]:
+            m += 1
+    kept_points = np.empty((m, 4), dtype=points.dtype)
+    kept_energies = np.empty(m, dtype=energies.dtype)
+    j = 0
+    for i in range(n):
+        if mask[i]:
+            kept_points[j, 0] = points[i, 0]
+            kept_points[j, 1] = points[i, 1]
+            kept_points[j, 2] = points[i, 2]
+            kept_points[j, 3] = points[i, 3]
+            kept_energies[j] = agg_e[i]
+            j += 1
+
+    return kept_points, kept_energies
+
+
+def rdp_compress_track(
+    points: np.ndarray,
+    energies: np.ndarray,
+    epsilon_xyz: float,
+    epsilon_t: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """RDP simplification for a single (N, 4) [x,y,z,t] track with energy aggregation.
+
+    Normalises coordinates by (epsilon_xyz, epsilon_t) so the perpendicular-distance
+    threshold of 1 applies uniformly to both spaces.  Energies of removed points are
+    forward-accumulated onto the next kept point in the sequence.
+
+    Args:
+        points: (N, 4) array of [x, y, z, t] midpoints.
+        energies: (N,) deposited energies corresponding to each midpoint.
+        epsilon_xyz: Spatial simplification tolerance (same units as points[:, :3]).
+        epsilon_t: Temporal simplification tolerance (same units as points[:, 3]).
+
+    Returns:
+        kept_points: (M, 4) simplified polyline, M <= N.
+        kept_energies: (M,) aggregated energies for the kept points.
+    """
+    n = len(points)
+    if n < 3:
+        return points.copy(), energies.copy()
+    pts = np.asarray(points, dtype=np.float32)
+    e = np.asarray(energies, dtype=np.float32)
+    init_lo = np.array([0], dtype=np.int64)
+    init_hi = np.array([n - 1], dtype=np.int64)
+    return _rdp_compress_tracks_nb(
+        points=pts,
+        energies=e,
+        init_lo=init_lo,
+        init_hi=init_hi,
+        epsilon_xyz=float(epsilon_xyz),
+        epsilon_t=float(epsilon_t),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hit input makers
+# ---------------------------------------------------------------------------
+
+
+class HitInputMaker(ABC):
+    """Produces the model input dict from a single ROOT entry."""
+
+    @property
+    @abstractmethod
+    def filter_names(self) -> set[str]:
+        """Uproot branch names / patterns this maker needs."""
+        ...
+
+    @abstractmethod
+    def make_inputs(
+        self,
+        entry,
+        generator: np.random.Generator,
+        max_context_len: int,
+    ) -> tuple[dict[str, np.ndarray], dict]:
+        """Return ``(inputs, context)``.
+
+        ``inputs`` maps string keys to numpy arrays that will be converted to
+        tensors and yielded by the dataset.  ``context`` is an optional dict of
+        shared values (e.g. time jitter) forwarded to the vertex maker.
+        """
+        ...
+
+
+class NestedHitInputMaker(HitInputMaker):
+    """Reads nested per-PMT ``hit_times`` arrays (the standard multihit schema).
+
+    Subclasses can override ``_make_pmt_inputs`` to choose how the filtered,
+    sorted arrays are represented (expanded vs. unique-PMT).
+    """
+
+    def __init__(self, min_hit_time: float = 0.0, max_hit_time: float = 300.0):
+        self.min_hit_time = min_hit_time
+        self.max_hit_time = max_hit_time
+
+    @property
+    def filter_names(self) -> set[str]:
+        return {"hit_times"}
+
+    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
+        return {"pmt_ids": pmt_ids, "hit_times": hit_times}
+
+    def make_inputs(
+        self,
+        entry,
+        generator: np.random.Generator,
+        max_context_len: int,
+    ) -> tuple[dict[str, np.ndarray], dict]:
+        hits_per_pmt = ak.num(entry["hit_times"]).to_numpy()
+        pmt_ids = np.arange(len(entry["hit_times"]))
+        pmt_ids = np.repeat(pmt_ids, hits_per_pmt)
+        hit_times = ak.flatten(entry["hit_times"]).to_numpy().astype(np.float32)
+
+        selector = (hit_times > self.min_hit_time) & (hit_times < self.max_hit_time)
+        pmt_ids = pmt_ids[selector]
+        hit_times = hit_times[selector]
+
+        if np.any(~np.isfinite(np.log(hit_times))):
+            raise ValueError("Bad log hit times")
+
+        if len(pmt_ids) > max_context_len:
+            idx = generator.choice(len(pmt_ids), size=max_context_len, replace=False)
+            pmt_ids = pmt_ids[idx]
+            hit_times = hit_times[idx]
+
+        sort_idx = np.argsort(pmt_ids)
+        pmt_ids = pmt_ids[sort_idx]
+        hit_times = hit_times[sort_idx]
+
+        return self._make_pmt_inputs(pmt_ids, hit_times), {}
+
+
+class ExpandedHitInputMaker(NestedHitInputMaker):
+    """One entry per hit: outputs ``pmt_ids`` and ``hit_times`` of length ``max_context_len``."""
+
+    pass
+
+
+class UniqueHitInputMaker(NestedHitInputMaker):
+    """Per-PMT aggregation: flat hit times sorted by PMT id + a fixed-size count array.
+
+    Outputs:
+        hit_times:   ``(n_hits,)`` — unpadded, sorted by pmt_id.
+        pmt_lengths: ``(n_pmts,)`` — hit count per PMT slot (0 for inactive PMTs).
+
+    Designed for use with :class:`MultiHitUniqueCollate` which concatenates
+    ``hit_times`` across the batch and stacks ``pmt_lengths`` to ``(B, n_pmts)``.
+    The encoder uses ``torch.segment_reduce`` to aggregate hits per PMT, producing
+    a fixed-size ``(B, n_pmts, dim)`` representation.
+    """
+
+    def __init__(self, n_pmts: int, **kwargs):
+        super().__init__(**kwargs)
+        self.n_pmts = n_pmts
+
+    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
+        pmt_lengths = np.bincount(pmt_ids, minlength=self.n_pmts).astype(np.int64)
+        return {"hit_times": hit_times, "pmt_lengths": pmt_lengths}
+
+
+class FlatHitInputMaker(HitInputMaker):
+    """Reads flat per-hit ``hit_times`` / ``hit_ids`` arrays (the vertex dataset schema).
+
+    Puts the sampled ``jitter`` value into the context dict so that
+    :class:`RawVertexMaker` can apply the same shift to vertex times.
     """
 
     def __init__(
         self,
-        waveform_range: tuple[float, float],
-        n_waveform_bins: int,
-        n_pmts: int,
+        min_hit_time: float = 0.0,
+        max_hit_time: float = 300.0,
+        time_jitter_min: float = 0.0,
+        time_jitter_max: float = 0.0,
+    ):
+        self.min_hit_time = min_hit_time
+        self.max_hit_time = max_hit_time
+        self.time_jitter_min = time_jitter_min
+        self.time_jitter_max = time_jitter_max
+
+    @property
+    def filter_names(self) -> set[str]:
+        return {"hit_times", "hit_ids"}
+
+    def make_inputs(
+        self,
+        entry,
+        generator: np.random.Generator,
+        max_context_len: int,
+    ) -> tuple[dict[str, np.ndarray], dict]:
+        hit_times = entry["hit_times"].to_numpy()
+        pmt_ids = entry["hit_ids"].to_numpy()
+
+        selector = (hit_times > self.min_hit_time) & (hit_times < self.max_hit_time)
+        hit_times = hit_times[selector]
+        pmt_ids = pmt_ids[selector]
+
+        if self.time_jitter_min != self.time_jitter_max:
+            jitter = float(generator.uniform(self.time_jitter_min, self.time_jitter_max))
+        else:
+            jitter = 0.0
+        hit_times = hit_times + jitter
+
+        if len(pmt_ids) > max_context_len:
+            idx = generator.choice(len(pmt_ids), size=max_context_len, replace=False)
+            pmt_ids = pmt_ids[idx]
+            hit_times = hit_times[idx]
+
+        sort_idx = np.argsort(pmt_ids)
+        pmt_ids = pmt_ids[sort_idx]
+        hit_times = hit_times[sort_idx]
+
+        return {"pmt_ids": pmt_ids, "hit_times": hit_times}, {"jitter": jitter}
+
+
+# ---------------------------------------------------------------------------
+# Vertex data makers
+# ---------------------------------------------------------------------------
+
+
+class VertexDataMaker(ABC):
+    """Produces the vertex truth dict from a single ROOT entry."""
+
+    @property
+    @abstractmethod
+    def filter_names(self) -> set[str]:
+        """Uproot branch names / patterns this maker needs."""
+        ...
+
+    @abstractmethod
+    def make_truth(
+        self,
+        entry,
+        generator: np.random.Generator,
+        max_n_vertices: int,
+        context: dict,
+    ) -> dict[str, np.ndarray] | None:
+        """Return a dict of numpy arrays keyed by vertex field name, or ``None`` to skip the event.
+
+        The returned dict should contain ``position``, ``time``, ``energy``,
+        and ``exists`` as numpy arrays of length ``max_n_vertices``.  The
+        dataset adds ``mc_index``, ``npe``, and ``file_path`` separately.
+        """
+        ...
+
+
+def _pad_and_shuffle_vertices(
+    vertex_positions: np.ndarray,
+    energy: np.ndarray,
+    exists: np.ndarray,
+    max_n_vertices: int,
+    generator: np.random.Generator,
+) -> dict[str, np.ndarray]:
+    """Pad / truncate vertex arrays to ``max_n_vertices`` and randomly shuffle."""
+    pad_kwargs = dict(pad_length=max_n_vertices, axis=0, generator=generator)
+    vertices = pad_array(vertex_positions, **pad_kwargs)
+    energy = pad_array(energy, **pad_kwargs)
+    exists = pad_array(exists, **pad_kwargs)
+
+    shuffle_i = generator.permutation(max_n_vertices)
+    return {
+        "position": vertices[shuffle_i, :3],
+        "time": vertices[shuffle_i, 3],
+        "energy": energy[shuffle_i],
+        "exists": exists[shuffle_i],
+    }
+
+
+class VoxelizedTrackVertexMaker(VertexDataMaker):
+    """Builds vertex truth by voxelising Geant4 track step positions.
+
+    Track step positions are discretised onto a 4-D (x, y, z, t) grid and
+    energies accumulated per voxel.  The top ``max_n_vertices`` voxels by
+    energy are returned as the vertex set.
+    """
+
+    def __init__(
+        self,
         radius: float,
         pos_spacing: float,
         time_spacing: float,
-        max_context_len: int,
-        max_n_vertices: int,
+        time_low: float = 0.0,
+        time_high: float = 40.0,
         min_energy: float = 0.0,
-        *args,
-        **kwargs,
+        step_energy_key: str = "n_photons",
     ):
-        super().__init__(*args, **kwargs)
-        self.waveform_range = waveform_range
-        self.waveform_dt = (waveform_range[1] - waveform_range[0]) / n_waveform_bins
-        self.n_waveform_bins = n_waveform_bins
-        self.n_pmts = n_pmts
-
-        self.filter_name.update(["hit_times", "npe", "mc_index", "tracks*"])
-        self.max_context_len = max_context_len
-        self.max_n_vertices = max_n_vertices
         self.min_energy = min_energy
+        self.step_energy_key = step_energy_key
 
-        self.pos_spacing = pos_spacing
-        self.time_spacing = time_spacing
-        self.grid_spacing = np.array(
-            [self.pos_spacing, self.pos_spacing, self.pos_spacing, self.time_spacing],
-            dtype=np.float32,
+        self.edges = [np.arange(-radius, radius + pos_spacing, pos_spacing, dtype=np.float32) for _ in range(3)]
+        self.edges += [np.arange(time_low, time_high + time_spacing, time_spacing, dtype=np.float32)]
+
+    @property
+    def filter_names(self) -> set[str]:
+        return {"tracks*"}
+
+    def make_truth(
+        self,
+        entry,
+        generator: np.random.Generator,
+        max_n_vertices: int,
+        context: dict,
+    ) -> dict[str, np.ndarray] | None:
+        tracks = entry["tracks"]
+
+        vertex_positions = np.concatenate(
+            [
+                ak.flatten(tracks["steps"]["position"]).to_numpy(),
+                ak.flatten(tracks["steps"]["time"]).to_numpy()[:, None],
+            ],
+            axis=1,
         )
-        self.edges = [
-            np.arange(-radius, radius + self.pos_spacing, self.pos_spacing, dtype=np.float32) for _ in range(3)
-        ]
-        self.edges += [np.arange(0, 40 + self.time_spacing, self.time_spacing, dtype=np.float32)]
-        self.lows = np.array([e[0] for e in self.edges], dtype=np.float32)
-        self.centers = [0.5 * (e[:-1] + e[1:]) for e in self.edges]
-        self.max_edge_indices = np.array([len(e) - 1 for e in self.edges], dtype=np.int64)
 
-    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
-        """
-        Build the ``inputs`` dict from sorted, padded ``pmt_ids`` and
-        ``hit_times`` arrays (each of length ``max_context_len``).
+        _energy_key = self.step_energy_key if self.step_energy_key in tracks["steps"].fields else "deposited_energy"
+        energy = ak.flatten(tracks["steps"][_energy_key]).to_numpy().astype(np.float32)
+        vertex_positions, energy = voxelise_points(vertex_positions, self.edges, energy)
 
-        Subclasses must override this method.
-        """
-        raise NotImplementedError
+        energy_selector = energy > self.min_energy
+        vertex_positions = vertex_positions[energy_selector]
+        energy = energy[energy_selector]
 
-    def __iter__(self):
-        self.time_edges = np.linspace(2, 6, self.n_waveform_bins + 1)
+        if vertex_positions.shape[0] == 0:
+            return None
 
-        for entry, file_path in super().__iter__():
-            # --- hit extraction & filtering ---
-            hits_per_pmt = ak.num(entry["hit_times"]).to_numpy()
-            pmt_ids = np.arange(len(entry["hit_times"]))
-            pmt_ids = np.repeat(pmt_ids, hits_per_pmt)
-            hit_times = ak.flatten(entry["hit_times"]).to_numpy()
+        energy_sort_i = np.argsort(-energy)
+        energy = energy[energy_sort_i]
+        vertex_positions = vertex_positions[energy_sort_i]
+        exists = np.ones(energy.shape[0], dtype=bool)
 
-            selector = (hit_times > 0) & (hit_times < 300)
-            pmt_ids = pmt_ids[selector]
-            hit_times = hit_times[selector]
+        if len(energy) > max_n_vertices:
+            energy = energy[:max_n_vertices]
+            vertex_positions = vertex_positions[:max_n_vertices]
+            exists = exists[:max_n_vertices]
 
-            if np.any(~np.isfinite(np.log(hit_times))):
-                raise ValueError("Bad log hit times")
+        result = _pad_and_shuffle_vertices(
+            vertex_positions=vertex_positions,
+            energy=energy,
+            exists=exists,
+            max_n_vertices=max_n_vertices,
+            generator=generator,
+        )
 
-            # --- truncate to max_context_len ---
-            if len(pmt_ids) > self.max_context_len:
-                shuffle_indices = self.generator.choice(len(pmt_ids), size=self.max_context_len, replace=False)
-                pmt_ids = pmt_ids[shuffle_indices]
-                hit_times = hit_times[shuffle_indices]
+        for key, val in result.items():
+            if not np.isfinite(val).all():
+                raise ValueError(f"Non-finite vertex {key} values")
 
-            # sort by PMT id so subclasses can rely on ordering
-            sort_idx = np.argsort(pmt_ids)
-            pmt_ids = pmt_ids[sort_idx]
-            hit_times = hit_times[sort_idx]
-
-            # --- subclass-specific PMT representation ---
-            inputs = self._make_pmt_inputs(pmt_ids, hit_times)
-
-            # --- truth building ---
-            tracks = entry["tracks"][entry["tracks"]["deposited_energy"] > self.min_energy]
-            if len(tracks) == 0:
-                warn(
-                    f"No tracks with deposited energy > {self.min_energy} in event "
-                    f"{entry['mc_index'].item()} in file {file_path}"
-                )
-
-            vertex_positions = np.concatenate(
-                [
-                    ak.flatten(tracks["steps"]["position"]).to_numpy(),
-                    ak.flatten(tracks["steps"]["time"]).to_numpy()[:, None],
-                ],
-                axis=1,
-            )
-
-            energy = ak.flatten(tracks["steps"]["deposited_energy"]).to_numpy()
-            vertex_positions, energy = voxelise_points(vertex_positions, self.edges, energy)
-            energy_selector = energy > self.min_energy
-            vertex_positions = vertex_positions[energy_selector]
-            energy = energy[energy_selector]
-
-            if vertex_positions.shape[0] == 0:
-                warn(f"No vertices found in event {entry['mc_index'].item()} in file {file_path}")
-
-            energy_sort_i = np.argsort(-energy)
-            energy = energy[energy_sort_i]
-            vertex_positions = vertex_positions[energy_sort_i]
-            exists = np.ones(energy.shape[0], dtype=bool)
-
-            if len(energy_sort_i) > self.max_n_vertices:
-                energy = energy[: self.max_n_vertices]
-                vertex_positions = vertex_positions[: self.max_n_vertices]
-                exists = exists[: self.max_n_vertices]
-
-            pad_kwargs = dict(pad_length=self.max_n_vertices, axis=0, generator=self.generator)
-            exists = pad_array(exists, **pad_kwargs)
-            vertices = pad_array(vertex_positions, **pad_kwargs)
-            energy = pad_array(energy, **pad_kwargs)
-
-            vertices = {
-                "position": vertices[:, :3],
-                "time": vertices[:, 3],
-                "energy": energy,
-                "exists": exists,
-            }
-
-            for key, val in vertices.items():
-                if not np.isfinite(val).all():
-                    raise ValueError(f"Non-finite vertex {key} values")
-
-            vertex_shuffle_i = self.generator.permutation(self.max_n_vertices)
-            vertices = pytree.tree_map(lambda x: x[vertex_shuffle_i], vertices)
-            vertices = pytree.tree_map(torch.from_numpy, vertices)
-
-            truth = {
-                **vertices,
-                "mc_index": entry["mc_index"].item(),
-                "npe": entry["npe"].item(),
-                "file_path": file_path,
-            }
-
-            inputs = pytree.tree_map(torch.from_numpy, inputs)
-
-            yield inputs, truth
+        return result
 
 
-class MultiHitDatasetUnique(MultiHitDatasetBase):
-    """
-    PMT representation: unique PMT IDs + per-PMT hit counts.
+class RDPTrackVertexMaker(VertexDataMaker):
+    """Builds vertex truth from RDP-compressed track step midpoints.
 
-    Outputs ``pmt_ids`` and ``pmt_id_counts`` each of length ``n_pmts``,
-    and ``hit_times`` of length ``max_context_len``.  Compatible with
-    :class:`~deepsno.models.multihit.MultiHitEncoder`, which uses
-    ``torch.segment_reduce`` to aggregate hit-time embeddings per PMT.
-    """
-
-    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
-        uniq_pmt_ids, pmt_id_counts = np.unique(pmt_ids, return_counts=True)
-        pad_tuple = (0, self.n_pmts - len(uniq_pmt_ids))
-        uniq_pmt_ids = np.pad(uniq_pmt_ids, pad_tuple)
-        pmt_id_counts = np.pad(pmt_id_counts, pad_tuple)
-        return {
-            "pmt_ids": uniq_pmt_ids,
-            "pmt_id_counts": pmt_id_counts,
-            "hit_times": hit_times,
-        }
-
-
-class MultiHitDatasetExpanded(MultiHitDatasetBase):
-    """
-    PMT representation: one entry per hit (expanded / repeated form).
-
-    Outputs ``pmt_ids`` and ``hit_times`` each of length ``max_context_len``,
-    sorted by PMT ID.  Suitable for models that process individual hits rather
-    than aggregated per-PMT features.
-    """
-
-    def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
-        return {
-            "pmt_ids": pmt_ids,
-            "hit_times": hit_times,
-        }
-
-
-# Backward-compatible alias
-MultiHitDataset = MultiHitDatasetUnique
-
-
-class MultiHitVertexDataset(UprootMultiFileDataset):
-    """
-    Dataset for the flat hit_times/hit_ids schema with raw vertex truth data.
-
-    Unlike MultiHitDatasetBase, this reads hits from flat per-hit arrays rather
-    than nested per-PMT arrays, and uses the 'vertices' branch directly instead
-    of voxelising tracks.
-
-    Outputs:
-        inputs: pmt_ids, hit_times — each (max_context_len,), sorted by pmt_id
-        truth:  position (max_n_vertices, 3), time (max_n_vertices,),
-                energy (max_n_vertices,), exists (max_n_vertices,),
-                mc_index, npe, file_path
+    Midpoints of consecutive Geant4 steps are computed per track, optionally
+    filtered by time / radius / energy, then compressed with the
+    Ramer-Douglas-Peucker algorithm.  Energies of removed points are
+    forward-accumulated onto the next kept point within each track.
     """
 
     def __init__(
         self,
+        epsilon_xyz: float,
+        epsilon_t: float,
+        min_energy: float = 0.0,
+        max_energy: float | None = None,
+        max_step_time: float | None = None,
+        max_step_radius: float | None = None,
+        step_energy_key: str = "n_photons",
+    ):
+        self.epsilon_xyz = epsilon_xyz
+        self.epsilon_t = epsilon_t
+        self.min_energy = min_energy
+        self.max_energy = max_energy
+        self.max_step_time = max_step_time
+        self.max_step_radius = max_step_radius
+        self.step_energy_key = step_energy_key
+
+    @property
+    def filter_names(self) -> set[str]:
+        return {"tracks*"}
+
+    def make_truth(
+        self,
+        entry,
+        generator: np.random.Generator,
+        max_n_vertices: int,
+        context: dict,
+    ) -> dict[str, np.ndarray] | None:
+        all_tracks = entry["tracks"]
+        _energy_key = self.step_energy_key if self.step_energy_key in all_tracks["steps"].fields else "deposited_energy"
+        track_energy = ak.sum(all_tracks["steps"][_energy_key], axis=1)
+        tracks = all_tracks[track_energy > self.min_energy]
+
+        pos_flat = ak.flatten(tracks["steps"]["position"]).to_numpy()  # (N, 3)
+        t_flat = ak.flatten(tracks["steps"]["time"]).to_numpy()  # (N,)
+        e_flat = ak.flatten(tracks["steps"][_energy_key]).to_numpy().astype(np.float32)  # (N,)
+        steps_per_track = ak.num(tracks["steps"]["time"]).to_numpy()  # (T,)
+
+        if len(pos_flat) >= 2:
+            track_id_per_step = np.repeat(np.arange(len(steps_per_track)), steps_per_track)
+            valid_pair = track_id_per_step[:-1] == track_id_per_step[1:]
+
+            mid_pos = 0.5 * (pos_flat[:-1][valid_pair] + pos_flat[1:][valid_pair])  # (M, 3)
+            mid_t = 0.5 * (t_flat[:-1][valid_pair] + t_flat[1:][valid_pair])  # (M,)
+            mid_e = e_flat[1:][valid_pair]  # (M,)
+
+            midpoints_per_track = np.maximum(steps_per_track - 1, 0)
+
+            filt = np.ones(len(mid_e), dtype=bool)
+            if self.max_step_time is not None:
+                filt &= mid_t <= self.max_step_time
+            if self.max_step_radius is not None:
+                filt &= np.linalg.norm(mid_pos, axis=1) <= self.max_step_radius
+            if self.max_energy is not None:
+                filt &= mid_e <= self.max_energy
+
+            if not np.all(filt):
+                mid_track_id = np.repeat(np.arange(len(steps_per_track)), midpoints_per_track)
+                midpoints_per_track = np.bincount(mid_track_id[filt], minlength=len(steps_per_track))
+                mid_pos = mid_pos[filt]
+                mid_t = mid_t[filt]
+                mid_e = mid_e[filt]
+        else:
+            mid_e = np.zeros(0, dtype=np.float32)
+            midpoints_per_track = np.zeros(0, dtype=np.int64)
+
+        if len(mid_e) == 0:
+            step_pts = np.zeros((0, 4), dtype=np.float32)
+            step_e = np.zeros(0, dtype=np.float32)
+        else:
+            pts_4d = np.concatenate([mid_pos, mid_t[:, None]], axis=1).astype(np.float32)
+
+            mid_cumsum = np.concatenate([[0], np.cumsum(midpoints_per_track)])
+            has_mids = midpoints_per_track >= 1
+            init_lo = mid_cumsum[:-1][has_mids].astype(np.int64)
+            init_hi = (mid_cumsum[1:][has_mids] - 1).astype(np.int64)
+
+            step_pts, step_e = _rdp_compress_tracks_nb(
+                points=pts_4d,
+                energies=mid_e.astype(np.float32),
+                init_lo=init_lo,
+                init_hi=init_hi,
+                epsilon_xyz=float(self.epsilon_xyz),
+                epsilon_t=float(self.epsilon_t),
+            )
+            step_pts = step_pts.astype(np.float32)
+            step_e = step_e.astype(np.float32)
+
+        energy_sel = step_e > self.min_energy
+        step_pts = step_pts[energy_sel]
+        step_e = step_e[energy_sel]
+
+        if len(step_e) == 0:
+            return None
+
+        sort_i = np.argsort(-step_e)
+        step_pts = step_pts[sort_i]
+        step_e = step_e[sort_i]
+        exists = np.ones(len(step_e), dtype=bool)
+
+        if len(step_e) > max_n_vertices:
+            step_pts = step_pts[:max_n_vertices]
+            step_e = step_e[:max_n_vertices]
+            exists = exists[:max_n_vertices]
+
+        result = _pad_and_shuffle_vertices(
+            vertex_positions=step_pts,
+            energy=step_e,
+            exists=exists,
+            max_n_vertices=max_n_vertices,
+            generator=generator,
+        )
+
+        for key, val in result.items():
+            if not np.isfinite(val).all():
+                raise ValueError(f"Non-finite vertex {key} values")
+
+        return result
+
+
+class RawVertexMaker(VertexDataMaker):
+    """Reads vertex truth directly from a ``vertices`` branch (no track voxelisation).
+
+    Applies the same time jitter that :class:`FlatHitInputMaker` put into
+    ``context["jitter"]``, so hits and vertices remain consistent.
+    """
+
+    def __init__(self, min_energy: float = 0.0):
+        self.min_energy = min_energy
+
+    @property
+    def filter_names(self) -> set[str]:
+        return {"/vertices\\..*/"}
+
+    def make_truth(
+        self,
+        entry,
+        generator: np.random.Generator,
+        max_n_vertices: int,
+        context: dict,
+    ) -> dict[str, np.ndarray] | None:
+        jitter = context.get("jitter", 0.0)
+
+        verts = entry["vertices"]
+        positions = ak.to_numpy(verts["position"])  # (n_verts, 3)
+        times = ak.to_numpy(verts["time"]) + jitter  # (n_verts,)
+        energies = ak.to_numpy(verts["energy"])  # (n_verts,)
+
+        energy_mask = energies > self.min_energy
+        positions = positions[energy_mask]
+        times = times[energy_mask]
+        energies = energies[energy_mask]
+
+        if len(energies) == 0:
+            return None
+
+        energy_sort_i = np.argsort(-energies)
+        positions = positions[energy_sort_i]
+        times = times[energy_sort_i]
+        energies = energies[energy_sort_i]
+        exists = np.ones(len(energies), dtype=bool)
+
+        if len(energies) > max_n_vertices:
+            positions = positions[:max_n_vertices]
+            times = times[:max_n_vertices]
+            energies = energies[:max_n_vertices]
+            exists = exists[:max_n_vertices]
+
+        vertex_positions = np.concatenate([positions, times[:, None]], axis=1)
+        return _pad_and_shuffle_vertices(
+            vertex_positions=vertex_positions,
+            energy=energies,
+            exists=exists,
+            max_n_vertices=max_n_vertices,
+            generator=generator,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Unified composable dataset
+# ---------------------------------------------------------------------------
+
+
+class MultiHitDataset(UprootMultiFileDataset):
+    """Composable dataset that delegates hit-input and vertex-truth building to separate classes.
+
+    Args:
+        hit_input_maker: Produces the model input dict for each event.
+        vertex_data_maker: Produces the vertex truth dict for each event.
+        max_context_len: Maximum number of hits per event (truncated / sub-sampled if exceeded).
+        max_n_vertices: Maximum number of vertices per event (truncated / padded).
+        All remaining kwargs are forwarded to :class:`UprootMultiFileDataset`.
+    """
+
+    def __init__(
+        self,
+        hit_input_maker: HitInputMaker,
+        vertex_data_maker: VertexDataMaker,
         max_context_len: int,
         max_n_vertices: int,
-        min_hit_time: float = 0.0,
-        max_hit_time: float = 300.0,
-        min_energy: float = 0.0,
-        time_jitter_min: float = 0.0,
-        time_jitter_max: float = 0.0,
-        *args,
-        **kwargs,
+        file_paths: str | Iterable[str],
+        tree_name: str,
+        expressions: Iterable[str] | None = None,
+        filter_name: Iterable[str] | None = None,
+        cut: str | None = None,
+        seed: int = 42,
+        buffer_size: int = 100,
+        shuffle: bool = True,
+        cache: bool | str = False,
+        debug: bool = False,
     ):
-        super().__init__(*args, **kwargs)
+        combined_filter = set(filter_name) if filter_name else set()
+        combined_filter |= {"mc_index", "npe"}
+        combined_filter |= hit_input_maker.filter_names
+        combined_filter |= vertex_data_maker.filter_names
+
+        super().__init__(
+            file_paths=file_paths,
+            tree_name=tree_name,
+            expressions=expressions,
+            filter_name=combined_filter,
+            cut=cut,
+            seed=seed,
+            buffer_size=buffer_size,
+            shuffle=shuffle,
+            cache=cache,
+            debug=debug,
+        )
+        self.hit_input_maker = hit_input_maker
+        self.vertex_data_maker = vertex_data_maker
         self.max_context_len = max_context_len
         self.max_n_vertices = max_n_vertices
-        self.min_hit_time = min_hit_time
-        self.max_hit_time = max_hit_time
-        self.min_energy = min_energy
-        self.time_jitter_min = time_jitter_min
-        self.time_jitter_max = time_jitter_max
-        # filter_name with a regex loads vertices sub-branches and reconstructs nesting
-        self.filter_name.update(["hit_times", "hit_ids", "mc_index", "npe", "/vertices\\..*/"])
 
     def __iter__(self):
         for entry, file_path in super().__iter__():
-            hit_times = entry["hit_times"].to_numpy()
-            pmt_ids = entry["hit_ids"].to_numpy()
+            inputs, context = self.hit_input_maker.make_inputs(
+                entry, generator=self.generator, max_context_len=self.max_context_len
+            )
+            if inputs is None:
+                continue
 
-            selector = (hit_times > self.min_hit_time) & (hit_times < self.max_hit_time)
-            hit_times = hit_times[selector]
-            pmt_ids = pmt_ids[selector]
-
-            if self.time_jitter_min != self.time_jitter_max:
-                jitter = self.generator.uniform(self.time_jitter_min, self.time_jitter_max)
-                hit_times = hit_times + jitter
-            else:
-                jitter = 0.0
-
-            if len(pmt_ids) > self.max_context_len:
-                shuffle_indices = self.generator.choice(len(pmt_ids), size=self.max_context_len, replace=False)
-                pmt_ids = pmt_ids[shuffle_indices]
-                hit_times = hit_times[shuffle_indices]
-
-            sort_idx = np.argsort(pmt_ids)
-            pmt_ids = pmt_ids[sort_idx]
-            hit_times = hit_times[sort_idx]
-
-            inputs = {"pmt_ids": pmt_ids, "hit_times": hit_times}
-
-            # Vertex truth — already the actual interaction vertices
-            verts = entry["vertices"]
-            positions = ak.to_numpy(verts["position"])  # (n_verts, 3)
-            times = ak.to_numpy(verts["time"])  # (n_verts,)
-            energies = ak.to_numpy(verts["energy"])  # (n_verts,)
-
-            times = times + jitter
-
-            energy_mask = energies > self.min_energy
-            positions = positions[energy_mask]
-            times = times[energy_mask]
-            energies = energies[energy_mask]
-
-            energy_sort_i = np.argsort(-energies)
-            positions = positions[energy_sort_i]
-            times = times[energy_sort_i]
-            energies = energies[energy_sort_i]
-            exists = np.ones(len(energies), dtype=bool)
-
-            if len(energies) > self.max_n_vertices:
-                positions = positions[: self.max_n_vertices]
-                times = times[: self.max_n_vertices]
-                energies = energies[: self.max_n_vertices]
-                exists = exists[: self.max_n_vertices]
-
-            pad_kwargs = dict(pad_length=self.max_n_vertices, axis=0, generator=self.generator)
-            vertex_shuffle_i = self.generator.permutation(self.max_n_vertices)
-
-            vertices = {
-                "position": pad_array(positions, **pad_kwargs)[vertex_shuffle_i],
-                "time": pad_array(times, **pad_kwargs)[vertex_shuffle_i],
-                "energy": pad_array(energies, **pad_kwargs)[vertex_shuffle_i],
-                "exists": pad_array(exists, **pad_kwargs)[vertex_shuffle_i],
-            }
+            vertex_data = self.vertex_data_maker.make_truth(
+                entry, generator=self.generator, max_n_vertices=self.max_n_vertices, context=context
+            )
+            if vertex_data is None:
+                continue
 
             truth = {
-                **pytree.tree_map(torch.from_numpy, vertices),
+                **pytree.tree_map(torch.from_numpy, vertex_data),
                 "mc_index": entry["mc_index"].item(),
                 "npe": entry["npe"].item(),
                 "file_path": file_path,
@@ -657,14 +1057,38 @@ class MultiHitVertexDataset(UprootMultiFileDataset):
             yield pytree.tree_map(torch.from_numpy, inputs), truth
 
 
+MultiHitDatasetExpanded = MultiHitDataset
+
+
+class MultiHitUniqueCollate:
+    """Collate for :class:`UniqueHitInputMaker` output.
+
+    Concatenates the unpadded ``hit_times`` arrays across the batch and stacks
+    ``pmt_lengths`` to ``(B, n_pmts)``.  No varlen bookkeeping is needed here —
+    the encoder performs ``segment_reduce`` directly on the flat hit sequence.
+
+    Usage in config::
+
+        collate_fn:
+            class_path: deepsno.data.multihit.MultiHitUniqueCollate
+    """
+
+    def __call__(self, batch: list) -> tuple[dict, dict]:
+        inputs_list, truth_list = zip(*batch)
+        collated_inputs = {
+            "hit_times": torch.cat([x["hit_times"] for x in inputs_list]),
+            "pmt_lengths": torch.stack([x["pmt_lengths"] for x in inputs_list]),
+        }
+        return collated_inputs, torch.utils.data.default_collate(list(truth_list))
+
+
 class MultiHitVarlenCollate:
     """Callable collate class that converts padded per-item hit sequences into the
     flat varlen format expected by flash attention / varlen attention kernels.
 
     Zero-padded hits (where ``pmt_ids == 0``) are stripped from each sequence.
     All tensors whose leading dimension matches the hit sequence length are
-    concatenated into flat ``(total_hits,)`` tensors; other tensors (e.g.
-    ``pmt_id_counts`` in :class:`MultiHitDatasetUnique`) are stacked normally.
+    concatenated into flat ``(total_hits,)`` tensors; other tensors are stacked normally.
 
     The returned ``inputs`` dict contains a ``hits`` key holding a
     :class:`~deepsno.models.transformers.VarlenTensor` that bundles the flat
@@ -681,6 +1105,7 @@ class MultiHitVarlenCollate:
         inputs_list, truth_list = zip(*batch)
 
         seqlens: list[int] = []
+        # The masked keys are those that have the same shape as the hit sequence and need to be masked and concatenated
         masked_keys: set[str] | None = None
         accum: dict[str, list[torch.Tensor]] = {}
 
@@ -696,6 +1121,7 @@ class MultiHitVarlenCollate:
         cu_seqlens = torch.zeros(len(seqlens) + 1, dtype=torch.int32)
         cu_seqlens[1:] = torch.tensor(seqlens, dtype=torch.int32).cumsum(0)
 
+        # concatenate the hit level inputs but stack and retain the rectangular structure otherwise
         flat = {key: (torch.cat(vals) if key in masked_keys else torch.stack(vals)) for key, vals in accum.items()}
         pmt_ids = flat.pop("pmt_ids")
         collated_inputs = {"hits": VarlenTensor(pmt_ids, cu_seqlens, max(seqlens)), **flat}
