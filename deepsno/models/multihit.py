@@ -1,173 +1,10 @@
-from contextlib import nullcontext
-
 import torch
 import torch._ops
 from torch import nn
 from torch.nn import functional as F
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from deepsno.models import transformers
 from deepsno.models.transformers import VarlenTensor
-
-
-class MultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        q_dim: int,
-        k_dim: int,
-        v_dim: int,
-        embedding_dim: int,
-        nheads: int,
-        dropout: float = 0.0,
-        bias: bool = True,
-        backends: list[SDPBackend] | None = None,
-        dtype=None,
-    ):
-        super().__init__()
-
-        self._qkv_same_embed_dim = q_dim == k_dim == v_dim
-        if self._qkv_same_embed_dim:
-            self.packed_proj = nn.Linear(q_dim, 3 * embedding_dim, bias=bias, dtype=dtype)
-        else:
-            self.q_proj = nn.Linear(q_dim, embedding_dim, bias=bias, dtype=dtype)
-            self.k_proj = nn.Linear(k_dim, embedding_dim, bias=bias, dtype=dtype)
-            self.v_proj = nn.Linear(v_dim, embedding_dim, bias=bias, dtype=dtype)
-
-        dim_out = q_dim
-        self.out_proj = nn.Linear(embedding_dim, dim_out, bias=bias, dtype=dtype)
-        if embedding_dim % nheads != 0:
-            raise ValueError("Embedding dim is not divisible by nheads")
-        self.head_dim = embedding_dim // nheads
-        self.nheads = nheads
-        self.bias = bias
-        self.dropout = dropout
-
-        self.kernel_backend = nullcontext() if backends is None else sdpa_kernel(backends=backends, set_priority=True)
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        src_key_padding_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if self._qkv_same_embed_dim:
-            if query is key and key is value:
-                result = self.packed_proj(query)
-                query, key, value = torch.chunk(result, 3, dim=-1)
-            else:
-                q_weight, k_weight, v_weight = torch.chunk(self.packed_proj.weight, 3, dim=0)
-                if self.bias:
-                    q_bias, k_bias, v_bias = torch.chunk(self.packed_proj.bias, 3, dim=0)
-                else:
-                    q_bias, k_bias, v_bias = None, None, None
-                query = F.linear(query, q_weight, q_bias)
-                key = F.linear(key, k_weight, k_bias)
-                value = F.linear(value, v_weight, v_bias)
-
-        else:
-            query = self.q_proj(query)
-            key = self.q_proj(key)
-            value = self.v_proj(value)
-
-        if src_key_padding_mask is not None:
-            if not (query.shape == key.shape == value.shape):
-                raise NotImplementedError(
-                    "When using src_key_padding_mask, query, key, and value must have the same shape"
-                )
-            attn_mask = ~src_key_padding_mask[..., None, None, :]
-        else:
-            attn_mask = None
-
-        def sdpa_prepare(x):
-            return x.unflatten(-1, [self.nheads, self.head_dim]).transpose(-2, -3)
-
-        query = sdpa_prepare(query)
-        key = sdpa_prepare(key)
-        value = sdpa_prepare(value)
-
-        dropout = self.dropout if self.training else 0.0
-
-        with self.kernel_backend:
-            attn_output = F.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask, dropout_p=dropout)
-
-        attn_output = attn_output.transpose(-3, -2).flatten(-2)
-
-        return self.out_proj(attn_output)
-
-
-class TransformerEncoderLayer(nn.Module):
-    def __init__(
-        self,
-        model_dim: int,
-        dim_feedforward: int,
-        nheads: int,
-        dropout: float = 0.0,
-        mha_dropout: float = 0.0,
-        activation: nn.Module = nn.ReLU(),
-        bias: bool = True,
-        eps: float = 1e-5,
-        dtype=None,
-    ):
-        super().__init__()
-
-        self.activation = activation
-
-        self.linear1 = nn.Linear(model_dim, dim_feedforward, bias=bias, dtype=dtype)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, model_dim, bias=bias, dtype=dtype)
-
-        self.norm1 = nn.LayerNorm(model_dim, bias=bias, eps=eps)
-        self.norm2 = nn.LayerNorm(model_dim, bias=bias, eps=eps)
-
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.multi_head_attn = MultiHeadAttention(
-            q_dim=model_dim,
-            k_dim=model_dim,
-            v_dim=model_dim,
-            embedding_dim=model_dim,
-            nheads=nheads,
-            dropout=mha_dropout,
-            bias=bias,
-            dtype=dtype,
-        )
-
-    def _self_attn(
-        self, x: torch.Tensor, src_key_padding_mask: torch.Tensor | None = None, encoding: torch.Tensor | None = None
-    ):
-        if encoding is not None:
-            x = self.multi_head_attn(x + encoding, x + encoding, x, src_key_padding_mask=src_key_padding_mask)
-        else:
-            x = self.multi_head_attn(x, x, x, src_key_padding_mask=src_key_padding_mask)
-        return self.dropout1(x)
-
-    def _ff_block(self, x: torch.Tensor):
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        return self.dropout2(x)
-
-    def forward(
-        self, x: torch.Tensor, src_key_padding_mask: torch.Tensor | None = None, encoding: torch.Tensor | None = None
-    ):
-        x = x + self._self_attn(self.norm1(x), src_key_padding_mask=src_key_padding_mask, encoding=encoding)
-        x = x + self._ff_block(self.norm2(x))
-        return x
-
-
-class TransformerEncoder(nn.Module):
-    def __init__(self, n_layers: int, class_path: type, kwargs: dict):
-        super().__init__()
-        self.layers = nn.ModuleList([*(class_path(**kwargs) for _ in range(n_layers))])
-
-    @torch.autocast("cuda", dtype=torch.bfloat16)
-    def forward(
-        self, x: torch.Tensor, src_key_padding_mask: torch.Tensor | None = None, encoding: torch.Tensor | None = None
-    ):
-        x = self.layers[0](x, src_key_padding_mask=src_key_padding_mask, encoding=encoding)
-        for layer in self.layers[1:]:
-            x = layer(x, src_key_padding_mask=src_key_padding_mask)
-        return x
 
 
 class ObjectDecoderLayerVarlen(nn.Module):
@@ -272,7 +109,12 @@ class ObjectDecoderVarlen(nn.Module):
         self.query_tokens = nn.Embedding(n_queries, embedding_dim=dim)
 
         self.layers = nn.ModuleList(
-            [ObjectDecoderLayerVarlen(dim, num_heads, dim_feedforward, dropout, bias) for _ in range(num_layers)]
+            [
+                ObjectDecoderLayerVarlen(
+                    dim=dim, num_heads=num_heads, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias
+                )
+                for _ in range(num_layers)
+            ]
         )
 
         self.output_unnorm = False
@@ -330,7 +172,7 @@ class ObjectFFNHead(nn.Module):
         self.decoder = nn.Sequential(
             nn.Linear(model_dim, model_dim),
             nn.GELU(),
-            nn.Linear(model_dim, 6),
+            nn.Linear(model_dim, 7),
         )
 
     def forward(self, x: torch.Tensor):
@@ -341,6 +183,7 @@ class ObjectFFNHead(nn.Module):
             "position": x[..., 1:4],
             "time": x[..., 4],
             "energy": F.softplus(x[..., 5]),
+            "log_weight": x[..., 6],
         }
 
 
@@ -360,7 +203,6 @@ class MultiHitPMTEncoderBase(nn.Module):
         n_pmts: int,
         model_dim: int,
         encoder: nn.Module,
-        waveform_n_bins: int,
         time_scale: float = 1.0,
         time_shift: float = 0.0,
         dtype=None,
@@ -377,6 +219,7 @@ class MultiHitPMTEncoderBase(nn.Module):
         """
         super().__init__()
         self.n_pmts = n_pmts
+        self.base_pmt_ids = torch.arange(n_pmts, dtype=torch.long)
         self.pmt_embed = nn.Embedding(n_pmts, embedding_dim=model_dim, dtype=dtype)
         self.encoder = encoder
         self.time_scale = time_scale
@@ -405,37 +248,57 @@ class MultiHitPMTEncoderBase(nn.Module):
         return x
 
 
-class MultiHitPMTEncoderUnique(MultiHitPMTEncoderBase):
+class MultiHitPMTEncoderUnique(nn.Module):
     """
-    Encoder for :class:`~deepsno.data.multihit.MultiHitDatasetUnique` output.
+    PMT encoder for the :class:`~deepsno.data.multihit.UniqueHitInputMaker` output.
 
-    Expects pre-uniquified PMT IDs with associated per-PMT hit counts.
-    Hit-time bin indices are looked up in a learned embedding table, then
-    summed across hits per PMT via ``torch.segment_reduce``, and added to
-    the PMT embedding.
+    Receives varlen flat hit times (concatenated across the batch, sorted by PMT id
+    within each event) and a fixed-size ``pmt_lengths`` tensor.  A single
+    ``segment_reduce`` aggregates hits per PMT, yielding a fixed-size
+    ``(B, n_pmts, dim)`` representation that is then processed by a fixed-size
+    :class:`~deepsno.models.transformers.InducedSetEncoder`.
 
-    Input keys required in batch:
-        - ``pmt_ids``: ``(B, n_pmts)`` unique PMT IDs, zero-padded.
-        - ``pmt_id_counts``: ``(B, n_pmts)`` number of hits per PMT.
-        - ``hit_times``: ``(B, max_context_len)`` binned hit-time indices.
+    Input keys (from :class:`~deepsno.data.multihit.MultiHitUniqueCollate`):
+        - ``hit_times``:   ``(total_hits,)`` varlen flat hit times.
+        - ``pmt_lengths``: ``(B, n_pmts)`` hit count per PMT per event.
     """
 
-    def __init__(self, *args, waveform_n_bins: int, **kwargs):
-        super().__init__(*args, waveform_n_bins=waveform_n_bins, **kwargs)
-        model_dim = self.pmt_embed.embedding_dim
-        self.hit_time_embed = nn.Embedding(waveform_n_bins, embedding_dim=model_dim, dtype=self.pmt_embed.weight.dtype)
+    def __init__(
+        self,
+        n_pmts: int,
+        model_dim: int,
+        encoder: nn.Module,
+        hit_time_embed: nn.Module,
+        time_scale: float = 1.0,
+        time_shift: float = 0.0,
+        dtype=None,
+    ):
+        super().__init__()
+        self.n_pmts = n_pmts
+        self.pmt_embed = nn.Embedding(n_pmts, model_dim, dtype=dtype)
+        self.hit_time_embed = hit_time_embed
+        self.encoder = encoder
+        self.time_scale = time_scale
+        self.time_shift = time_shift
 
-    def _embed_hits(self, pmt_ids: torch.Tensor, hit_times: torch.Tensor, pmt_id_counts: torch.Tensor) -> torch.Tensor:
-        # Sum binned hit-time embeddings per PMT, then add PMT embedding
-        hit_time_embed = self.hit_time_embed(hit_times)
-        hit_time_embed = torch.segment_reduce(hit_time_embed, reduce="sum", lengths=pmt_id_counts, axis=-2)
-        x = hit_time_embed + self.pmt_embed(pmt_ids)
-        x = (pmt_ids != 0).unsqueeze(-1) * x
-        return x
+    def forward(self, hit_times: torch.Tensor, pmt_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            hit_times:   ``(total_hits,)`` flat hit times concatenated across the batch.
+            pmt_lengths: ``(B, n_pmts)`` hit count per PMT per event.
 
-    def forward(self, hits: VarlenTensor, hit_times: torch.Tensor, pmt_id_counts: torch.Tensor) -> VarlenTensor:
-        x = self._embed_hits(hits.data, hit_times, pmt_id_counts)
-        return self.encoder(hits._replace(data=x))
+        Returns:
+            ``(B, n_pmts, model_dim)`` encoded PMT representation.
+        """
+        B = pmt_lengths.shape[0]
+        hit_times_norm = (torch.log(hit_times) - self.time_shift) / self.time_scale
+        hit_embed = self.hit_time_embed(hit_times_norm.unsqueeze(-1))  # (total_hits, dim)
+
+        x = torch.segment_reduce(hit_embed, reduce="sum", lengths=pmt_lengths.view(-1), axis=0)  # (B*n_pmts, dim)
+        x = x / pmt_lengths.view(-1, 1).clamp(min=1)  # mean pooling, avoid div by zero
+        x = x.view(B, self.n_pmts, -1)  # (B, n_pmts, dim)
+        x = x + self.pmt_embed.weight.to(dtype=x.dtype)  # keep bfloat16 residual stream
+        return self.encoder(x)  # (B, n_pmts, dim)
 
 
 class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
@@ -453,8 +316,8 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
         - ``hit_times``: ``(B, max_context_len)`` binned hit-time indices.
     """
 
-    def __init__(self, *args, waveform_n_bins: int, time_embed_dropout: float = 0.1, **kwargs):
-        super().__init__(*args, waveform_n_bins=waveform_n_bins, **kwargs)
+    def __init__(self, *args, time_embed_dropout: float = 0.1, **kwargs):  
+        super().__init__(*args, **kwargs)
         model_dim = self.pmt_embed.embedding_dim
 
         self.hit_time_embed = nn.Sequential(
@@ -475,7 +338,109 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
 MultiHitPMTEncoder = MultiHitPMTEncoderUnique
 
 
-@torch.compile(dynamic=True, fullgraph=True)
+class ObjectDecoderLayer(nn.Module):
+    """Single fixed-size decoder layer: self-attention among queries, then cross-attention to encoder."""
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.0,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.self_attn = transformers.MAB(
+            dim=dim, num_heads=num_heads, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias
+        )
+        self.cross_attn = transformers.MAB(
+            dim=dim, num_heads=num_heads, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias
+        )
+
+    def forward(self, q: torch.Tensor, enc: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            q:   ``(B, n_queries, dim)`` query tensor.
+            enc: ``(B, N, dim)`` encoder output.
+
+        Returns:
+            ``(B, n_queries, dim)`` updated queries.
+        """
+        q = self.self_attn(q, q)
+        return self.cross_attn(q, enc)
+
+
+class ObjectDecoder(nn.Module):
+    """Fixed-size object query decoder for dense ``(B, N, dim)`` encoder outputs.
+
+    Maintains ``n_queries`` learnable query tokens and refines them through stacked
+    :class:`ObjectDecoderLayer` blocks.  Drop-in replacement for
+    :class:`ObjectDecoderVarlen` when the encoder output is a dense tensor rather
+    than a :class:`~deepsno.models.transformers.VarlenTensor`.
+    """
+
+    def __init__(
+        self,
+        n_queries: int,
+        dim: int,
+        num_heads: int,
+        num_layers: int,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.0,
+        bias: bool = True,
+        position_shift: float = 0.0,
+        position_scale: float = 1.0,
+        time_shift: float = 0.0,
+        time_scale: float = 1.0,
+        energy_shift: float = 0.0,
+        energy_scale: float = 1.0,
+    ):
+        super().__init__()
+        self.query_tokens = nn.Embedding(n_queries, dim)
+        self.layers = nn.ModuleList(
+            [
+                ObjectDecoderLayer(
+                    dim=dim, num_heads=num_heads, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.output_unnorm = False
+        self.position_shift = position_shift
+        self.position_scale = position_scale
+        self.time_shift = time_shift
+        self.time_scale = time_scale
+        self.energy_shift = energy_shift
+        self.energy_scale = energy_scale
+
+    def output_normalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        x["position"] = (x["position"] - self.position_shift) / self.position_scale
+        x["time"] = (x["time"] - self.time_shift) / self.time_scale
+        x["energy"] = (x["energy"] - self.energy_shift) / self.energy_scale
+        return x
+
+    def output_unnormalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        x["position"] = x["position"] * self.position_scale + self.position_shift
+        x["time"] = x["time"] * self.time_scale + self.time_shift
+        x["energy"] = x["energy"] * self.energy_scale + self.energy_shift
+        return x
+
+    def forward(self, enc: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            enc: ``(B, N, dim)`` encoder output.
+
+        Returns:
+            ``(B, n_queries, dim)`` refined query embeddings.
+        """
+        B = enc.shape[0]
+        q = self.query_tokens.weight.to(dtype=enc.dtype).unsqueeze(0).expand(B, -1, -1)
+        for layer in self.layers:
+            q = layer(q, enc)
+        return q
+
+
 class MultiHit(nn.Module):
     def __init__(self, encoder: nn.Module, decoder: nn.Module, head: nn.Module):
         """
@@ -508,9 +473,10 @@ class MultiHit(nn.Module):
         self._output_unnorm = value
         self.decoder.output_unnorm = value
 
-    def forward(self, hits: VarlenTensor, hit_times: torch.Tensor) -> dict[str, torch.Tensor]:
+    @torch.compile(dynamic=True, fullgraph=True)
+    def forward(self, **inputs) -> dict[str, torch.Tensor]:
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            enc_vt = self.encoder(hits, hit_times)
+            enc_vt = self.encoder(**inputs)
             queries = self.decoder(enc_vt)  # (B, n_queries, dim)
 
         output = self.head(queries.float())

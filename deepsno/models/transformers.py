@@ -254,7 +254,7 @@ class ISABVarlen(nn.Module):
         super().__init__()
         self.num_inducing = num_inducing
         self.I = nn.Parameter(torch.empty(1, num_inducing, dim))
-        nn.init.xavier_uniform_(self.I)
+        nn.init.xavier_uniform_(self.I.view(num_inducing, dim))  # treat as (m, dim) so fan_in=dim, not m*dim
         self.mab1 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
         self.mab2 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
 
@@ -386,7 +386,7 @@ class SetEncoderVarlenPadded(nn.Module):
     ):
         super().__init__()
         self.fill_value = fill_value
-        self.encoder = SetEncoderVarlen(dim_in, dim_hidden, num_heads, num_sabs, dim_feedforward, dropout)
+        self.encoder = SetEncoderVarlen(dim_in=dim_in, dim_hidden=dim_hidden, num_heads=num_heads, num_sabs=num_sabs, dim_feedforward=dim_feedforward, dropout=dropout)
 
     def forward(
         self,
@@ -440,7 +440,7 @@ class InducedSetEncoderVarlen(nn.Module):
         self.proj = nn.Linear(dim_in, dim_hidden)
         self.isabs = nn.ModuleList(
             [
-                ISABVarlen(dim_hidden, num_heads, num_inducing, dim_feedforward=dim_feedforward, dropout=dropout)
+                ISABVarlen(dim=dim_hidden, num_heads=num_heads, num_inducing=num_inducing, dim_feedforward=dim_feedforward, dropout=dropout)
                 for _ in range(num_isabs)
             ]
         )
@@ -457,6 +457,173 @@ class InducedSetEncoderVarlen(nn.Module):
         for isab in self.isabs:
             vt = isab(vt)
         return vt
+
+
+# ---------------------------------------------------------------------------
+# Fixed-size (B, N, dim) attention blocks
+# ---------------------------------------------------------------------------
+
+
+class MAB(nn.Module):
+    """Multihead Attention Block for fixed-size ``(B, Q, dim)`` / ``(B, K, dim)`` inputs.
+
+    Uses ``F.scaled_dot_product_attention`` (auto-dispatches to Flash Attention or
+    memory-efficient attention) with pre-norm residuals.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.0,
+        bias: bool = True,
+    ):
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads})")
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self._dropout = dropout
+        dim_feedforward = dim_feedforward or 4 * dim
+
+        self.q_proj = nn.Linear(dim, dim, bias=bias)
+        self.k_proj = nn.Linear(dim, dim, bias=bias)
+        self.v_proj = nn.Linear(dim, dim, bias=bias)
+        self.out_proj = nn.Linear(dim, dim, bias=bias)
+
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.drop = nn.Dropout(dropout)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim_feedforward, bias=bias),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, dim, bias=bias),
+        )
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            q: ``(B, Q, dim)`` query tensor.
+            k: ``(B, K, dim)`` key/value tensor.
+
+        Returns:
+            ``(B, Q, dim)`` updated query tensor.
+        """
+        B, Q, C = q.shape
+
+        q_n = self.norm1(q)
+        # For self-attention (k is q), project k/v from the already-normed q_n so that
+        # both sides of the attention are consistent (pre-norm applied uniformly).
+        k_src = q_n if k is q else k
+        q_proj = self.q_proj(q_n).view(B, Q, self.num_heads, self.head_dim).transpose(1, 2)
+        k_proj = self.k_proj(k_src).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        v_proj = self.v_proj(k_src).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+
+        attn_out = F.scaled_dot_product_attention(
+            q_proj,
+            k_proj,
+            v_proj,
+            dropout_p=self._dropout if self.training else 0.0,
+        )
+        attn_out = attn_out.transpose(1, 2).reshape(B, Q, C)
+        q = q + self.drop(self.out_proj(attn_out))
+        q = q + self.drop(self.ffn(self.norm2(q)))
+        return q
+
+
+class ISAB(nn.Module):
+    """Fixed-size Induced Self-Attention Block.
+
+    Reduces ``O(N²)`` self-attention to ``O(Nm)`` via ``m`` learnable inducing points::
+
+        H   = MAB(I, X)   # (B, m, dim)
+        out = MAB(X, H)   # (B, N, dim)
+
+    Input and output are both dense ``(B, N, dim)`` tensors.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        num_inducing: int,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.0,
+        bias: bool = True,
+    ):
+        """
+        Args:
+            dim: Feature dimension.
+            num_heads: Number of attention heads.
+            num_inducing: Number of inducing points ``m``.
+            dim_feedforward: FFN hidden dimension.  Defaults to ``4 * dim``.
+            dropout: Dropout probability.
+        """
+        super().__init__()
+        self.I = nn.Embedding(num_inducing, dim)
+        self.mab1 = MAB(dim=dim, num_heads=num_heads, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias)
+        self.mab2 = MAB(dim=dim, num_heads=num_heads, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: ``(B, N, dim)`` input set.
+
+        Returns:
+            ``(B, N, dim)`` updated set.
+        """
+        ind = self.I.weight.to(dtype=x.dtype).unsqueeze(0).expand(x.shape[0], -1, -1)  # (B, m, dim)
+        H = self.mab1(ind, x)
+        return self.mab2(x, H)
+
+
+class InducedSetEncoder(nn.Module):
+    """Fixed-size induced set encoder: stacks :class:`ISAB` blocks on ``(B, N, dim)`` inputs.
+
+    Unlike :class:`InducedSetEncoderVarlen`, all sequences in the batch must have
+    the same length (e.g. after aggregating hits to a fixed PMT grid via
+    ``segment_reduce``).
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        num_inducing: int,
+        num_isabs: int = 2,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.0,
+        bias: bool = True,
+    ):
+        """
+        Args:
+            dim: Feature dimension.
+            num_heads: Number of attention heads per ISAB.
+            num_inducing: Number of inducing points ``m``.
+            num_isabs: Number of stacked :class:`ISAB` blocks.
+            dim_feedforward: FFN hidden dimension.  Defaults to ``4 * dim``.
+            dropout: Dropout probability.
+        """
+        super().__init__()
+        self.isabs = nn.ModuleList(
+            [ISAB(dim=dim, num_heads=num_heads, num_inducing=num_inducing, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias) for _ in range(num_isabs)]
+        )
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: ``(B, N, dim)`` input set.
+
+        Returns:
+            ``(B, N, dim)`` encoded set.
+        """
+        for isab in self.isabs:
+            x = isab(x)
+        return self.norm(x)
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +661,7 @@ class SetPoolingVarlen(nn.Module):
                 to ``4 * dim_hidden`` if not set.
         """
         super().__init__()
-        self.pma = PMAVarlen(dim_hidden, num_heads, num_seeds, dim_feedforward=dim_feedforward)
+        self.pma = PMAVarlen(dim=dim_hidden, num_heads=num_heads, num_seeds=num_seeds, dim_feedforward=dim_feedforward)
         self.dec = nn.Sequential(
             nn.Linear(num_seeds * dim_hidden, dim_hidden),
             nn.ReLU(),
@@ -552,8 +719,8 @@ class SetTransformerVarlen(nn.Module):
                 Defaults to ``4 * dim_hidden`` if not set.
         """
         super().__init__()
-        self.encoder = SetEncoderVarlen(dim_in, dim_hidden, num_heads, num_sabs, dim_feedforward)
-        self.pooling = SetPoolingVarlen(dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward)
+        self.encoder = SetEncoderVarlen(dim_in=dim_in, dim_hidden=dim_hidden, num_heads=num_heads, num_sabs=num_sabs, dim_feedforward=dim_feedforward)
+        self.pooling = SetPoolingVarlen(dim_hidden=dim_hidden, dim_out=dim_out, num_heads=num_heads, num_seeds=num_seeds, dim_feedforward=dim_feedforward)
 
     def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
@@ -601,8 +768,8 @@ class InducedSetTransformerVarlen(nn.Module):
                 Defaults to ``4 * dim_hidden`` if not set.
         """
         super().__init__()
-        self.encoder = InducedSetEncoderVarlen(dim_in, dim_hidden, num_heads, num_inducing, num_isabs, dim_feedforward)
-        self.pooling = SetPoolingVarlen(dim_hidden, dim_out, num_heads, num_seeds, dim_feedforward)
+        self.encoder = InducedSetEncoderVarlen(dim_in=dim_in, dim_hidden=dim_hidden, num_heads=num_heads, num_inducing=num_inducing, num_isabs=num_isabs, dim_feedforward=dim_feedforward)
+        self.pooling = SetPoolingVarlen(dim_hidden=dim_hidden, dim_out=dim_out, num_heads=num_heads, num_seeds=num_seeds, dim_feedforward=dim_feedforward)
 
     def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
