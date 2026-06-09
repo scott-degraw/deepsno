@@ -230,7 +230,6 @@ def sinkhorn_log(
     return SinkhornResult(T=T, u=u, v=v, row_conv=row_conv, col_conv=col_conv)
 
 
-@torch.compile(dynamic=False, fullgraph=True)
 class SinkhornVertexLoss(nn.Module):
     """Differentiable vertex loss using Sinkhorn optimal transport.
 
@@ -258,7 +257,9 @@ class SinkhornVertexLoss(nn.Module):
         n_iters: int = 50,
         unbiased: bool = False,
         warm_start: bool = False,
+        detach_transport: bool = True,
         eps_num: float = 1e-8,
+        energy_softplus_beta: float = 5.0,
     ):
         super().__init__()
 
@@ -266,7 +267,9 @@ class SinkhornVertexLoss(nn.Module):
         self.n_iters = n_iters
         self.unbiased = unbiased
         self.warm_start = warm_start
+        self.detach_transport = detach_transport
         self.eps_num = eps_num
+        self.energy_softplus_beta = energy_softplus_beta
         self.weights = pytree.tree_map(lambda x: x / sum(weights.values()), weights) if weights else None
         self.register_buffer("u_avg", None)
         self.register_buffer("v_avg", None)
@@ -297,9 +300,8 @@ class SinkhornVertexLoss(nn.Module):
         Returns a dict of scalar losses: {"position", "time", "energy"}.
         """
 
-        beta = 5
         truth = truth.copy()
-        truth["energy"] = beta * torch.log(1 + truth["energy"] / beta)
+        truth["energy"] = self.energy_softplus_beta * torch.log(1 + truth["energy"] / self.energy_softplus_beta)
         components, C = self.cross_costs(predict, truth)
 
         # ------------------------------------------------------------------
@@ -339,7 +341,7 @@ class SinkhornVertexLoss(nn.Module):
             self.u_avg = result.u.detach().mean(0)
             self.v_avg = result.v.detach().mean(0)
 
-        T = result.T.detach()
+        T = result.T.detach() if self.detach_transport else result.T
 
         # TODO: Think if you should include the regularization term here.
         batch_size = torch.prod(torch.tensor(T.shape[:-2], dtype=torch.float32)) if T.dim() > 2 else 1.0
@@ -356,7 +358,8 @@ class SinkhornVertexLoss(nn.Module):
                 eps_num=self.eps_num,
             )
 
-            components_self = {k: (result_self.T.detach() * c).sum() / batch_size for k, c in components_self.items()}
+            T_self = result_self.T.detach() if self.detach_transport else result_self.T
+            components_self = {k: (T_self * c).sum() / batch_size for k, c in components_self.items()}
 
             components = {k: components[k] - 0.5 * components_self[k] for k in components}
 
@@ -366,6 +369,7 @@ class SinkhornVertexLoss(nn.Module):
             "sinkhorn_col_conv": result.col_conv.mean(0).detach(),
         }
 
+    @torch.compile(dynamic=False, fullgraph=True)
     def forward(
         self,
         predict: dict[str, torch.Tensor],
@@ -379,6 +383,113 @@ class SinkhornVertexLoss(nn.Module):
         component_losses = {k: v for k, v in all_losses.items() if not k.startswith("sinkhorn_")}
         weighted = self.apply_weights(component_losses)
         return sum(weighted.values())
+
+
+@torch.compile(dynamic=False, fullgraph=True)
+class EnergyWeightedSinkhornLoss(nn.Module):
+    """Sinkhorn loss with L2² position/time cost and energy-weighted truth marginals.
+
+    Cost matrix:
+        C_ij = position_weight * ||pos_i - pos_j||² + time_weight * (t_i - t_j)²
+
+    Marginals:
+        nu  (truth)    ∝ 5·log(1 + energy/5)  — log-compressed energy weighting
+        mu  (predict)  = uniform
+
+    No energy regression term; no energy-normalisation of the cost entries.
+
+    Args:
+        position_weight: Scale applied to squared position distances in the cost matrix.
+        time_weight: Scale applied to squared time distances in the cost matrix.
+        epsilon: Entropic regularisation strength.
+        n_iters: Number of Sinkhorn iterations.
+        unbiased: If True, subtract half the self-transport (Sinkhorn divergence).
+        eps_num: Small constant for numerical safety.
+    """
+
+    def __init__(
+        self,
+        position_weight: float = 1.0,
+        time_weight: float = 1.0,
+        epsilon: float = 0.1,
+        n_iters: int = 50,
+        unbiased: bool = False,
+        eps_num: float = 1e-8,
+    ):
+        super().__init__()
+        self.position_weight = position_weight
+        self.time_weight = time_weight
+        self.epsilon = epsilon
+        self.n_iters = n_iters
+        self.unbiased = unbiased
+        self.eps_num = eps_num
+
+    def _cost(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        pos_cost = torch.cdist(predict["position"], truth["position"], p=2) ** 2
+        time_cost = (predict["time"][..., :, None] - truth["time"][..., None, :]) ** 2
+        components = {
+            "position": self.position_weight * pos_cost,
+            "time": self.time_weight * time_cost,
+        }
+        return components, components["position"] + components["time"]
+
+    def losses(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        components, C = self._cost(predict, truth)
+        nu = truth["energy"]
+        # nu = 10 * torch.log1p(nu / 10)
+        nu = nu / (nu.sum(-1, keepdim=True) + self.eps_num)
+
+        mu = torch.ones_like(predict["time"])
+        mu = mu / (mu.sum(-1, keepdim=True) + self.eps_num)
+
+        result = sinkhorn_log(
+            C=C,
+            mu=mu,
+            nu=nu,
+            epsilon=self.epsilon,
+            n_iters=self.n_iters,
+            eps_num=self.eps_num,
+        )
+
+        T = result.T.detach()
+        batch_size = torch.prod(torch.tensor(T.shape[:-2], dtype=torch.float32)) if T.dim() > 2 else 1.0
+        out = {k: (T * c).sum() / batch_size for k, c in components.items()}
+
+        if self.unbiased:
+            _, C_self = self._cost(predict, predict)
+            result_self = sinkhorn_log(
+                C=C_self,
+                mu=mu,
+                nu=mu,
+                epsilon=self.epsilon,
+                n_iters=self.n_iters,
+                eps_num=self.eps_num,
+            )
+            components_self, _ = self._cost(predict, predict)
+            T_self = result_self.T.detach()
+            out = {k: out[k] - 0.5 * (T_self * components_self[k]).sum() / batch_size for k in out}
+
+        return {
+            **out,
+            "sinkhorn_row_conv": result.row_conv.mean(0).detach(),
+            "sinkhorn_col_conv": result.col_conv.mean(0).detach(),
+        }
+
+    def forward(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        all_losses = self.losses(predict, truth)
+        return all_losses["position"] + all_losses["time"]
 
 
 class GeomlossSinkhornVertexLoss(nn.Module):
@@ -481,6 +592,100 @@ class GeomlossSinkhornVertexLoss(nn.Module):
         return loss.mean()
 
 
+class GeomlosEnergyWeightedSinkhornLoss(nn.Module):
+    """geomloss equivalent of EnergyWeightedSinkhornLoss.
+
+    Cost:
+        C_ij = position_weight * ||pos_i - pos_j||² + time_weight * (t_i - t_j)²
+
+    Marginals:
+        nu  (truth)   ∝ 5·log(1 + energy/5)  — log-compressed energy weighting, normalised
+        mu  (predict) = uniform
+
+    No energy regression term in the cost.
+
+    Args:
+        position_weight: Scale applied to squared position distances.
+        time_weight: Scale applied to squared time differences.
+        blur: Entropic regularisation strength (geomloss ``blur`` parameter).
+        p: Cost exponent passed to SamplesLoss (default 2).
+        scaling: geomloss multi-scale refinement parameter (range (0, 1)).
+        debias: Whether to use the debiased Sinkhorn divergence.
+        eps_num: Small constant for numerical safety in marginal normalisation.
+    """
+
+    def __init__(
+        self,
+        position_weight: float = 1.0,
+        time_weight: float = 1.0,
+        blur: float = 0.1,
+        p: int = 2,
+        scaling: float = 0.5,
+        debias: bool = True,
+        eps_num: float = 1e-8,
+    ):
+        super().__init__()
+        weight_sum = position_weight + time_weight
+        self.position_weight = position_weight / weight_sum
+        self.time_weight = time_weight / weight_sum
+        self.blur = blur
+        self.p = p
+        self.scaling = scaling
+        self.debias = debias
+        self.eps_num = eps_num
+
+        self.loss_fn = geomloss.SamplesLoss(
+            loss="sinkhorn",
+            backend="tensorized",
+            p=self.p,
+            blur=self.blur,
+            scaling=self.scaling,
+            debias=self.debias,
+            cost=self._cost_fn,
+        )
+
+    def _cost_fn(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Pairwise cost between packed point clouds [pos(3), time(1)].
+
+        Args:
+            x: (..., N_pred, 4)
+            y: (..., N_truth, 4)
+        Returns:
+            C: (..., N_pred, N_truth)
+        """
+        pos_cost = torch.cdist(x[..., :3], y[..., :3], p=2) ** 2
+        time_cost = (x[..., 3][:, :, None] - y[..., 3][:, None, :]) ** 2
+        return self.position_weight * pos_cost + self.time_weight * time_cost
+
+    def forward(
+        self,
+        predict: dict[str, torch.Tensor],
+        truth: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        # Pack [pos, time] — 4-dim point clouds; energy only used for marginals
+        pred_pts = torch.cat([predict["position"], predict["time"].unsqueeze(-1)], dim=-1)
+        truth_pts = torch.cat([truth["position"], truth["time"].unsqueeze(-1)], dim=-1)
+
+        n_pred = pred_pts.shape[-2]
+        n_truth = truth_pts.shape[-2]
+        d = pred_pts.shape[-1]
+
+        pred_flat = pred_pts.reshape(-1, n_pred, d)
+        truth_flat = truth_pts.reshape(-1, n_truth, d)
+        batch = pred_flat.shape[0]
+
+        mu = torch.full((batch, n_pred), 1.0 / n_pred, device=pred_pts.device, dtype=pred_pts.dtype)
+
+        nu = truth["energy"].reshape(batch, n_truth)
+        nu = 5.0 * torch.log(1.0 + nu / 5.0)
+        nu = nu / (nu.sum(-1, keepdim=True) + self.eps_num)
+
+        loss = self.loss_fn(mu, pred_flat, nu, truth_flat)
+        print(loss)
+
+        return loss.mean()
+
+
 class GeomlossSinkhornPositionLoss(nn.Module):
     """Sinkhorn OT loss over predicted vs. truth positions only.
 
@@ -540,6 +745,34 @@ class GeomlossSinkhornPositionLoss(nn.Module):
         nu = nu / (nu.sum(-1, keepdim=True) + self.eps_num)
 
         return loss_fn(mu, pred_flat, nu, truth_flat).mean()
+
+
+class PPPGMM(nn.Module):
+    def __init__(self, sigma: float, position_scale: float):
+        super().__init__()
+        self.logsigma2 = 2 * torch.log(torch.tensor(sigma) / position_scale)
+
+    # @torch.compile()
+    def forward(self, predict: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]) -> torch.Tensor:
+        mu = torch.concat([predict["time"][..., None], predict["position"]], dim=-1)
+        truth_pos = torch.concat([truth["time"][..., None], truth["position"]], dim=-1)
+
+        squared_displacements = torch.sum(torch.square(mu[..., None, :, :] - truth_pos[..., :, None, :]), dim=-1)
+
+        n = 4
+
+        log_terms = (
+            -n / 2 * self.logsigma2
+            - n / 2 * torch.log(2 * torch.tensor(torch.pi))
+            - 1 / (2 * torch.exp(self.logsigma2)) * squared_displacements
+            + predict["log_weight"][..., None, :]
+        )
+        loss = -torch.sum(truth["energy"] * torch.logsumexp(log_terms, dim=-1), dim=-1)
+        loss = loss + torch.sum(torch.exp(predict["log_weight"]), dim=-1)
+
+        loss = loss / torch.sum(truth["energy"], dim=-1)
+
+        return loss.mean()
 
 
 def cardinality_error(
