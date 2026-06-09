@@ -533,9 +533,23 @@ class NestedHitInputMaker(HitInputMaker):
     sorted arrays are represented (expanded vs. unique-PMT).
     """
 
-    def __init__(self, min_hit_time: float = 0.0, max_hit_time: float = 300.0):
+    def __init__(
+        self,
+        min_hit_time: float = 0.0,
+        max_hit_time: float = 300.0,
+        pmt_info_path: str | None = None,
+        active_pmt_types: tuple[str, ...] = ("NORMAL", "HQE"),
+    ):
         self.min_hit_time = min_hit_time
         self.max_hit_time = max_hit_time
+        if pmt_info_path is not None:
+            from deepsno.data.pmt_info import active_pmt_remap
+            active_ids, remap = active_pmt_remap(pmt_info_path, active_pmt_types)
+            self._remap: np.ndarray | None = remap
+            self._n_active: int = len(active_ids)
+        else:
+            self._remap = None
+            self._n_active = None
 
     @property
     def filter_names(self) -> set[str]:
@@ -558,6 +572,12 @@ class NestedHitInputMaker(HitInputMaker):
         selector = (hit_times > self.min_hit_time) & (hit_times < self.max_hit_time)
         pmt_ids = pmt_ids[selector]
         hit_times = hit_times[selector]
+
+        if self._remap is not None:
+            compact = self._remap[pmt_ids]
+            keep = compact >= 0
+            pmt_ids = compact[keep]
+            hit_times = hit_times[keep]
 
         if np.any(~np.isfinite(np.log(hit_times))):
             raise ValueError("Bad log hit times")
@@ -593,9 +613,14 @@ class UniqueHitInputMaker(NestedHitInputMaker):
     a fixed-size ``(B, n_pmts, dim)`` representation.
     """
 
-    def __init__(self, n_pmts: int, **kwargs):
+    def __init__(self, n_pmts: int | None = None, **kwargs):
         super().__init__(**kwargs)
-        self.n_pmts = n_pmts
+        if n_pmts is not None:
+            self.n_pmts = n_pmts
+        elif self._n_active is not None:
+            self.n_pmts = self._n_active
+        else:
+            raise ValueError("UniqueHitInputMaker requires either n_pmts or pmt_info_path")
 
     def _make_pmt_inputs(self, pmt_ids: np.ndarray, hit_times: np.ndarray) -> dict[str, np.ndarray]:
         pmt_lengths = np.bincount(pmt_ids, minlength=self.n_pmts).astype(np.int64)
