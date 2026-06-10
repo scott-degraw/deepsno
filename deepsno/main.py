@@ -391,6 +391,8 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
                 raise ValueError(f"{key} num_workers {nw} is not divisible by world_size {world_size}")
             dl_cfg["init_args"]["num_workers"] = nw // world_size
 
+    for key in ("train_dataloader", "val_dataloader"):
+        train_cfg[key].setdefault("init_args", {})["generator"] = torch.Generator().manual_seed(train_cfg["seed"])
     train_dataloader = instantiate(train_cfg["train_dataloader"])
     val_dataloader = instantiate(train_cfg["val_dataloader"])
 
