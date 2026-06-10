@@ -1,5 +1,9 @@
 import glob
+import os
+import time
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from typing import Iterable
 
 import awkward as ak
@@ -28,11 +32,13 @@ class UprootMultiFileDataset(IterableDataset):
         shuffle: bool = True,
         cache: bool | str = False,
         debug: bool = False,
+        benchmark: bool = False,
+        prefetch: bool = True,
     ) -> None:
         if expressions is None:
             expressions = set()
         if isinstance(file_paths, str):
-            self.file_paths = glob.glob(file_paths)
+            self.file_paths = sorted(glob.glob(file_paths))
             if len(self.file_paths) == 0:
                 raise FileNotFoundError(f"No files found in: {file_paths}")
         else:
@@ -47,6 +53,8 @@ class UprootMultiFileDataset(IterableDataset):
         self.generator = None
         self.debug = debug
         self.cache = cache
+        self.benchmark = benchmark
+        self.prefetch = prefetch
 
         if self.debug:
             self.debug_print("Initializing")
@@ -126,43 +134,69 @@ class UprootMultiFileDataset(IterableDataset):
         else:
             open_context = open
 
-        for file_index in file_indices:
-            file = file_paths[file_index]
-
+        def _read_file(file: str) -> tuple[str, float, ak.Array]:
+            t0 = time.perf_counter()
             with open_context(file, mode="rb") as f:
                 with uproot.open(f) as ntuple:
                     expr = self.expressions if self.expressions else None
-                    filter_name = self.filter_name if self.filter_name else None
-                    arrays = ntuple[self.tree_name].arrays(expr, filter_name=filter_name)
+                    fn = self.filter_name if self.filter_name else None
+                    arrays = ntuple[self.tree_name].arrays(expr, filter_name=fn)
+            return file, time.perf_counter() - t0, arrays
 
-            empty = True
-            for entry in arrays:
-                empty = False
-                entry = (entry, file)
-                if not self.shuffle:
-                    yield entry
-                    continue
-                if len(buffer) < self.buffer_size:
-                    buffer.append(entry)
-                    continue
-                elif len(buffer) > self.buffer_size:
-                    raise ValueError(f"Buffer size exceeded! Size is {len(buffer)} but should be {self.buffer_size}.")
+        ordered_files = [file_paths[i] for i in file_indices]
+        with ThreadPoolExecutor(max_workers=1) if self.prefetch else nullcontext() as executor:
+            future = executor.submit(_read_file, ordered_files[0]) if self.prefetch else None
+            for i, path in enumerate(ordered_files):
+                if self.prefetch:
+                    next_future = (
+                        executor.submit(_read_file, ordered_files[i + 1]) if i + 1 < len(ordered_files) else None
+                    )
+                    file, elapsed, arrays = future.result()
+                    future = next_future
+                else:
+                    file, elapsed, arrays = _read_file(path)
+                self.debug_print(f"Opened {file}")
+                if self.benchmark:
+                    file_mb = os.path.getsize(file) / 1024**2
+                    n_events = len(arrays)
+                    print(
+                        f"[benchmark] {os.path.basename(file)}: {n_events} events, "
+                        f"{file_mb:.1f} MB in {elapsed:.2f}s "
+                        f"({file_mb / elapsed:.1f} MB/s, {n_events / elapsed:.0f} events/s)"
+                    )
 
-                buffer_i = self.generator.choice(self.buffer_size)
-                if len(buffer) < 1:
-                    raise ValueError("Buffer is empty!")
-                if len(buffer) != self.buffer_size:
-                    raise ValueError(f"Buffer is not full!. Size is {len(buffer)} but should be {self.buffer_size}.")
+                empty = True
+                for entry in arrays:
+                    empty = False
+                    entry = (entry, file)
+                    if not self.shuffle:
+                        yield entry
+                        continue
+                    if len(buffer) < self.buffer_size:
+                        buffer.append(entry)
+                        continue
+                    elif len(buffer) > self.buffer_size:
+                        raise ValueError(
+                            f"Buffer size exceeded! Size is {len(buffer)} but should be {self.buffer_size}."
+                        )
 
-                self.debug_print(f"Yielding event {self.n_entries}")
+                    buffer_i = self.generator.choice(self.buffer_size)
+                    if len(buffer) < 1:
+                        raise ValueError("Buffer is empty!")
+                    if len(buffer) != self.buffer_size:
+                        raise ValueError(
+                            f"Buffer is not full!. Size is {len(buffer)} but should be {self.buffer_size}."
+                        )
 
-                self.n_entries += 1
-                yield buffer[buffer_i]
+                    self.debug_print(f"Yielding event {self.n_entries}")
 
-                buffer[buffer_i] = entry
+                    self.n_entries += 1
+                    yield buffer[buffer_i]
 
-            if empty:
-                raise ValueError(f"No entries found in file {file}!")
+                    buffer[buffer_i] = entry
+
+                if empty:
+                    raise ValueError(f"No entries found in file {file}!")
 
         if self.shuffle:
             self.debug_print("Flushing buffer")
@@ -544,6 +578,7 @@ class NestedHitInputMaker(HitInputMaker):
         self.max_hit_time = max_hit_time
         if pmt_info_path is not None:
             from deepsno.data.pmt_info import active_pmt_remap
+
             active_ids, remap = active_pmt_remap(pmt_info_path, active_pmt_types)
             self._remap: np.ndarray | None = remap
             self._n_active: int = len(active_ids)
@@ -1025,34 +1060,15 @@ class MultiHitDataset(UprootMultiFileDataset):
         vertex_data_maker: VertexDataMaker,
         max_context_len: int,
         max_n_vertices: int,
-        file_paths: str | Iterable[str],
-        tree_name: str,
-        expressions: Iterable[str] | None = None,
         filter_name: Iterable[str] | None = None,
-        cut: str | None = None,
-        seed: int = 42,
-        buffer_size: int = 100,
-        shuffle: bool = True,
-        cache: bool | str = False,
-        debug: bool = False,
+        **kwargs,
     ):
         combined_filter = set(filter_name) if filter_name else set()
         combined_filter |= {"mc_index", "npe"}
         combined_filter |= hit_input_maker.filter_names
         combined_filter |= vertex_data_maker.filter_names
 
-        super().__init__(
-            file_paths=file_paths,
-            tree_name=tree_name,
-            expressions=expressions,
-            filter_name=combined_filter,
-            cut=cut,
-            seed=seed,
-            buffer_size=buffer_size,
-            shuffle=shuffle,
-            cache=cache,
-            debug=debug,
-        )
+        super().__init__(filter_name=combined_filter, **kwargs)
         self.hit_input_maker = hit_input_maker
         self.vertex_data_maker = vertex_data_maker
         self.max_context_len = max_context_len
@@ -1078,6 +1094,20 @@ class MultiHitDataset(UprootMultiFileDataset):
                 "npe": entry["npe"].item(),
                 "file_path": file_path,
             }
+
+            stub_inputs = {
+                "hit_times": torch.zeros(3),
+                "pmt_lengths": torch.zeros(4, dtype=torch.int64),
+            }
+            stub_truth = {
+                "position": torch.zeros(2, 3),
+                "time": torch.zeros(2),
+                "energy": torch.zeros(2),
+                "exists": torch.zeros(2, dtype=torch.bool),
+                "mc_index": 0,
+                "npe": 0,
+            }
+            # yield stub_inputs, stub_truth  # TODO remove — testing collate_fn without loading data
 
             yield pytree.tree_map(torch.from_numpy, inputs), truth
 
