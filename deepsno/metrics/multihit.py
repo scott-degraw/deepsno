@@ -775,6 +775,41 @@ class PPPGMM(nn.Module):
         return loss.mean()
 
 
+class DeepSupervisionLoss(nn.Module):
+    """Wraps any vertex loss to add deep-supervision auxiliary losses.
+
+    Expects ``predict`` to optionally contain an ``"aux_outputs"`` key — a list
+    of prediction dicts from intermediate decoder layers, as produced by
+    ``ObjectDecoder`` / ``ObjectDecoderVarlen`` with ``deep_supervision=True``.
+    The wrapped loss is applied once to the main output and once per auxiliary
+    output, then summed with the given scale factor.
+
+    When ``predict`` has no ``"aux_outputs"`` key this behaves identically to
+    calling ``loss_fn`` directly, so it is safe to use as a drop-in wrapper
+    even when deep supervision is disabled in the model.
+
+    Args:
+        loss_fn: Base loss module (e.g. ``HungarianVertexLoss``, ``SinkhornVertexLoss``).
+        aux_weight: Scale applied to each auxiliary loss term (default ``1.0``).
+    """
+
+    def __init__(self, loss_fn: nn.Module, aux_weight: float = 1.0):
+        super().__init__()
+        self.loss_fn = loss_fn
+        self.aux_weight = aux_weight
+
+    def forward(self, predict: dict[str, torch.Tensor], truth: dict[str, torch.Tensor]) -> torch.Tensor:
+        aux_outputs = predict.get("aux_outputs", [])
+        main_predict = {k: v for k, v in predict.items() if k != "aux_outputs"}
+
+        # truth.copy() guards against loss functions that mutate truth in-place
+        loss = self.loss_fn(main_predict, truth.copy())
+        for aux_pred in aux_outputs:
+            loss = loss + self.aux_weight * self.loss_fn(aux_pred, truth.copy())
+
+        return loss
+
+
 def cardinality_error(
     predict_logit: torch.Tensor,
     truth_exists: torch.Tensor,

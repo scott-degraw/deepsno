@@ -142,9 +142,11 @@ class MABVarlen(nn.Module):
         Returns:
             :class:`VarlenTensor` with the same sequence structure as ``q``.
         """
-        q_proj = self.q_proj(q.data).view(-1, self.num_heads, self.head_dim)
-        k_proj = self.k_proj(k.data).view(-1, self.num_heads, self.head_dim)
-        v_proj = self.v_proj(k.data).view(-1, self.num_heads, self.head_dim)
+        q_n = self.norm1(q.data)
+        k_src = q_n if k is q else k.data
+        q_proj = self.q_proj(q_n).view(-1, self.num_heads, self.head_dim)
+        k_proj = self.k_proj(k_src).view(-1, self.num_heads, self.head_dim)
+        v_proj = self.v_proj(k_src).view(-1, self.num_heads, self.head_dim)
 
         if varlen_attn is None:
             raise NotImplementedError("torch.nn.attention.varlen.varlen_attn is not available in your PyTorch version.")
@@ -160,8 +162,8 @@ class MABVarlen(nn.Module):
         )
 
         attn_out = attn_out.view(-1, self.dim)
-        out = self.norm1(q.data + self.dropout(self.out_proj(attn_out)))
-        out = self.norm2(out + self.dropout(self.ffn(out)))
+        out = q.data + self.dropout(self.out_proj(attn_out))
+        out = out + self.dropout(self.ffn(self.norm2(out)))
         return VarlenTensor(out, q.cu_seqlens, q.max_seqlen)
 
 
@@ -236,6 +238,7 @@ class ISABVarlen(nn.Module):
         dim: int,
         num_heads: int,
         num_inducing: int,
+        batch_size: int,
         bias: bool = True,
         dim_feedforward: int | None = None,
         dropout: float = 0.0,
@@ -250,6 +253,11 @@ class ISABVarlen(nn.Module):
                 to ``4 * dim`` if not set.
             dropout: Dropout probability applied after attention output and FFN
                 in each MAB block.  Default: ``0.0`` (disabled).
+            batch_size: Fixed batch size.  The inducing-point ``cu_seqlens``
+                buffer is pre-allocated to exactly this size so ``forward``
+                requires no data-dependent tensor creation (required for
+                ``torch.compile``).  Must match the dataloader batch size;
+                use ``drop_last=True``.
         """
         super().__init__()
         self.num_inducing = num_inducing
@@ -257,15 +265,9 @@ class ISABVarlen(nn.Module):
         nn.init.xavier_uniform_(self.I.view(num_inducing, dim))  # treat as (m, dim) so fan_in=dim, not m*dim
         self.mab1 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
         self.mab2 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
-
-    def _inducing_cu_seqlens(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        """Uniform cu_seqlens for the inducing points: [0, m, 2m, …, B*m]."""
-        return torch.arange(
-            0,
-            (batch_size + 1) * self.num_inducing,
-            step=self.num_inducing,
-            device=device,
-            dtype=dtype,
+        self.register_buffer(
+            "cu_seqlens_ind",
+            torch.arange(0, (batch_size + 1) * num_inducing, step=num_inducing, dtype=torch.int32),
         )
 
     def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
@@ -276,10 +278,9 @@ class ISABVarlen(nn.Module):
         Returns:
             :class:`VarlenTensor` of the same shape as the input.
         """
-        batch_size = vt.cu_seqlens.shape[0] - 1
+        batch_size = self.cu_seqlens_ind.shape[0] - 1  # static — derived from buffer, not input
         ind_data = self.I.expand(batch_size, -1, -1).reshape(-1, self.I.shape[-1])
-        cu_seqlens_ind = self._inducing_cu_seqlens(batch_size, vt.data.device, vt.cu_seqlens.dtype)
-        ind_vt = VarlenTensor(ind_data, cu_seqlens_ind, self.num_inducing)
+        ind_vt = VarlenTensor(ind_data, self.cu_seqlens_ind, self.num_inducing)
 
         H_vt = self.mab1(ind_vt, vt)
         return self.mab2(vt, H_vt)
@@ -327,6 +328,7 @@ class SetEncoderVarlen(nn.Module):
                 for _ in range(num_sabs)
             ]
         )
+        self.norm = nn.LayerNorm(dim_hidden)
 
     def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
         """
@@ -339,7 +341,7 @@ class SetEncoderVarlen(nn.Module):
         vt = VarlenTensor(self.proj(vt.data), vt.cu_seqlens, vt.max_seqlen)
         for sab in self.sabs:
             vt = sab(vt)
-        return vt
+        return VarlenTensor(self.norm(vt.data), vt.cu_seqlens, vt.max_seqlen)
 
 
 class SetEncoderVarlenPadded(nn.Module):
@@ -386,7 +388,14 @@ class SetEncoderVarlenPadded(nn.Module):
     ):
         super().__init__()
         self.fill_value = fill_value
-        self.encoder = SetEncoderVarlen(dim_in=dim_in, dim_hidden=dim_hidden, num_heads=num_heads, num_sabs=num_sabs, dim_feedforward=dim_feedforward, dropout=dropout)
+        self.encoder = SetEncoderVarlen(
+            dim_in=dim_in,
+            dim_hidden=dim_hidden,
+            num_heads=num_heads,
+            num_sabs=num_sabs,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+        )
 
     def forward(
         self,
@@ -420,6 +429,7 @@ class InducedSetEncoderVarlen(nn.Module):
         dim_in: int,
         dim_hidden: int,
         num_heads: int,
+        batch_size: int,
         num_inducing: int = 32,
         num_isabs: int = 2,
         dim_feedforward: int | None = None,
@@ -435,15 +445,25 @@ class InducedSetEncoderVarlen(nn.Module):
             dim_feedforward: FFN hidden dimension in each ISAB.  Defaults to
                 ``4 * dim_hidden`` if not set.
             dropout: Dropout probability for each ISAB.  Default: ``0.0``.
+            batch_size: Fixed batch size passed through to each :class:`ISABVarlen`
+                to pre-allocate the inducing-point ``cu_seqlens`` buffer.
         """
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_hidden)
         self.isabs = nn.ModuleList(
             [
-                ISABVarlen(dim=dim_hidden, num_heads=num_heads, num_inducing=num_inducing, dim_feedforward=dim_feedforward, dropout=dropout)
+                ISABVarlen(
+                    dim=dim_hidden,
+                    num_heads=num_heads,
+                    num_inducing=num_inducing,
+                    dim_feedforward=dim_feedforward,
+                    dropout=dropout,
+                    batch_size=batch_size,
+                )
                 for _ in range(num_isabs)
             ]
         )
+        self.norm = nn.LayerNorm(dim_hidden)
 
     def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
         """
@@ -456,7 +476,7 @@ class InducedSetEncoderVarlen(nn.Module):
         vt = VarlenTensor(self.proj(vt.data), vt.cu_seqlens, vt.max_seqlen)
         for isab in self.isabs:
             vt = isab(vt)
-        return vt
+        return VarlenTensor(self.norm(vt.data), vt.cu_seqlens, vt.max_seqlen)
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +629,17 @@ class InducedSetEncoder(nn.Module):
         """
         super().__init__()
         self.isabs = nn.ModuleList(
-            [ISAB(dim=dim, num_heads=num_heads, num_inducing=num_inducing, dim_feedforward=dim_feedforward, dropout=dropout, bias=bias) for _ in range(num_isabs)]
+            [
+                ISAB(
+                    dim=dim,
+                    num_heads=num_heads,
+                    num_inducing=num_inducing,
+                    dim_feedforward=dim_feedforward,
+                    dropout=dropout,
+                    bias=bias,
+                )
+                for _ in range(num_isabs)
+            ]
         )
         self.norm = nn.LayerNorm(dim)
 
@@ -719,8 +749,20 @@ class SetTransformerVarlen(nn.Module):
                 Defaults to ``4 * dim_hidden`` if not set.
         """
         super().__init__()
-        self.encoder = SetEncoderVarlen(dim_in=dim_in, dim_hidden=dim_hidden, num_heads=num_heads, num_sabs=num_sabs, dim_feedforward=dim_feedforward)
-        self.pooling = SetPoolingVarlen(dim_hidden=dim_hidden, dim_out=dim_out, num_heads=num_heads, num_seeds=num_seeds, dim_feedforward=dim_feedforward)
+        self.encoder = SetEncoderVarlen(
+            dim_in=dim_in,
+            dim_hidden=dim_hidden,
+            num_heads=num_heads,
+            num_sabs=num_sabs,
+            dim_feedforward=dim_feedforward,
+        )
+        self.pooling = SetPoolingVarlen(
+            dim_hidden=dim_hidden,
+            dim_out=dim_out,
+            num_heads=num_heads,
+            num_seeds=num_seeds,
+            dim_feedforward=dim_feedforward,
+        )
 
     def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
@@ -768,8 +810,21 @@ class InducedSetTransformerVarlen(nn.Module):
                 Defaults to ``4 * dim_hidden`` if not set.
         """
         super().__init__()
-        self.encoder = InducedSetEncoderVarlen(dim_in=dim_in, dim_hidden=dim_hidden, num_heads=num_heads, num_inducing=num_inducing, num_isabs=num_isabs, dim_feedforward=dim_feedforward)
-        self.pooling = SetPoolingVarlen(dim_hidden=dim_hidden, dim_out=dim_out, num_heads=num_heads, num_seeds=num_seeds, dim_feedforward=dim_feedforward)
+        self.encoder = InducedSetEncoderVarlen(
+            dim_in=dim_in,
+            dim_hidden=dim_hidden,
+            num_heads=num_heads,
+            num_inducing=num_inducing,
+            num_isabs=num_isabs,
+            dim_feedforward=dim_feedforward,
+        )
+        self.pooling = SetPoolingVarlen(
+            dim_hidden=dim_hidden,
+            dim_out=dim_out,
+            num_heads=num_heads,
+            num_seeds=num_seeds,
+            dim_feedforward=dim_feedforward,
+        )
 
     def forward(self, vt: "VarlenTensor") -> torch.Tensor:
         """
