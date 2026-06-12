@@ -136,18 +136,6 @@ def create_training_snapshot(label: str) -> str:
     return snapshot_sha
 
 
-def initialize_norm_dict(model_cfg: dict):
-    """Instantiate the norm class in-place if it is given in the model config."""
-    if "norm_dict" not in model_cfg["init_args"]:
-        return
-    norm_dict_cfg = model_cfg["init_args"]["norm_dict"]
-    if norm_dict_cfg is not None and "class_path" in norm_dict_cfg:
-        check_instantiate_keys(norm_dict_cfg, "norm_dict")
-        norm_dict_class = get_class(norm_dict_cfg["class_path"])
-        norm_dict = norm_dict_class(**norm_dict_cfg["init_args"])
-        model_cfg["init_args"]["norm_dict"] = dict(norm_dict)
-
-
 # ---------------------------------------------------------------------------
 # Parser construction
 # ---------------------------------------------------------------------------
@@ -368,8 +356,6 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
         snapshot_sha = None
 
     # Instantiate the model
-    initialize_norm_dict(cfg["model"])
-
     save_cfg: dict = copy.deepcopy(cfg)
     if snapshot_sha is not None:
         save_cfg["git_hash"] = snapshot_sha
