@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 
 import jinja2
+import numpy as np
 import yaml
 from jsonargparse._loaders_dumpers import get_loader_exceptions, yaml_load
 
@@ -48,6 +49,15 @@ def model_save_directory(checkpoint_dir: str | Path) -> str:
 @add_filter
 def path_join(paths) -> str:
     return str(Path(*paths))
+
+
+class DeepsnoDumper(yaml.Dumper):
+    """yaml.Dumper that handles types common in ML configs."""
+
+
+DeepsnoDumper.add_representer(Path, lambda d, p: d.represent_str(str(p)))
+DeepsnoDumper.add_representer(np.integer, lambda d, v: d.represent_int(int(v)))
+DeepsnoDumper.add_representer(np.floating, lambda d, v: d.represent_float(float(v)))
 
 
 def jinja_yaml_loader(stream):
