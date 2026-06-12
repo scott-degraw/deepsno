@@ -23,6 +23,7 @@ from deepsno.loops import _unwrap, bench_dataloader, predict, train
 from deepsno.metrics import metric_monitor
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
+from deepsno.utils.jinja import DeepsnoDumper
 from deepsno.utils.config_parse import check_instantiate_keys, get_class, instantiate
 from deepsno.utils.train import get_best_ckpt, get_latest_ckpt
 
@@ -451,7 +452,7 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
     # Save the config (rank 0 only)
     if is_main:
         with open(model_save_dir / "config.yaml", "w") as f:
-            yaml.dump(save_cfg, f, sort_keys=False)
+            yaml.dump(save_cfg, f, sort_keys=False, Dumper=DeepsnoDumper)
 
     if dry_run in ("only", "before"):
         dry_run_dir = Path(tempfile.gettempdir()) / "dry_run"
@@ -557,8 +558,6 @@ def run_predict(cfg: dict, parser: ArgumentParser) -> None:
     # definition takes precedence over anything from --config.
     ckpt_cfg = parser.parse_path(predict_cfg["ckpt_config"]).as_dict()
     cfg = cfg | ckpt_cfg
-
-    initialize_norm_dict(cfg["model"])
 
     save_cfg: dict = cfg
     cfg = parser.instantiate_classes(cfg)
