@@ -52,7 +52,7 @@ class UprootMultiFileDataset(IterableDataset):
         self.shuffle = shuffle
         self.generator = None
         self.debug = debug
-        self.cache = cache
+        self.cache = os.path.expandvars(cache) if isinstance(cache, str) else cache
         self.benchmark = benchmark
         self.prefetch = prefetch
 
@@ -1095,20 +1095,6 @@ class MultiHitDataset(UprootMultiFileDataset):
                 "file_path": file_path,
             }
 
-            stub_inputs = {
-                "hit_times": torch.zeros(3),
-                "pmt_lengths": torch.zeros(4, dtype=torch.int64),
-            }
-            stub_truth = {
-                "position": torch.zeros(2, 3),
-                "time": torch.zeros(2),
-                "energy": torch.zeros(2),
-                "exists": torch.zeros(2, dtype=torch.bool),
-                "mc_index": 0,
-                "npe": 0,
-            }
-            # yield stub_inputs, stub_truth  # TODO remove — testing collate_fn without loading data
-
             yield pytree.tree_map(torch.from_numpy, inputs), truth
 
 
@@ -1133,6 +1119,41 @@ class MultiHitUniqueCollate:
         collated_inputs = {
             "hit_times": torch.cat([x["hit_times"] for x in inputs_list]),
             "pmt_lengths": torch.stack([x["pmt_lengths"] for x in inputs_list]),
+        }
+        return collated_inputs, torch.utils.data.default_collate(list(truth_list))
+
+
+class MultiHitExpandedVarlenCollate:
+    """Collate for :class:`ExpandedHitInputMaker` output.
+
+    Concatenates the variable-length per-event ``pmt_ids`` and ``hit_times``
+    arrays and packs them into a :class:`~deepsno.models.transformers.VarlenTensor`
+    keyed as ``hits``.  No masking needed — inputs are already unpadded.
+
+    Output ``inputs`` keys:
+        - ``hits``:      :class:`~deepsno.models.transformers.VarlenTensor` with
+          ``(total_hits,)`` flat PMT IDs and event-level ``cu_seqlens``.
+        - ``hit_times``: ``(total_hits,)`` flat hit times.
+
+    Usage in config::
+
+        collate_fn:
+            class_path: deepsno.data.multihit.MultiHitExpandedVarlenCollate
+    """
+
+    def __call__(self, batch: list) -> tuple[dict, dict]:
+        inputs_list, truth_list = zip(*batch)
+
+        seqlens = [len(x["hit_times"]) for x in inputs_list]
+        cu_seqlens = torch.zeros(len(seqlens) + 1, dtype=torch.int32)
+        cu_seqlens[1:] = torch.tensor(seqlens, dtype=torch.int32).cumsum(0)
+
+        pmt_ids = torch.cat([x["pmt_ids"] for x in inputs_list])
+        hit_times = torch.cat([x["hit_times"] for x in inputs_list])
+
+        collated_inputs = {
+            "hits": VarlenTensor(pmt_ids, cu_seqlens, max(seqlens)),
+            "hit_times": hit_times,
         }
         return collated_inputs, torch.utils.data.default_collate(list(truth_list))
 
