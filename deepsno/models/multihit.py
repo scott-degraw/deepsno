@@ -81,6 +81,7 @@ class ObjectDecoderVarlen(nn.Module):
         dim: int,
         num_heads: int,
         num_layers: int,
+        batch_size: int,
         dim_feedforward: int | None = None,
         dropout: float = 0.0,
         bias: bool = True,
@@ -90,6 +91,7 @@ class ObjectDecoderVarlen(nn.Module):
         time_scale: float = 1.0,
         energy_scale: float = 1.0,
         energy_shift: float = 0.0,
+        deep_supervision: bool = False,
     ):
         """
         Args:
@@ -103,6 +105,12 @@ class ObjectDecoderVarlen(nn.Module):
             position_shift / position_scale: Output (un)normalisation for position.
             time_shift / time_scale: Output (un)normalisation for time.
             energy_shift / energy_scale: Output (un)normalisation for energy.
+            deep_supervision: If True, forward returns ``(final_q, [intermediate_q_0, ...,
+                intermediate_q_{N-2}])`` so callers can apply auxiliary losses on each layer.
+            batch_size: Fixed batch size.  The query ``cu_seqlens`` buffer is
+                pre-allocated to exactly this size so ``forward`` requires no
+                data-dependent tensor creation (required for ``torch.compile``).
+                Must match the dataloader batch size; use ``drop_last=True``.
         """
         super().__init__()
         self.n_queries = n_queries
@@ -117,6 +125,8 @@ class ObjectDecoderVarlen(nn.Module):
             ]
         )
 
+        self.deep_supervision = deep_supervision
+        self.norm = nn.LayerNorm(dim)
         self.output_unnorm = False
         self.position_shift = position_shift
         self.position_scale = position_scale
@@ -124,6 +134,10 @@ class ObjectDecoderVarlen(nn.Module):
         self.time_scale = time_scale
         self.energy_shift = energy_shift
         self.energy_scale = energy_scale
+        self.register_buffer(
+            "cu_seqlens_q",
+            torch.arange(0, (batch_size + 1) * n_queries, step=n_queries, dtype=torch.int32),
+        )
 
     def output_normalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x["position"] = (x["position"] - self.position_shift) / self.position_scale
@@ -137,32 +151,34 @@ class ObjectDecoderVarlen(nn.Module):
         x["energy"] = x["energy"] * self.energy_scale + self.energy_shift
         return x
 
-    def forward(self, enc_vt: VarlenTensor) -> torch.Tensor:
+    def forward(self, enc_vt: VarlenTensor):
         """
         Args:
             enc_vt: :class:`~deepsno.models.transformers.VarlenTensor` of packed
                 encoder output, shape ``(total_hits, dim)``.
 
         Returns:
-            ``(batch_size, n_queries, dim)`` refined query embeddings.
+            When ``deep_supervision=False`` (default): ``(batch_size, n_queries, dim)`` tensor.
+            When ``deep_supervision=True``: tuple of ``(final_q, [intermediate_q_0, ...,
+            intermediate_q_{N-2}])`` where each element is ``(batch_size, n_queries, dim)``.
         """
-        batch_size = enc_vt.cu_seqlens.shape[0] - 1
+        batch_size = self.cu_seqlens_q.shape[0] - 1  # static — derived from buffer, not input
         dim = self.query_tokens.embedding_dim
 
         q = self.query_tokens.weight.unsqueeze(0).expand(batch_size, -1, -1).reshape(-1, dim)
-        cu_seqlens_q = torch.arange(
-            0,
-            (batch_size + 1) * self.n_queries,
-            step=self.n_queries,
-            device=enc_vt.data.device,
-            dtype=enc_vt.cu_seqlens.dtype,
-        )
-        q_vt = VarlenTensor(q, cu_seqlens_q, self.n_queries)
+        q_vt = VarlenTensor(q, self.cu_seqlens_q, self.n_queries)
+
+        if self.deep_supervision:
+            intermediates = []
+            for i, layer in enumerate(self.layers):
+                q_vt = layer(q_vt, enc_vt)
+                if i < len(self.layers) - 1:
+                    intermediates.append(self.norm(q_vt.data.view(batch_size, self.n_queries, dim)))
+            return self.norm(q_vt.data.view(batch_size, self.n_queries, dim)), intermediates
 
         for layer in self.layers:
             q_vt = layer(q_vt, enc_vt)
-
-        return q_vt.data.view(batch_size, self.n_queries, dim)
+        return self.norm(q_vt.data.view(batch_size, self.n_queries, dim))
 
 
 class ObjectFFNHead(nn.Module):
@@ -303,20 +319,19 @@ class MultiHitPMTEncoderUnique(nn.Module):
 
 class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
     """
-    Encoder for :class:`~deepsno.data.multihit.MultiHitDatasetExpanded` output.
+    Encoder for per-hit varlen input produced by
+    :class:`~deepsno.data.multihit.MultiHitUniqueVarlenCollate`.
 
-    Expects one entry per hit (expanded/repeated form).  Hit-time bin indices
-    are embedded, then hits are grouped by PMT via
-    ``torch.unique_consecutive`` + ``torch.segment_reduce`` (mean), and the
-    result is added to the PMT embedding.
+    Each hit's time embedding is added to its PMT embedding, then the packed
+    sequence is passed through the set encoder.
 
-    Input keys required in batch:
-        - ``pmt_ids``: ``(B, max_context_len)`` PMT IDs, one per hit,
-          sorted by PMT ID and zero-padded.
-        - ``hit_times``: ``(B, max_context_len)`` binned hit-time indices.
+    Input keys:
+        - ``hits``:      :class:`~deepsno.models.transformers.VarlenTensor` whose
+          ``data`` field holds ``(total_hits,)`` flat PMT IDs.
+        - ``hit_times``: ``(total_hits,)`` flat hit times.
     """
 
-    def __init__(self, *args, time_embed_dropout: float = 0.1, **kwargs):  
+    def __init__(self, *args, time_embed_dropout: float = 0.1, **kwargs):
         super().__init__(*args, **kwargs)
         model_dim = self.pmt_embed.embedding_dim
 
@@ -394,6 +409,7 @@ class ObjectDecoder(nn.Module):
         time_scale: float = 1.0,
         energy_shift: float = 0.0,
         energy_scale: float = 1.0,
+        deep_supervision: bool = False,
     ):
         super().__init__()
         self.query_tokens = nn.Embedding(n_queries, dim)
@@ -406,6 +422,8 @@ class ObjectDecoder(nn.Module):
             ]
         )
 
+        self.deep_supervision = deep_supervision
+        self.norm = nn.LayerNorm(dim)
         self.output_unnorm = False
         self.position_shift = position_shift
         self.position_scale = position_scale
@@ -426,19 +444,30 @@ class ObjectDecoder(nn.Module):
         x["energy"] = x["energy"] * self.energy_scale + self.energy_shift
         return x
 
-    def forward(self, enc: torch.Tensor) -> torch.Tensor:
+    def forward(self, enc: torch.Tensor):
         """
         Args:
             enc: ``(B, N, dim)`` encoder output.
 
         Returns:
-            ``(B, n_queries, dim)`` refined query embeddings.
+            When ``deep_supervision=False`` (default): ``(B, n_queries, dim)`` tensor.
+            When ``deep_supervision=True``: tuple of ``(final_q, [intermediate_q_0, ...,
+            intermediate_q_{N-2}])`` where each element is ``(B, n_queries, dim)``.
         """
         B = enc.shape[0]
         q = self.query_tokens.weight.to(dtype=enc.dtype).unsqueeze(0).expand(B, -1, -1)
+
+        if self.deep_supervision:
+            intermediates = []
+            for i, layer in enumerate(self.layers):
+                q = layer(q, enc)
+                if i < len(self.layers) - 1:
+                    intermediates.append(self.norm(q))
+            return self.norm(q), intermediates
+
         for layer in self.layers:
             q = layer(q, enc)
-        return q
+        return self.norm(q)
 
 
 class MultiHit(nn.Module):
@@ -477,11 +506,18 @@ class MultiHit(nn.Module):
     def forward(self, **inputs) -> dict[str, torch.Tensor]:
         with torch.autocast("cuda", dtype=torch.bfloat16):
             enc_vt = self.encoder(**inputs)
-            queries = self.decoder(enc_vt)  # (B, n_queries, dim)
+            decoder_out = self.decoder(enc_vt)
 
-        output = self.head(queries.float())
+        if self.decoder.deep_supervision:
+            queries, intermediates = decoder_out
+            output = self.head(queries.float())
+            output["aux_outputs"] = [self.head(q.float()) for q in intermediates]
+        else:
+            output = self.head(decoder_out.float())
 
         if self.decoder.output_unnorm:
             output = self.decoder.output_unnormalize(output)
+            if self.decoder.deep_supervision:
+                output["aux_outputs"] = [self.decoder.output_unnormalize(aux) for aux in output["aux_outputs"]]
 
         return output
