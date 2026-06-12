@@ -320,7 +320,7 @@ class MultiHitPMTEncoderUnique(nn.Module):
 class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
     """
     Encoder for per-hit varlen input produced by
-    :class:`~deepsno.data.multihit.MultiHitUniqueVarlenCollate`.
+    :class:`~deepsno.data.multihit.MultiHitExpandedVarlenCollate`.
 
     Each hit's time embedding is added to its PMT embedding, then the packed
     sequence is passed through the set encoder.
@@ -331,16 +331,9 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
         - ``hit_times``: ``(total_hits,)`` flat hit times.
     """
 
-    def __init__(self, *args, time_embed_dropout: float = 0.1, **kwargs):
+    def __init__(self, *args, hit_time_embed: nn.Module, **kwargs):
         super().__init__(*args, **kwargs)
-        model_dim = self.pmt_embed.embedding_dim
-
-        self.hit_time_embed = nn.Sequential(
-            nn.Linear(1, model_dim),
-            nn.Tanh(),
-            nn.Dropout(time_embed_dropout),
-            nn.Linear(model_dim, model_dim),
-        )
+        self.hit_time_embed = hit_time_embed
 
     def _embed_hits(self, pmt_ids: torch.Tensor, hit_times: torch.Tensor) -> torch.Tensor:
         hit_times = self.hit_time_normalize(hit_times)
