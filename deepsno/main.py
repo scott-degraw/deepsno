@@ -23,8 +23,8 @@ from deepsno.loops import _unwrap, bench_dataloader, predict, train
 from deepsno.metrics import metric_monitor
 from deepsno.metrics.metrics import Metric
 from deepsno.utils import jinja as jinja_utils
-from deepsno.utils.jinja import DeepsnoDumper
 from deepsno.utils.config_parse import check_instantiate_keys, get_class, instantiate
+from deepsno.utils.jinja import DeepsnoDumper
 from deepsno.utils.train import get_best_ckpt, get_latest_ckpt
 
 LOADER = "jinja_yaml"

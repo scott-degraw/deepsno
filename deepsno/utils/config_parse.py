@@ -1,17 +1,9 @@
+from __future__ import annotations
+
 import importlib
-from typing import Any
+from collections.abc import Mapping
 
 from jsonargparse import Namespace
-
-
-def get_class(class_path: str) -> type:
-    if "." in class_path:
-        module_path, class_str = class_path.rsplit(".", maxsplit=1)
-        module = importlib.import_module(module_path)
-    else:
-        module = importlib.import_module(__name__)
-
-    return getattr(module, class_str)
 
 
 def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
@@ -19,29 +11,73 @@ def check_instantiate_keys(cfg_obj: Namespace | dict, object_name: str):
         raise KeyError(f"'class_path' not found in {object_name} config object")
 
 
-def instantiate(cfg_obj: Any):
-    if isinstance(cfg_obj, str):
-        return cfg_obj
-    try:
-        class_path = cfg_obj["class_path"]
-    except KeyError:
-        for key, item in cfg_obj.items():
-            cfg_obj[key] = instantiate(item)
-        return cfg_obj
-    except TypeError:
+"""Recursively instantiate objects from a nested config structure.
+
+The config is built from plain scalars, strings, iterables (lists/tuples)
+and mappings (dicts). A mapping that contains the key ``"class_path"`` is
+treated as an instantiation directive: the dotted path is imported and the
+resulting class is called with the arguments found under ``"init_args"``.
+
+This mirrors the ``class_path`` / ``init_args`` convention used by
+jsonargparse and PyTorch Lightning's ``LightningCLI``.
+"""
+
+
+def get_class(path):
+    """Import and return the object referred to by a dotted path string.
+
+    Handles plain ``"package.module.ClassName"`` as well as paths that dig
+    into attributes of an imported object, e.g. ``"pkg.mod.Outer.Inner"``.
+    """
+    parts = path.split(".")
+    for split in range(len(parts) - 1, 0, -1):
+        module_name = ".".join(parts[:split])
         try:
-            cfg_obj = [instantiate(item) for item in cfg_obj]
-        except TypeError:
-            pass
-        return cfg_obj
+            obj = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        for attr in parts[split:]:
+            obj = getattr(obj, attr)
+        return obj
+    raise ImportError(f"Could not import {path!r}")
 
-    class_type = get_class(class_path)
-    init_args = cfg_obj.get("init_args", {})
 
-    for key, item in init_args.items():
-        if key == "class_path":
-            init_args[key] = get_class(item)
-        else:
-            init_args[key] = instantiate(item)
+def _is_sequence(obj):
+    """True for iterables we treat as positional args (not str/mapping)."""
+    return isinstance(obj, (list, tuple))
 
-    return class_type(**init_args)
+
+def instantiate(obj):
+    """Recursively resolve a nested config into live Python objects.
+
+    Rules
+    -----
+    * A mapping with a ``"class_path"`` key is imported and instantiated.
+      Its ``"init_args"`` (if present) are resolved first, then used as
+      ``**kwargs`` (mapping), ``*args`` (list/tuple) or a single positional
+      argument (scalar). With no ``"init_args"`` the class is called with
+      no arguments.
+    * Any other mapping is rebuilt as a ``dict`` with each value resolved.
+    * Lists and tuples are rebuilt (type preserved) with each element resolved.
+    * Strings and other scalars are returned unchanged.
+    """
+    if isinstance(obj, Mapping):
+        if "class_path" in obj:
+            cls = get_class(obj["class_path"])
+            if "init_args" not in obj:
+                return cls()
+            args = obj["init_args"]
+            if isinstance(args, Mapping):
+                return cls(**{k: instantiate(v) for k, v in args.items()})
+            if _is_sequence(args):
+                return cls(*(instantiate(v) for v in args))
+            return cls(instantiate(args))
+        return {k: instantiate(v) for k, v in obj.items()}
+
+    if isinstance(obj, str):
+        return obj
+
+    if _is_sequence(obj):
+        return type(obj)(instantiate(v) for v in obj)
+
+    return obj
