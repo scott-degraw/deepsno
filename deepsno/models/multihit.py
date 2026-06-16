@@ -81,7 +81,6 @@ class ObjectDecoderVarlen(nn.Module):
         dim: int,
         num_heads: int,
         num_layers: int,
-        batch_size: int,
         dim_feedforward: int | None = None,
         dropout: float = 0.0,
         bias: bool = True,
@@ -107,10 +106,6 @@ class ObjectDecoderVarlen(nn.Module):
             energy_shift / energy_scale: Output (un)normalisation for energy.
             deep_supervision: If True, forward returns ``(final_q, [intermediate_q_0, ...,
                 intermediate_q_{N-2}])`` so callers can apply auxiliary losses on each layer.
-            batch_size: Fixed batch size.  The query ``cu_seqlens`` buffer is
-                pre-allocated to exactly this size so ``forward`` requires no
-                data-dependent tensor creation (required for ``torch.compile``).
-                Must match the dataloader batch size; use ``drop_last=True``.
         """
         super().__init__()
         self.n_queries = n_queries
@@ -134,10 +129,6 @@ class ObjectDecoderVarlen(nn.Module):
         self.time_scale = time_scale
         self.energy_shift = energy_shift
         self.energy_scale = energy_scale
-        self.register_buffer(
-            "cu_seqlens_q",
-            torch.arange(0, (batch_size + 1) * n_queries, step=n_queries, dtype=torch.int32),
-        )
 
     def output_normalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         x["position"] = (x["position"] - self.position_shift) / self.position_scale
@@ -162,11 +153,18 @@ class ObjectDecoderVarlen(nn.Module):
             When ``deep_supervision=True``: tuple of ``(final_q, [intermediate_q_0, ...,
             intermediate_q_{N-2}])`` where each element is ``(batch_size, n_queries, dim)``.
         """
-        batch_size = self.cu_seqlens_q.shape[0] - 1  # static — derived from buffer, not input
+        batch_size = enc_vt.cu_seqlens.shape[0] - 1
         dim = self.query_tokens.embedding_dim
 
         q = self.query_tokens.weight.unsqueeze(0).expand(batch_size, -1, -1).reshape(-1, dim)
-        q_vt = VarlenTensor(q, self.cu_seqlens_q, self.n_queries)
+        cu_seqlens_q = torch.arange(
+            0,
+            (batch_size + 1) * self.n_queries,
+            step=self.n_queries,
+            dtype=enc_vt.cu_seqlens.dtype,
+            device=enc_vt.cu_seqlens.device,
+        )
+        q_vt = VarlenTensor(q, cu_seqlens_q, self.n_queries)
 
         if self.deep_supervision:
             intermediates = []
@@ -479,6 +477,12 @@ class MultiHit(nn.Module):
         self._output_unnorm = self.decoder.output_unnorm
 
         torch.set_float32_matmul_precision("high")
+        self.register_forward_pre_hook(self._sync_batch_size, with_kwargs=True)
+
+    def _sync_batch_size(self, module, args, kwargs):
+        hits = kwargs.get("hits")
+        if isinstance(hits, VarlenTensor):
+            torch._dynamo.mark_static(hits.cu_seqlens, 0)
 
     def output_normalize(self, x: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         return self.decoder.output_normalize(x)

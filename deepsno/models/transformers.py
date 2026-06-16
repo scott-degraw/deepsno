@@ -238,7 +238,6 @@ class ISABVarlen(nn.Module):
         dim: int,
         num_heads: int,
         num_inducing: int,
-        batch_size: int,
         bias: bool = True,
         dim_feedforward: int | None = None,
         dropout: float = 0.0,
@@ -253,11 +252,6 @@ class ISABVarlen(nn.Module):
                 to ``4 * dim`` if not set.
             dropout: Dropout probability applied after attention output and FFN
                 in each MAB block.  Default: ``0.0`` (disabled).
-            batch_size: Fixed batch size.  The inducing-point ``cu_seqlens``
-                buffer is pre-allocated to exactly this size so ``forward``
-                requires no data-dependent tensor creation (required for
-                ``torch.compile``).  Must match the dataloader batch size;
-                use ``drop_last=True``.
         """
         super().__init__()
         self.num_inducing = num_inducing
@@ -265,10 +259,6 @@ class ISABVarlen(nn.Module):
         nn.init.xavier_uniform_(self.I.view(num_inducing, dim))  # treat as (m, dim) so fan_in=dim, not m*dim
         self.mab1 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
         self.mab2 = MABVarlen(dim, num_heads, bias=bias, dim_feedforward=dim_feedforward, dropout=dropout)
-        self.register_buffer(
-            "cu_seqlens_ind",
-            torch.arange(0, (batch_size + 1) * num_inducing, step=num_inducing, dtype=torch.int32),
-        )
 
     def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
         """
@@ -278,9 +268,13 @@ class ISABVarlen(nn.Module):
         Returns:
             :class:`VarlenTensor` of the same shape as the input.
         """
-        batch_size = self.cu_seqlens_ind.shape[0] - 1  # static — derived from buffer, not input
+        batch_size = vt.cu_seqlens.shape[0] - 1
         ind_data = self.I.expand(batch_size, -1, -1).reshape(-1, self.I.shape[-1])
-        ind_vt = VarlenTensor(ind_data, self.cu_seqlens_ind, self.num_inducing)
+        cu_seqlens_ind = torch.arange(
+            0, (batch_size + 1) * self.num_inducing, step=self.num_inducing,
+            dtype=vt.cu_seqlens.dtype, device=vt.cu_seqlens.device,
+        )
+        ind_vt = VarlenTensor(ind_data, cu_seqlens_ind, self.num_inducing)
 
         H_vt = self.mab1(ind_vt, vt)
         return self.mab2(vt, H_vt)
@@ -429,7 +423,6 @@ class InducedSetEncoderVarlen(nn.Module):
         dim_in: int,
         dim_hidden: int,
         num_heads: int,
-        batch_size: int,
         num_inducing: int = 32,
         num_isabs: int = 2,
         dim_feedforward: int | None = None,
@@ -445,8 +438,6 @@ class InducedSetEncoderVarlen(nn.Module):
             dim_feedforward: FFN hidden dimension in each ISAB.  Defaults to
                 ``4 * dim_hidden`` if not set.
             dropout: Dropout probability for each ISAB.  Default: ``0.0``.
-            batch_size: Fixed batch size passed through to each :class:`ISABVarlen`
-                to pre-allocate the inducing-point ``cu_seqlens`` buffer.
         """
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_hidden)
@@ -458,7 +449,6 @@ class InducedSetEncoderVarlen(nn.Module):
                     num_inducing=num_inducing,
                     dim_feedforward=dim_feedforward,
                     dropout=dropout,
-                    batch_size=batch_size,
                 )
                 for _ in range(num_isabs)
             ]
