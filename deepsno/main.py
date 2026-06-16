@@ -189,6 +189,9 @@ def _build_train_parser() -> ArgumentParser:
     # misc
     p.add_argument("--dry_run", type=str, choices=["none", "only", "before"], default="none")
     p.add_argument("--profile", action="store_true")
+    p.add_argument(
+        "--test", action="store_true", default=False, help="Override batch_size=2 and num_workers=1 for quick testing."
+    )
 
     return p
 
@@ -377,6 +380,12 @@ def run_train(cfg: dict, parser: ArgumentParser) -> None:
             if nw % world_size != 0:
                 raise ValueError(f"{key} num_workers {nw} is not divisible by world_size {world_size}")
             dl_cfg["init_args"]["num_workers"] = nw // world_size
+
+    if train_cfg["test"]:
+        for key in ("train_dataloader", "val_dataloader"):
+            dl_cfg = train_cfg[key].setdefault("init_args", {})
+            dl_cfg["batch_size"] = 2
+            dl_cfg["num_workers"] = 1
 
     for key in ("train_dataloader", "val_dataloader"):
         train_cfg[key].setdefault("init_args", {})["generator"] = torch.Generator().manual_seed(train_cfg["seed"])
