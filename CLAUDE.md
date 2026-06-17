@@ -8,7 +8,17 @@ DeepSNO is a deep learning framework for the SNO+ particle physics detector. It 
 
 ## Dependencies
 
-uv is used for all dependencies. It is preferred to always run with `uv run`
+uv is used for Python package management and all dependencies. It is preferred to always run with `uv run`.
+
+On cluster nodes, the virtualenv is placed on `$TMPDIR` (local scratch) rather than the project directory, as done in `slurm/env.sh`:
+
+```bash
+export UV_PROJECT_ENVIRONMENT="$TMPDIR/venv_deepsno"
+uv sync --frozen
+source "$UV_PROJECT_ENVIRONMENT/bin/activate"
+```
+
+This avoids hammering the network/scratch filesystem with the many small files a Python venv creates — those filesystems are tuned for large sequential I/O, not small-file access.
 
 ## Commands
 
@@ -21,14 +31,52 @@ ruff check deepsno/
 ruff format deepsno/
 
 # Train
-deepsno --config config.yaml --model ModelClass train \
-  --entity <wandb-entity> --project <wandb-project> \
-  --checkpoint_dir /path/to/checkpoints --device cuda
+uv run python deepsno/train.py --config-dir=configs --config-name=bi214 \
+  train.entity=<wandb-entity> train.project=<wandb-project> \
+  train.checkpoint_dir=/path/to/checkpoints train.device=cuda
 
 # Predict
-deepsno --config config.yaml --model ModelClass predict \
-  --ckpt /path/to/checkpoints --device cuda
+uv run python deepsno/predict.py --config-dir=configs --config-name=bi214 \
+  predict.ckpt=/path/to/checkpoints predict.device=cuda
+
+# Bench (iterate the train dataloader and report throughput)
+uv run python deepsno/bench.py --config-dir=configs --config-name=bi214
 ```
+
+`--config-dir=<dir>` adds `<dir>` to Hydra's config search path (native Hydra
+flag — real experiment configs live in `configs/` or `example_configs/`, not
+inside the package); `--config-name=<stem>` selects `<dir>/<stem>.yaml` as the
+primary config. Each entry point's own `deepsno/conf/*_defaults.yaml` is the
+*other* search root (set as `config_path` on its `@hydra.main`), so every
+experiment config pulls in the relevant baseline(s) via its own `defaults:`
+list, e.g.:
+
+```yaml
+defaults:
+  - /train_defaults
+  - /predict_defaults
+  - /bench_defaults
+  - _self_
+```
+
+— this is what makes omitted optional keys resolve instead of KeyError'ing
+(and, since `--config-dir` only accepts one directory, this list also lets
+the same config serve all three entry points regardless of which one loads
+it). Everything else is a Hydra override (dotted-path `key=value`, e.g.
+`model.d_model=128`); Hydra's own run-dir/output-subdir management is
+disabled since each script manages its own checkpoint/output paths. Path
+joining and timestamped checkpoint directories don't need a custom resolver —
+plain string interpolation (`${vars.base_dir}/checkpoints`) and Hydra's
+built-in `${now:%Y-%m-%d}`/`${now:%H-%M-%S}` cover both (resolved once and
+cached per node, so multiple references to the same value stay consistent
+within a run). The one custom resolver that remains, `${load_yaml:path}`
+(`deepsno/utils/resolvers.py`), loads an external YAML file's contents inline
+— there's no Hydra-native equivalent for that. YAML
+anchors/aliases/merge-keys (`&x`, `*x`, `<<:`) still work as plain YAML, but
+prefer `${...}` interpolation (e.g. a `vars:` block, or referencing another
+key like `${train.seed}` directly) for any value you might want to override
+on the CLI — a YAML alias is copied at parse time, before Hydra ever sees it,
+so overriding the anchor's own key does not propagate to its aliases.
 
 There is no automated test suite — validation is done via wandb during training.
 
@@ -36,11 +84,11 @@ There is no automated test suite — validation is done via wandb during trainin
 
 ### Entry & Training Flow
 
-1. **`deepsno/main.py`** — CLI entry point using `jsonargparse`. Parses YAML configs (with Jinja2 templating via `deepsno/utils/jinja.py`), validates git commit hash for reproducibility, and delegates to `loops.train()` or `loops.predict()`.
+1. **`deepsno/train.py`** / **`deepsno/predict.py`** / **`deepsno/bench.py`** — Hydra (`@hydra.main`) CLI entry points, one per workflow, with `config_path` set to `deepsno/conf/` (that script's `*_defaults.yaml` base layer). Real experiment configs are selected via native `--config-dir=<dir> --config-name=<stem>` flags, accept Hydra dotted-path overrides, validate the git commit hash for reproducibility (`deepsno/utils/cli.py`), and delegate to `loops.train()` / `loops.predict()` / `loops.bench_dataloader()`.
 
 2. **`deepsno/loops.py`** — Core training/validation/inference loops. `train()` handles gradient accumulation, AMP (`autocast_dtype`), gradient clipping, LR scheduling, checkpoint saving, and periodic validation. Checkpoints are saved when validation loss improves.
 
-3. **`deepsno/utils/config_parse.py`** — Dynamic class instantiation from config dicts. All models, datasets, optimizers, and schedulers are specified by `class_path` + `init_args` in YAML and instantiated at runtime.
+3. Models, datasets, optimizers, schedulers, loss functions, and monitors are all instantiated at runtime via `hydra.utils.instantiate`, driven by `_target_` + flat kwargs in YAML.
 
 ### Models (`deepsno/models/`)
 
@@ -94,37 +142,38 @@ model(**inputs) →
 ### Utilities (`deepsno/utils/`)
 
 - **`scheduler.py`** — `LinearWarmupCosineAnnealingLR`: custom LR scheduler (linear warmup + cosine decay).
-- **`jinja.py`** — Jinja2-templated YAML loader. Supports `{{ load_yaml('...') }}` includes and custom filters like `model_save_directory()` and `path_join()`.
+- **`resolvers.py`** — Registers the `load_yaml` OmegaConf custom resolver.
+- **`hydra_cli.py`** — Appends the standing Hydra overrides (disabling run-dir/output-subdir management) to `sys.argv` before `@hydra.main` parses it.
+- **`cli.py`** — Shared `train.py`/`predict.py`/`bench.py` helpers: git-hash validation/snapshotting, log-file tee.
 - **`train.py`** — `get_best_ckpt()` finds lowest-validation-loss checkpoint; unit conversion helpers.
 
 ## Configuration System
 
-Configs are YAML files with optional Jinja2 templating. All classes are referenced by dotted `class_path` with `init_args`:
+Configs are plain YAML files, composed through Hydra (anchors/aliases/merge-keys and `${...}` interpolation/resolvers all work). All classes are referenced via Hydra's native `_target_` convention, with constructor kwargs as flat siblings of `_target_` (no `init_args` indirection):
 
 ```yaml
 model:
-  class_path: deepsno.models.position_reco.PositionReco
-  init_args:
-    n_pmts: 9728
-    d_model: 64
+  _target_: deepsno.models.position_reco.PositionReco
+  n_pmts: 9728
+  d_model: 64
 
 train:
   optimizer:
-    class_path: torch.optim.Adam
-    init_args:
-      lr: 1e-5
+    _target_: torch.optim.Adam
+    lr: 1e-5
   scheduler:
-    class_path: deepsno.utils.scheduler.LinearWarmupCosineAnnealingLR
-    init_args:
-      warmup_epochs: 1000
-      max_epochs: 100000
+    _target_: deepsno.utils.scheduler.LinearWarmupCosineAnnealingLR
+    warmup_epochs: 1000
+    max_epochs: 100000
 ```
+
+`hydra.utils.instantiate(cfg, *extra_args, _convert_="all")` is called at each entry point's call sites (`train.py`, `predict.py`, `bench.py`) — `_convert_="all"` ensures nested non-`_target_` values come back as plain `dict`/`list` rather than `DictConfig`/`ListConfig`. Extra runtime-only positional args (e.g. `param_groups` for an optimizer, `optimizer` for a scheduler, `run` for a metric monitor) are passed as additional positional args to `instantiate()`, not baked into the YAML. To reference a class/callable itself rather than calling it (e.g. an `activation` argument expecting a class object), use `_target_: <path>` with `_partial_: true` and no other keys — calling the result with no args calls the class/callable directly.
 
 See `example_configs/` for working examples.
 
 ## Cluster Jobs
 
-`condor/` contains HTC Condor job submission scripts for running training/prediction on compute clusters. Use `--force` flag to skip git hash validation when iterating quickly (but prefer clean commits for reproducibility).
+`condor/` contains HTC Condor job submission scripts for running training/prediction on compute clusters. Pass `force=true` to skip git hash validation when iterating quickly (but prefer clean commits for reproducibility).
 
 ## Code Style
 

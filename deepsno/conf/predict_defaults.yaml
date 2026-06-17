@@ -1,0 +1,13 @@
+# Baseline defaults for `deepsno/predict.py`. See train_defaults.yaml.
+force: false
+git_hash: null
+log_file: null
+
+predict:
+  keys: null
+  ckpt: null
+  ckpt_config: null
+  output_path: null
+  device: null
+  dataloader: null
+  dataset_len: null

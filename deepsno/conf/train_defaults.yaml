@@ -1,0 +1,38 @@
+# Baseline defaults for `deepsno/train.py`, mirroring the old jsonargparse
+# parser defaults. Composed underneath the user's --config file so every key
+# is overridable on the CLI and plain dict access never KeyErrors on an
+# omitted optional field.
+force: false
+git_hash: null
+log_file: null
+
+train:
+  entity: null
+  project: null
+  tags: null
+  wandb_disable: false
+  log_interval: 50
+  seed: 0
+  checkpoint_dir: null
+  device: null
+  train_dataloader: null
+  val_dataloader: null
+  num_steps: null
+  resume: false
+  ckpt: null
+  ckpt_keys: null
+  loss_fn: null
+  optimizer: null
+  scheduler: null
+  max_grad_norm: 0.0
+  train_norm: true
+  val_norm: true
+  steps_per_epoch: null
+  val_metric: null
+  val_num_steps: null
+  val_metric_is_inverted: false
+  metric_monitors: null
+  scale_by_world_size: true
+  dry_run: none
+  profile: false
+  test: false

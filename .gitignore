@@ -9,7 +9,6 @@ plots/
 
 condor_logs/
 condor/
-configs/
 
 slurm/
 

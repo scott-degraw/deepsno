@@ -1,66 +1,93 @@
+# CPU-only, no-real-data smoke test for the train/predict/bench CLI.
+# Uses RandomPositionRecoDataset (deepsno/data/dummy.py) instead of real
+# detector ROOT/h5 files, so this can run anywhere without a GPU.
+#
+# Run with: python deepsno/train.py --config-dir=example_configs --config-name=test ...
+
+defaults:
+  - /train_defaults
+  - /predict_defaults
+  - /bench_defaults
+  - _self_
+
+vars:
+    n_pmts: 9728
+    d_model: 64
+    dataset: &dataset
+        _target_: deepsno.data.dummy.RandomPositionRecoDataset
+        n_pmts: ${vars.n_pmts}
+        context_len: 256
+        length: 256
+
 train:
     seed: 783
-    checkpoint_dir: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/
-    device: &device cuda 
-    dataset: 
-        class_path: &dataset_class_path deepsno.data.datasets.PositionRecoDataset
-        init_args: 
-            path: &train_path /data/snoplus3/degraw/uniform_electron_energy/train_dset.h5 
+    checkpoint_dir: /tmp/deepsno_test_ckpt
+    device: cpu
 
-    batch_size: 200
-    val_batch_size: &val_batch_size 200
-    shuffle: true
-    num_workers: &num_workers 32
-    num_epochs: 5
-    train_val_split: 0.98
+    train_dataloader:
+        _target_: torch.utils.data.DataLoader
+        dataset: *dataset
+        batch_size: 8
+        num_workers: 0
 
-    optimizer: 
-        class_path: torch.optim.Adam
-        init_args:
-            lr: 1e-5
-            betas: [0.9, 0.98]
-            eps: 1e-9
+    val_dataloader:
+        _target_: torch.utils.data.DataLoader
+        dataset: *dataset
+        batch_size: 8
+        num_workers: 0
+
+    optimizer:
+        _target_: torch.optim.Adam
+        lr: 1e-5
+        betas: [0.9, 0.98]
+        eps: 1e-9
     loss_fn:
-        class_path: torch.nn.MSELoss
-    scheduler: 
-        class_path: torch.optim.lr_scheduler.OneCycleLR
-        init_args: 
-            max_lr: 1e-3
-            total_steps: 60000
-            # total_steps: 3000 # this did well
+        _target_: torch.nn.MSELoss
+    scheduler:
+        _target_: torch.optim.lr_scheduler.OneCycleLR
+        max_lr: 1e-3
+        total_steps: 60000
 
-    val_loss_fn:
-        class_path: deepsno.metrics.position_reco.ResolutionLoss
-    val_loss_is_inverted: false
-    val_num_steps: 200
+    val_metric:
+        _target_: deepsno.metrics.metrics.BatchedMetric
+        metric_fn:
+            _target_: deepsno.metrics.position_reco.ResolutionLoss
+    val_metric_is_inverted: false
+    val_num_steps: 2
 
     max_grad_norm: 1
 
+bench:
+    train_dataloader:
+        _target_: torch.utils.data.DataLoader
+        dataset: *dataset
+        batch_size: 8
+        num_workers: 0
+
 predict:
-    ckpt: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-11_03-24-40/ckpt
-    ckpt_config: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-11_03-24-40/config.yaml
-    output_file: /data/snoplus3/degraw/uniform_electron_energy/checkpoints/2024-12-11_03-24-40/test_results.h5
-    device: *device
-    dataset: 
-        class_path: *dataset_class_path
-        init_args:
-            path: /data/snoplus3/degraw/uniform_electron_energy/test_dset.h5
-    
-    batch_size: *val_batch_size
-    num_workers: *num_workers
+    ckpt: /tmp/deepsno_test_ckpt
+    device: cpu
+    dataloader:
+        _target_: torch.utils.data.DataLoader
+        dataset: *dataset
+        batch_size: 8
+        num_workers: 0
 
 # TODO: Need to put in context window size somewhere. Maybe in h5 files.
-model: 
-    class_path: deepsno.models.position_reco.PositionReco
-    init_args:
-        n_pmts: 9728 
-        d_model: &d_model 64
-        nhead: 4
-        dim_feedforward: 128
-        num_layers: 6
-        dropout: 0.1
-        hit_time_embedding_dim: 512
-        norm_dict:
-            class_path: deepsno.models.position_reco.PositionRecoNorm
-            init_args: 
-                train_file: *train_path
+model:
+    _target_: deepsno.models.position_reco.PositionReco
+    n_pmts: ${vars.n_pmts}
+    d_model: ${vars.d_model}
+    nhead: 4
+    dim_feedforward: 128
+    num_layers: 6
+    dropout: 0.1
+    hit_time_embedding_dim: 512
+    # Identity normalization (no real norm stats available without real data).
+    norm_dict:
+        input_norms:
+            time_shift: 0.0
+            time_scale: 1.0
+        output_norms:
+            position_shifts: [0.0, 0.0, 0.0]
+            position_scales: [1.0, 1.0, 1.0]

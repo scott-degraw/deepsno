@@ -1111,7 +1111,7 @@ class MultiHitUniqueCollate:
     Usage in config::
 
         collate_fn:
-            class_path: deepsno.data.multihit.MultiHitUniqueCollate
+            _target_: deepsno.data.multihit.MultiHitUniqueCollate
     """
 
     def __call__(self, batch: list) -> tuple[dict, dict]:
@@ -1138,7 +1138,7 @@ class MultiHitExpandedVarlenCollate:
     Usage in config::
 
         collate_fn:
-            class_path: deepsno.data.multihit.MultiHitExpandedVarlenCollate
+            _target_: deepsno.data.multihit.MultiHitExpandedVarlenCollate
     """
 
     def __call__(self, batch: list) -> tuple[dict, dict]:
@@ -1174,7 +1174,7 @@ class MultiHitVarlenCollate:
     Usage in config::
 
         collate_fn:
-            class_path: deepsno.data.multihit.MultiHitVarlenCollate
+            _target_: deepsno.data.multihit.MultiHitVarlenCollate
     """
 
     def __call__(self, batch: list) -> tuple[dict, dict]:
