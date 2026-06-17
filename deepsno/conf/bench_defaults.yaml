@@ -1,0 +1,8 @@
+# Baseline defaults for `deepsno/bench.py`. See train_defaults.yaml.
+force: false
+git_hash: null
+log_file: null
+
+bench:
+  train_dataloader: null
+  num_steps: null

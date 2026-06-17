@@ -4,11 +4,11 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-import yaml
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 from torch import nn
 
 from deepsno.data.inter_pts_bins import inter_pts_bins
-from deepsno.utils.config_parse import instantiate
 from deepsno.utils.train import copy_if_tensor
 
 
@@ -330,12 +330,11 @@ class HitTimeAutoEncoder(nn.Module):
         if not ckpt.is_file():
             raise ValueError(f"Checkpoint '{ckpt}' does not exist")
 
-        with open(ckpt.parent.parent / "config.yaml") as f:
-            config = yaml.safe_load(f)
+        config = OmegaConf.to_container(OmegaConf.load(ckpt.parent.parent / "config.yaml"), resolve=True)
 
         ckpt = torch.load(ckpt, weights_only=True, map_location="cpu")
 
-        model = instantiate(config["model"])
+        model = instantiate(config["model"], _convert_="all")
         model.load_state_dict(ckpt["model"], strict=True)
 
         time_walk = model.time_walk
