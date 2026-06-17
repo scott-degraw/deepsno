@@ -7,6 +7,38 @@ from deepsno.models import transformers
 from deepsno.models.transformers import VarlenTensor
 
 
+class SinusoidalTimeEncoding(nn.Module):
+    def time_norm(self, t: torch.Tensor):
+        return (torch.log(t) - self.time_shift) / self.time_scale
+
+    def __init__(
+        self, model_dim: int, time_scale: float, time_shift: float, min_time: float, max_time: float, delta_t: float
+    ):
+        super().__init__()
+        self.time_shift = time_shift
+        self.time_scale = time_scale
+
+        min_z = self.time_norm(torch.tensor(min_time))
+        max_z = self.time_norm(torch.tensor(max_time))
+
+        delta_z = delta_t / (time_scale * torch.exp(torch.tensor(time_shift)))
+
+        f_max = 1 / delta_z
+        f_min = 1 / (max_z - min_z)
+
+        ks = torch.arange(model_dim // 2)
+        omegas = 2 * torch.pi * f_min * torch.pow(f_max / f_min, ks / (model_dim // 2 - 1))
+        self.register_buffer("omegas", omegas)
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        t = self.time_norm(t).unsqueeze(-1)
+        sines = torch.sin(self.omegas * t)
+        cosines = torch.cos(self.omegas * t)
+
+        t = torch.concat([sines, cosines], dim=-1)
+        return t
+
+
 class ObjectDecoderLayerVarlen(nn.Module):
     """
     Single transformer decoder layer backed by :class:`~deepsno.models.transformers.ISABVarlen`.
@@ -334,8 +366,7 @@ class MultiHitPMTEncoderExpanded(MultiHitPMTEncoderBase):
         self.hit_time_embed = hit_time_embed
 
     def _embed_hits(self, pmt_ids: torch.Tensor, hit_times: torch.Tensor) -> torch.Tensor:
-        hit_times = self.hit_time_normalize(hit_times)
-        x = self.hit_time_embed(hit_times.unsqueeze(-1))
+        x = self.hit_time_embed(hit_times)
         x = x + self.pmt_embed(pmt_ids)
         return x
 
