@@ -26,3 +26,22 @@ class RandomPositionRecoDataset(Dataset):
         hit_times = torch.rand(self.context_len, generator=generator) * 400 + 20
         positions = (torch.rand(3, generator=generator) - 0.5) * 6000
         return {"pmt_ids": pmt_ids, "hit_times": hit_times}, {"positions": positions}
+
+
+class RandomRegressionDataset(Dataset):
+    """Flat random (x, y) regression pairs for a plain `MLP` — no attention/CUDA dependency."""
+
+    def __init__(self, in_dim: int, out_dim: int, length: int = 1000, seed: int = 0):
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.length = length
+        self.seed = seed
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __getitem__(self, index: int) -> tuple[dict, torch.Tensor]:
+        generator = torch.Generator().manual_seed(self.seed + index)
+        x = torch.randn(self.in_dim, generator=generator)
+        y = torch.randn(self.out_dim, generator=generator)
+        return {"x": x}, y

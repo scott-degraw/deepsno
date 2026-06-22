@@ -1,0 +1,61 @@
+# CPU-only smoke test for the auto-requeue checkpoint/preempt/resume loop.
+# Uses a plain MLP (deepsno/models/mlp.py) and synthetic flat-tensor
+# regression data (deepsno/data/dummy.py) — no attention/CUDA dependency,
+# unlike example_configs/test.yaml (PositionReco's flash-attention kernels
+# are CUDA-only and fail on CPU).
+#
+# Run with: python deepsno/train.py --config-dir=example_configs --config-name=test_cpu_dummy ...
+
+defaults:
+  - /train_defaults
+  - _self_
+
+vars:
+  base_dir: /scratch/degraw/deepsno_requeue_test
+  in_dim: 16
+  out_dim: 3
+  dataset: &dataset
+    _target_: deepsno.data.dummy.RandomRegressionDataset
+    in_dim: ${vars.in_dim}
+    out_dim: ${vars.out_dim}
+    length: 256
+
+train:
+  seed: 783
+  checkpoint_dir: ${vars.base_dir}/checkpoints/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  device: cpu
+  # MLP has no output_normalize()/output_unnorm API (that's PositionReco-specific).
+  train_norm: false
+  val_norm: false
+
+  train_dataloader:
+    _target_: torch.utils.data.DataLoader
+    dataset: *dataset
+    batch_size: 8
+    num_workers: 0
+
+  val_dataloader:
+    _target_: torch.utils.data.DataLoader
+    dataset: *dataset
+    batch_size: 8
+    num_workers: 0
+
+  optimizer:
+    _target_: torch.optim.Adam
+    lr: 1e-3
+
+  loss_fn:
+    _target_: torch.nn.MSELoss
+
+  val_metric:
+    _target_: deepsno.metrics.metrics.BatchedMetric
+    metric_fn:
+      _target_: torch.nn.MSELoss
+  val_metric_is_inverted: false
+  val_num_steps: 2
+
+  max_grad_norm: 1
+
+model:
+  _target_: deepsno.models.mlp.MLP
+  dims: ["${vars.in_dim}", 32, "${vars.out_dim}"]

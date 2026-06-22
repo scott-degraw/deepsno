@@ -19,6 +19,7 @@ train:
   val_dataloader: null
   num_steps: null
   resume: false
+  requeue_buffer_seconds: null
   ckpt: null
   ckpt_keys: null
   loss_fn: null

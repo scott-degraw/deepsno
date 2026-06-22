@@ -206,7 +206,8 @@ def train(
     initial_sub_epoch: int = 0,
     train_norm: bool = True,
     val_norm: bool = True,
-):
+    deadline: float | None = None,
+) -> bool:
 
     is_main = rank == 0
     device = torch.device(device)
@@ -272,15 +273,17 @@ def train(
 
         return -val_loss if val_metric_is_inverted else val_loss
 
-    def save_checkpoint(val_loss: float) -> None:
+    def save_checkpoint(val_loss: float | None, epoch_complete: bool) -> None:
         state_dict = {
             "sub_epoch": sub_epoch,
             "step_num": step_num,
+            "epoch_complete": epoch_complete,
             "model": detach_to_cpu(_unwrap(model).state_dict()),
             "optimizer": detach_to_cpu(optimizer.state_dict()),
             "scheduler": None if scheduler is None else detach_to_cpu(scheduler.state_dict()),
         }
-        torch.save(state_dict, checkpoint_dir / f"sub_epoch={sub_epoch}_val_loss={val_loss}.pt")
+        suffix = f"val_loss={val_loss}" if val_loss is not None else "preempt"
+        torch.save(state_dict, checkpoint_dir / f"sub_epoch={sub_epoch}_step={step_num}_{suffix}.pt")
 
     def global_done(local_done: bool) -> bool:
         if dist.is_available() and dist.is_initialized():
@@ -292,16 +295,20 @@ def train(
         return local_done
 
     training = True
+    preempted = False
     with tqdm.tqdm(total=num_steps, desc="Train", disable=not is_main, **TQDM_KWARGS) as progress:
         while training:
             epoch_step = 0
             dl_iter = iter(train_dataloader)
             local_done = False
             while True:
-                try:
-                    inputs, truth = next(dl_iter)
-                except StopIteration:
+                if deadline is not None and time.time() >= deadline:
                     local_done = True
+                else:
+                    try:
+                        inputs, truth = next(dl_iter)
+                    except StopIteration:
+                        local_done = True
 
                 if global_done(local_done):
                     break
@@ -330,10 +337,25 @@ def train(
                 if steps_per_epoch is not None and epoch_step >= steps_per_epoch:
                     break
 
-            gc.collect()
-            val_loss = run_epoch_validation()
-            if is_main:
-                save_checkpoint(val_loss)
-            sub_epoch += 1
+            # By now every rank has passed through the all_reduce barrier in global_done(), so
+            # wall-clock time has advanced past the deadline for all ranks if any rank tripped it,
+            # regardless of which rank's local check actually fired.
+            preempted = training and deadline is not None and time.time() >= deadline
 
-    rprint("Training completed")
+            gc.collect()
+            if preempted:
+                if is_main:
+                    save_checkpoint(val_loss=None, epoch_complete=False)
+                training = False
+            else:
+                val_loss = run_epoch_validation()
+                if is_main:
+                    save_checkpoint(val_loss, epoch_complete=True)
+                sub_epoch += 1
+
+    if preempted:
+        rprint("Time limit approaching; emergency checkpoint saved")
+    else:
+        rprint("Training completed")
+
+    return preempted
