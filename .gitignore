@@ -10,7 +10,7 @@ plots/
 condor_logs/
 condor/
 
-slurm/
+slurm/logs/
 
 *.db
 
