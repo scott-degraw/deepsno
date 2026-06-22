@@ -24,6 +24,10 @@ from deepsno.utils.cli import MismatchedGitHash, Tee, UncommittedChangesError, r
 from deepsno.utils.hydra_cli import prepare_argv
 from deepsno.utils.train import get_best_ckpt, get_latest_ckpt
 
+# Distinct from a real crash/failure exit code: tells the Slurm wrapper script
+# "ran out of time, please requeue" rather than "something went wrong".
+REQUEUE_EXIT_CODE = 75
+
 
 def create_training_snapshot(label: str) -> str:
     """Snapshot the working tree (including untracked files) as a tagged git commit.
@@ -96,7 +100,7 @@ def _instantiate_monitors(cfg: dict, run: wandb.sdk.wandb_run.Run) -> metric_mon
     return metric_monitor.MonitorCollection(monitors)
 
 
-def run_train(cfg: dict) -> None:
+def run_train(cfg: dict) -> bool:
     """Run the training workflow."""
     cfg_keys = ["model", "force", "git_hash", "train"]
     cfg = {key: cfg[key] for key in cfg_keys}
@@ -206,7 +210,7 @@ def run_train(cfg: dict) -> None:
             if scheduler is not None and state_dict.get("scheduler") is not None:
                 scheduler.load_state_dict(state_dict["scheduler"])
             initial_step = state_dict.get("step_num", 0)
-            initial_sub_epoch = state_dict["sub_epoch"] + 1
+            initial_sub_epoch = state_dict["sub_epoch"] + (1 if state_dict.get("epoch_complete", True) else 0)
         else:
             print("No checkpoints found; starting from scratch.")
 
@@ -272,10 +276,20 @@ def run_train(cfg: dict) -> None:
             print("Dry run passed.")
 
     if dry_run == "only":
-        return
+        return False
+
+    deadline = None
+    requeue_buffer_seconds = train_cfg.get("requeue_buffer_seconds")
+    if requeue_buffer_seconds is not None and "SLURM_JOB_END_TIME" in os.environ:
+        deadline = float(os.environ["SLURM_JOB_END_TIME"]) - requeue_buffer_seconds
 
     # Wandb — disabled on non-main ranks
     mode = "disabled" if (not is_main or train_cfg["wandb_disable"]) else "online"
+
+    # Persist the wandb run id so a requeued job continues the same run instead
+    # of fragmenting the loss curve into a new run every ~3h.
+    wandb_run_id_file = model_save_dir / "wandb_run_id.txt"
+    wandb_id = wandb_run_id_file.read_text().strip() if wandb_run_id_file.is_file() else None
 
     with wandb.init(
         entity=train_cfg["entity"],
@@ -284,14 +298,19 @@ def run_train(cfg: dict) -> None:
         dir=model_save_dir,
         config=save_cfg,
         mode=mode,
+        id=wandb_id,
+        resume="must" if wandb_id is not None else None,
     ) as run:
+        if is_main and mode != "disabled" and wandb_id is None:
+            wandb_run_id_file.write_text(f"{run.id}\n")
+
         if is_main:
             print(f"Saving model config and checkpoints to {model_save_dir.resolve()}")
             print(f"Number of trainable parameters: {num_params:,}")
 
         monitor = _instantiate_monitors(train_cfg, run) if is_main else None
 
-        train(
+        preempted = train(
             checkpoint_dir=model_save_dir / "ckpt",
             run=run,
             log_interval=train_cfg["log_interval"],
@@ -314,7 +333,10 @@ def run_train(cfg: dict) -> None:
             initial_sub_epoch=initial_sub_epoch,
             train_norm=train_cfg["train_norm"],
             val_norm=train_cfg["val_norm"],
+            deadline=deadline,
         )
+
+    return preempted
 
 
 @hydra.main(version_base=None, config_path="conf", config_name=None)
@@ -329,7 +351,9 @@ def main(cfg: DictConfig) -> None:
             sys.stderr = Tee(sys.__stderr__, log_fh)
 
         cfg["git_hash"] = resolve_git_hash(cfg)
-        run_train(cfg)
+        preempted = run_train(cfg)
+        if preempted:
+            sys.exit(REQUEUE_EXIT_CODE)
 
     except UncommittedChangesError:
         print(
