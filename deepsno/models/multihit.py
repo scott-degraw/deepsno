@@ -289,9 +289,9 @@ class MultiHitPMTEncoderBase(nn.Module):
             :class:`~deepsno.models.transformers.VarlenTensor` with
             ``(total_hits, model_dim)`` packed data.
         """
-        x = self._embed_hits(hits.data, hit_times)
-        x = self.encoder(hits._replace(data=x))
-        return x
+        pmt_ids = hits.data
+        x = self._embed_hits(pmt_ids, hit_times)
+        return self.encoder(hits._replace(data=x), pmt_ids=pmt_ids)
 
 
 class MultiHitPMTEncoderUnique(nn.Module):

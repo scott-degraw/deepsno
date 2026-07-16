@@ -267,6 +267,7 @@ def run_train(cfg: dict) -> bool:
                 rank=rank,
                 train_norm=train_cfg["train_norm"],
                 val_norm=train_cfg["val_norm"],
+                tqdm_mininterval=train_cfg["tqdm_mininterval"],
             )
         _unwrap(model).load_state_dict(initial_state["model"])
         optimizer.load_state_dict(initial_state["optimizer"])
@@ -334,6 +335,7 @@ def run_train(cfg: dict) -> bool:
             train_norm=train_cfg["train_norm"],
             val_norm=train_cfg["val_norm"],
             deadline=deadline,
+            tqdm_mininterval=train_cfg["tqdm_mininterval"],
         )
 
     return preempted
