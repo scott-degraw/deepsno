@@ -37,6 +37,12 @@ TQDM_KWARGS = {
     "smoothing": 0.3,
 }
 
+# tqdm's default mininterval (0.1s) prints far too often for a log file that
+# isn't a real terminal -- every refresh is a new line rather than an
+# in-place redraw, so it dominates the Slurm output. 10s keeps a reasonable
+# log size and is overridable via train.tqdm_mininterval.
+DEFAULT_TQDM_MININTERVAL = 10.0
+
 
 def to_device(d: dict, device: str | torch.device) -> dict:
     def to(x):
@@ -137,6 +143,7 @@ def validate(
     metric_monitor: MetricMonitor | None = None,
     normalize_truth: bool = True,
     num_steps: int | None = None,
+    tqdm_mininterval: float = DEFAULT_TQDM_MININTERVAL,
 ) -> float:
     model.to(device)
     model.eval()
@@ -153,7 +160,20 @@ def validate(
     rolling_loss = torch.tensor(0.0, device=device, dtype=torch.float64)
     rolling_steps = 0
     for i, (inputs, truth) in enumerate(
-        tqdm.tqdm(dataloader, total=num_steps, desc="Val", disable=not is_main, **TQDM_KWARGS)
+        tqdm.tqdm(
+            dataloader,
+            total=num_steps,
+            desc="Val",
+            disable=not is_main,
+            # the outer "Train" bar (see train()) is still alive (its `with`
+            # block spans validation calls); without a fixed position tqdm
+            # auto-assigns this bar position 1 and emits ANSI cursor-movement
+            # codes to stack them, which is meaningless -- and messy -- in a
+            # log file rather than a real terminal.
+            position=0,
+            mininterval=tqdm_mininterval,
+            **TQDM_KWARGS,
+        )
     ):
         if num_steps is not None and i >= num_steps:
             break
@@ -207,6 +227,7 @@ def train(
     train_norm: bool = True,
     val_norm: bool = True,
     deadline: float | None = None,
+    tqdm_mininterval: float = DEFAULT_TQDM_MININTERVAL,
 ) -> bool:
 
     is_main = rank == 0
@@ -217,6 +238,7 @@ def train(
 
     model.to(device)
     loss_fn.to(device)
+    optimizer.load_state_dict(to_device(optimizer.state_dict(), device))
 
     sub_epoch = initial_sub_epoch
     step_num = initial_step
@@ -263,6 +285,7 @@ def train(
             metric_monitor=metric_monitor if is_main else None,
             normalize_truth=val_norm,
             num_steps=val_num_steps,
+            tqdm_mininterval=tqdm_mininterval,
         )
 
         if not math.isfinite(val_loss):
@@ -296,7 +319,14 @@ def train(
 
     training = True
     preempted = False
-    with tqdm.tqdm(total=num_steps, desc="Train", disable=not is_main, **TQDM_KWARGS) as progress:
+    with tqdm.tqdm(
+        total=num_steps,
+        desc="Train",
+        disable=not is_main,
+        position=0,
+        mininterval=tqdm_mininterval,
+        **TQDM_KWARGS,
+    ) as progress:
         while training:
             epoch_step = 0
             dl_iter = iter(train_dataloader)

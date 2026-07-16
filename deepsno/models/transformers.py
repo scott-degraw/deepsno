@@ -271,8 +271,11 @@ class ISABVarlen(nn.Module):
         batch_size = vt.cu_seqlens.shape[0] - 1
         ind_data = self.I.expand(batch_size, -1, -1).reshape(-1, self.I.shape[-1])
         cu_seqlens_ind = torch.arange(
-            0, (batch_size + 1) * self.num_inducing, step=self.num_inducing,
-            dtype=vt.cu_seqlens.dtype, device=vt.cu_seqlens.device,
+            0,
+            (batch_size + 1) * self.num_inducing,
+            step=self.num_inducing,
+            dtype=vt.cu_seqlens.dtype,
+            device=vt.cu_seqlens.device,
         )
         ind_vt = VarlenTensor(ind_data, cu_seqlens_ind, self.num_inducing)
 
@@ -324,10 +327,13 @@ class SetEncoderVarlen(nn.Module):
         )
         self.norm = nn.LayerNorm(dim_hidden)
 
-    def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
+    def forward(self, vt: "VarlenTensor", pmt_ids: torch.Tensor | None = None) -> "VarlenTensor":
         """
         Args:
             vt: :class:`VarlenTensor` with ``(total_elements, dim_in)`` data.
+            pmt_ids: Unused; accepted for interface parity with encoders (e.g.
+                :class:`~deepsno.models.point_transformer.PointTransformerEncoderVarlen`)
+                that need per-element PMT ids.
 
         Returns:
             :class:`VarlenTensor` with ``(total_elements, dim_hidden)`` data.
@@ -455,10 +461,13 @@ class InducedSetEncoderVarlen(nn.Module):
         )
         self.norm = nn.LayerNorm(dim_hidden)
 
-    def forward(self, vt: "VarlenTensor") -> "VarlenTensor":
+    def forward(self, vt: "VarlenTensor", pmt_ids: torch.Tensor | None = None) -> "VarlenTensor":
         """
         Args:
             vt: :class:`VarlenTensor` with ``(total_elements, dim_in)`` data.
+            pmt_ids: Unused; accepted for interface parity with encoders (e.g.
+                :class:`~deepsno.models.point_transformer.PointTransformerEncoderVarlen`)
+                that need per-element PMT ids.
 
         Returns:
             :class:`VarlenTensor` with ``(total_elements, dim_hidden)`` data.
