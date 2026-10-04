@@ -1,0 +1,236 @@
+defaults:
+    - /train_defaults
+    - /predict_defaults
+    - /bench_defaults
+    - _self_
+
+vars:
+    base_dir: /home/degraw/scratch/imaging/multi_electron
+    data_dir: ${vars.base_dir}/data
+    checkpoint_dir: ${vars.base_dir}/checkpoints/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    n_pmts: 9394
+    dropout: 0.1
+    model_dim: 128
+    num_heads: 4
+    num_inducing: 128
+    dim_feedforward: 512
+    max_n_vertices: 1024
+    num_workers: 8
+    batch_size: 32
+    file_split: [0.98, 0.01, -1]
+
+model:
+    _target_: deepsno.models.multihit.MultiHit
+    encoder:
+        _target_: deepsno.models.multihit.MultiHitPMTEncoderExpanded
+        # _target_: deepsno.models.multihit.MultiHitPMTEncoderUnique
+        n_pmts: ${vars.n_pmts}
+        model_dim: ${vars.model_dim}
+        # time_shift: 3.85
+        # time_scale: 0.4
+        # hit_time_embed:
+        #     _target_: deepsno.models.mlp.MLP
+        #     dims: [1, "${vars.dim_feedforward}", "${vars.model_dim}"]
+        #     activation: torch.nn.Tanh
+        #     dropout: ${vars.dropout}
+        hit_time_embed:
+            _target_: deepsno.models.utils.ListSequential
+            modules:
+                - _target_: deepsno.models.multihit.SinusoidalTimeEncoding
+                  model_dim: ${vars.model_dim}
+                  time_scale: 0.4
+                  time_shift: 3
+                  min_time: 20
+                  max_time: 500
+                  delta_t: 0.05
+                - _target_: deepsno.models.mlp.MLP
+                  dims: ["${vars.model_dim}", "${vars.dim_feedforward}", "${vars.dim_feedforward}", "${vars.model_dim}"]
+                  activation:
+                    _target_: torch.nn.GELU
+                    _partial_: true
+                  dropout: ${vars.dropout}
+        encoder:
+            _target_: deepsno.models.transformers.InducedSetEncoderVarlen
+            dim_in: ${vars.model_dim}
+            dim_hidden: ${vars.model_dim}
+            num_heads: ${vars.num_heads}
+            num_inducing: ${vars.num_inducing}
+            num_isabs: 6
+            dim_feedforward: ${vars.dim_feedforward}
+            dropout: ${vars.dropout}
+    decoder:
+        _target_: deepsno.models.multihit.ObjectDecoderVarlen
+        # _target_: deepsno.models.multihit.ObjectDecoder
+        n_queries: ${vars.max_n_vertices}
+        dim: ${vars.model_dim}
+        num_heads: ${vars.num_heads}
+        num_layers: 4
+        dim_feedforward: ${vars.dim_feedforward}
+        position_shift: &position_shift 0
+        position_scale: &position_scale 3000
+        time_shift: &time_shift 2.2
+        time_scale: &time_scale 2
+        energy_shift: &energy_shift 0
+        energy_scale: &energy_scale 1  # trackQDep is stored in energy units, not photon counts
+        dropout: ${vars.dropout}
+        deep_supervision: true
+
+    head:
+        _target_: deepsno.models.multihit.ObjectFFNHead
+        model_dim: ${vars.model_dim}
+        dropout: ${vars.dropout}
+
+
+
+train:
+    entity: scottdegraw
+    project: detr_imaging
+    tags: [multihit, transformer, imaging, detr]
+
+    seed: 783
+    profile: false
+    checkpoint_dir: ${vars.checkpoint_dir}
+    device: &device cuda
+
+    num_steps: 500000
+    val_num_steps: 10000
+    # val_num_steps: 100
+    log_interval: 100
+    # steps_per_epoch: 10000
+
+    dry_run: before
+    scale_by_world_size: true
+
+    optimizer:
+        _target_: torch.optim.AdamW
+        lr: 1e-4
+        weight_decay: 0.01
+    scheduler:
+        _target_: deepsno.utils.scheduler.LinearWarmupCosineAnnealingLR
+        warmup_epochs: 2000
+        max_epochs: ${train.num_steps}
+        warmup_start_lr: 1e-8
+        eta_min: 1e-6
+
+    loss_fn:
+        _target_: deepsno.metrics.multihit.DeepSupervisionLoss
+        aux_weight: 1.0
+        loss_fn: &train_loss_fn
+            _target_: deepsno.metrics.multihit.SinkhornVertexLoss
+            weights:
+                time: 1
+                position: 1
+                energy: 1
+            epsilon: 1e-4
+            n_iters: 32
+            eps_num: 1e-6
+            unbiased: false
+            detach_transport: true
+
+    train_dataloader: &train_dataloader
+        _target_: torch.utils.data.DataLoader
+        dataset: &train_dataset
+            _target_: deepsno.data.multihit.MultiHitDataset
+            hit_input_maker:
+                _target_: deepsno.data.multihit.ExpandedHitInputMaker
+                pmt_info_path: /home/degraw/deepsno/pmt_info.csv
+            vertex_data_maker:
+                _target_: deepsno.data.multihit.VoxelizedTrackVertexMaker
+                radius: 6000
+                pos_spacing: &pos_spacing 10
+                time_spacing: &time_spacing 0.05
+                time_low: 0.0
+                time_high: 40.0
+                min_energy: &min_energy 0
+            file_paths: ${vars.data_dir}/*.ntuple.root
+            file_split: ${vars.file_split}
+            split_index: 0
+            tree_name: output
+            # max_context_len: 65536
+            max_context_len: 4096
+            # max_context_len: 8192
+            # max_context_len: 16384
+            # max_context_len: 32768
+            max_n_vertices: ${vars.max_n_vertices}
+            buffer_size: 10
+            debug: false
+            cache: '$SLURM_TMPDIR'
+            seed: ${train.seed}
+            prefetch: true
+            benchmark: false
+        batch_size: ${vars.batch_size}
+        num_workers: ${vars.num_workers}
+        shuffle: false
+        pin_memory: true
+        persistent_workers: false
+        drop_last: true
+        collate_fn:
+            _target_: deepsno.data.multihit.MultiHitExpandedVarlenCollate
+
+    val_dataloader:
+        <<: *train_dataloader
+        dataset:
+            <<: *train_dataset
+            shuffle: false
+            file_paths: ${vars.data_dir}/*.ntuple.root
+            file_split: ${vars.file_split}
+            split_index: 1
+        batch_size: ${vars.batch_size}
+        num_workers: ${vars.num_workers}
+
+
+    max_grad_norm: 1
+
+    val_metric:
+        _target_: deepsno.metrics.metrics.BatchedMetric
+        metric_fn: &val_loss_fn
+            <<: *train_loss_fn
+
+
+    metric_monitors:
+        - _target_: deepsno.metrics.metric_monitor.SinkhornConvergenceMonitor
+          loss_fn: *val_loss_fn
+        - _target_: deepsno.metrics.metric_monitor.MultiLossMonitor
+          multi_loss_fn: *val_loss_fn
+          scales:
+                position: *position_scale
+                time: *time_scale
+                energy: *energy_scale
+        - _target_: deepsno.metrics.metric_monitor.EventDisplayMonitor
+          n_events: 10
+          energy_threshold: *min_energy
+          voxel_size: *pos_spacing
+          position_scale: *position_scale
+          position_shift: *position_shift
+          time_scale: *time_scale
+          time_shift: *time_shift
+          energy_scale: *energy_scale
+          energy_shift: *energy_shift
+
+
+bench:
+    train_dataloader:
+        <<: *train_dataloader
+        dataset:
+            <<: *train_dataset
+    num_steps: 2000
+
+
+predict:
+    ckpt: /tmp
+    device: *device
+    keys:
+        - position
+        - time
+        - exists_logit
+        - energy
+    dataloader:
+        <<: *train_dataloader
+        dataset:
+            <<: *train_dataset
+            file_paths: ${vars.data_dir}/*.ntuple.root
+            file_split: ${vars.file_split}
+            split_index: 2
+        batch_size: 100
+        num_workers: 1
+        drop_last: true
