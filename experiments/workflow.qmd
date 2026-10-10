@@ -85,9 +85,10 @@ reports use saved outputs and do not need the training environment.
 In [repository Pages settings](https://github.com/scott-degraw/deepsno/settings/pages),
 select **GitHub Actions** as the publishing source once. After a successful
 deployment, the journal is available at
-[scott-degraw.github.io/deepsno](https://scott-degraw.github.io/deepsno/).
-The workflow includes the existing `docs/` event gallery at
-[gallery/](https://scott-degraw.github.io/deepsno/gallery/).
+[scott-degraw.github.io/deepsno/experiments](https://scott-degraw.github.io/deepsno/experiments/).
+The existing `docs/` event-display website remains at
+[scott-degraw.github.io/deepsno](https://scott-degraw.github.io/deepsno/),
+with its event URLs preserved. The workflow assembles both into one Pages artifact.
 
 Commit report sources, small figures, and any frozen analysis outputs, then
 push to `main` to publish updates. The generated `_site/` is uploaded by CI

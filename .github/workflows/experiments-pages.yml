@@ -29,12 +29,15 @@ jobs:
           version: '1.10.18'
       - name: Render journal
         run: quarto render experiments
-      - name: Include existing event gallery
-        run: cp -r docs experiments/_site/gallery
+      - name: Assemble website
+        run: |
+          mkdir -p _pages
+          cp -r docs/. _pages/
+          cp -r experiments/_site _pages/experiments
       - name: Upload website
         uses: actions/upload-pages-artifact@v4
         with:
-          path: experiments/_site
+          path: _pages
 
   deploy:
     needs: build

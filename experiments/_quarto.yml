@@ -8,7 +8,7 @@ project:
 
 website:
   title: "DeepSNO experiments"
-  site-url: https://scott-degraw.github.io/deepsno/
+  site-url: https://scott-degraw.github.io/deepsno/experiments/
   repo-url: https://github.com/scott-degraw/deepsno
   navbar:
     left:
