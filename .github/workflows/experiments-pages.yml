@@ -1,0 +1,51 @@
+name: Publish experiment journal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/**'
+      - 'docs/**'
+      - '.github/workflows/experiments-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+      - name: Install Quarto
+        uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: '1.10.18'
+      - name: Render journal
+        run: quarto render experiments
+      - name: Include existing event gallery
+        run: cp -r docs experiments/_site/gallery
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: experiments/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy website
+        id: deployment
+        uses: actions/deploy-pages@v4

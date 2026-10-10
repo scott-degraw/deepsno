@@ -1,0 +1,94 @@
+---
+title: "Writing and rendering experiments"
+---
+
+## Start a report
+
+From the repository root:
+
+```bash
+cp experiments/templates/experiment.qmd experiments/reports/YYYY-MM-DD-short-name.qmd
+```
+
+Replace the title, date, description, categories, and placeholders. Keep one
+report per question; update it as evidence arrives. Record unsuccessful results
+and the decision they informed.
+
+Use the training run's saved `config.yaml` for the resolved configuration and
+its `git_hash` for the code version. Record dataset identity, split, selection
+cuts, seed, checkpoint, and W&B URL. The current checkout's commit may differ
+from the commit that produced a checkpoint. Include baseline provenance too.
+
+Commit small, portable evaluation tables and figures beside the report, in a
+matching subdirectory. Link them with relative paths. Keep ROOT files,
+checkpoints, credentials, and large data outside Git; record their locations and
+identifiers. A run directory alone does not identify a dataset version.
+
+## Preview and build
+
+Install the Quarto CLI using the [official installation instructions](https://quarto.org/docs/get-started/).
+The CLI is separate from the Python dependencies managed by `uv`.
+
+This workspace has Quarto 1.10.18 installed locally. To use it in your current
+shell, run from the repository root:
+
+```bash
+export PATH="/home/degraw/deepsno/.local-tools/quarto-1.10.18/bin:$PATH"
+```
+
+The tool directory is ignored by Git; other checkouts need their own installation.
+
+From the repository root:
+
+```bash
+quarto preview experiments
+quarto render experiments
+```
+
+The rendered site is written to `experiments/_site/`. Templates are excluded
+from rendering and the experiment listing.
+
+## Computed analysis
+
+Reports do not execute code by default, so a site build needs neither a GPU nor
+cluster data. Run training and evaluation separately and report their saved
+outputs. Existing notebooks can remain exploratory working documents.
+
+For a report that needs executable Python, add this to its YAML header:
+
+```yaml
+jupyter: python3
+execute:
+  enabled: true
+  freeze: true
+```
+
+Then explicitly execute that report with the project environment:
+
+```bash
+uv run quarto render experiments/reports/YYYY-MM-DD-short-name.qmd
+```
+
+Commit the resulting `experiments/_freeze/` files and any referenced figures.
+Whole-project renders reuse frozen results; an individual report render
+executes it again. Refresh deliberately when code, configuration, or input data
+changes: freezing does not validate external inputs. See
+[Quarto execution management](https://quarto.org/docs/projects/code-execution.html).
+
+## GitHub Pages
+
+The `Publish experiment journal` GitHub Actions workflow renders and deploys
+this project when `experiments/`, `docs/`, or its workflow changes on `main`.
+It can also be run manually from GitHub's Actions tab. It installs Quarto only;
+reports use saved outputs and do not need the training environment.
+
+In [repository Pages settings](https://github.com/scott-degraw/deepsno/settings/pages),
+select **GitHub Actions** as the publishing source once. After a successful
+deployment, the journal is available at
+[scott-degraw.github.io/deepsno](https://scott-degraw.github.io/deepsno/).
+The workflow includes the existing `docs/` event gallery at
+[gallery/](https://scott-degraw.github.io/deepsno/gallery/).
+
+Commit report sources, small figures, and any frozen analysis outputs, then
+push to `main` to publish updates. The generated `_site/` is uploaded by CI
+and stays out of Git. W&B links retain W&B's own access requirements.

@@ -1,0 +1,29 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - index.qmd
+    - workflow.qmd
+    - reports/*.qmd
+
+website:
+  title: "DeepSNO experiments"
+  site-url: https://scott-degraw.github.io/deepsno/
+  repo-url: https://github.com/scott-degraw/deepsno
+  navbar:
+    left:
+      - href: index.qmd
+        text: Experiments
+      - href: workflow.qmd
+        text: Workflow
+  search: true
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+
+execute:
+  enabled: false
+  freeze: true

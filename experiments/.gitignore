@@ -1,0 +1,5 @@
+/_site/
+/.quarto/
+# Keep _freeze/ when explicitly executed reports produce frozen results.
+
+**/*.quarto_ipynb

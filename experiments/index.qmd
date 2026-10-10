@@ -1,0 +1,17 @@
+---
+title: "Experiment journal"
+listing:
+  contents: reports/*.qmd
+  type: table
+  sort: "date desc"
+  fields: [date, title, description, categories]
+  filter-ui: true
+  sort-ui: true
+---
+
+A record of DeepSNO hypotheses, evaluation results, and decisions. Each report
+links its conclusions to a code version, resolved configuration, and dataset.
+Training metrics and checkpoints remain in their existing run storage.
+
+Start with the [workflow](workflow.qmd). Reports marked **in progress** or
+**method audit** do not establish a performance improvement.

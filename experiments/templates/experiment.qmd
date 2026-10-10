@@ -1,0 +1,45 @@
+---
+title: "Replace with the experiment question"
+date: YYYY-MM-DD
+description: "Replace with the main finding or current question."
+categories: [in-progress]
+---
+
+## Question and hypothesis
+
+What changes, why might it help, and what observation would falsify the hypothesis?
+
+## Setup and provenance
+
+| Item | Candidate | Baseline |
+|---|---|---|
+| Training code commit (`git_hash`) | TODO | TODO |
+| Analysis code commit and local changes | TODO | TODO |
+| Resolved config (`config.yaml`) | TODO | TODO |
+| Dataset version / manifest | TODO | TODO |
+| Train / validation / test split | TODO | TODO |
+| Selection cuts and preprocessing | TODO | TODO |
+| Seeds | TODO | TODO |
+| Checkpoint and selection rule | TODO | TODO |
+| W&B run URL | TODO | TODO |
+| Evaluation command and output location | TODO | TODO |
+
+## Results
+
+Record sample size, metric definitions, units, and uncertainty. Evaluate candidate
+and baseline on the same held-out events. Link saved tables and figures here.
+State explicitly when results are pending; do not infer performance from a few
+selected event displays.
+
+| Metric (units) | Baseline | Candidate | Difference / uncertainty |
+|---|---|---|---|
+| TODO | TODO | TODO | TODO |
+
+## Interpretation and limitations
+
+Does the evidence support the hypothesis? Note confounders, failure cases, and
+what this evaluation cannot establish.
+
+## Decision and next experiment
+
+Record the action supported by these results and the next question to test.

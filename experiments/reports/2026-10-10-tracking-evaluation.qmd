@@ -1,0 +1,73 @@
+---
+title: "Tracking reconstruction: evaluation method audit"
+date: 2026-10-10
+description: "Document the existing event-display selection and the evidence needed for a baseline comparison."
+categories: [tracking, method-audit]
+---
+
+## Question and hypothesis
+
+Can the existing tracking analysis support a reproducible comparison of
+multi-electron reconstruction models? The working hypothesis is that inspecting
+one- and two-electron events will reveal spatial failure modes worth measuring
+on a held-out sample. This report audits the method; quantitative evaluation is
+pending.
+
+## Setup and provenance
+
+The source is `tracking_performance.ipynb` at the repository root. Its current
+code selects the run directory
+`/scratch/degraw/imaging/multi_electron_v4/checkpoints/2026-06-25/07-41-12`
+and reads `predict.root` and `config.yaml` from that directory.
+
+| Item | Recorded evidence |
+|---|---|
+| Training commit | `c6143d3733402029f1a1a545e02f943fb0bba6f8` (saved config) |
+| Audit checkout commit | `464f1f901bd31de5aaa2e245c5d94fb8f32601fa` |
+| Working tree | Local changes present during audit; notebook inspected directly |
+| Resolved configuration | Run's `config.yaml`; training commit, W&B entity, and project verified |
+| Dataset identity, split, seeds | Pending: retrieve from run artifacts |
+| Checkpoint selection | Pending: retrieve from run artifacts |
+| W&B run | [scottdegraw/detr_imaging/4gbestb7](https://wandb.ai/scottdegraw/detr_imaging/runs/4gbestb7) |
+| Analysis inputs | Prediction/truth trees in `predict.root`, plus original truth ROOT files |
+| Baseline | Not established |
+
+The W&B link uses `wandb_run_id.txt` from the run directory and the entity and
+project in its saved `config.yaml`. The remote W&B page has not been inspected.
+
+## Existing analysis method
+
+The notebook derives spatial voxel edges and time bounds from the saved
+configuration. It sets `WEIGHT_FIELD = "n_photons"` with a threshold of 500
+photons; an alternative deposited-energy mode uses 0.1 MeV. Predicted points
+are selected using their `energy` field, so its interpretation must be checked
+against the training configuration before comparing weight modes.
+
+Event selection scans in input order, aiming to collect three events with one
+primary electron vertex and two with two primary electron vertices (PDG 11).
+These are illustrative examples, not a random performance sample. If either
+group is too small, the notebook can display fewer than five events.
+
+The figures show predicted points, original truth tracks, and voxelized truth
+and predictions. The notebook exports interactive displays to `docs/event_*.html`
+and updates `docs/index.html`. Those files remain the existing event gallery;
+this journal does not rerun or regenerate them.
+
+## Results and limitations
+
+No new training, prediction, or notebook execution was performed for this audit.
+No numerical performance improvement is established. Existing interactive HTML
+files are present, but their generating run and freshness were not verified.
+
+The selected events can help diagnose topology and localization errors. They
+cannot establish aggregate accuracy, uncertainty, or superiority to a baseline.
+The saved run artifacts are required to complete provenance and confirm the
+meaning and units of the predicted `energy` field.
+
+## Decision and next experiment
+
+Retain the event displays as qualitative diagnostics. Before making a model
+comparison, recover the saved run provenance and define a fixed held-out event
+manifest shared by the baseline and candidate. Report event counts by electron
+multiplicity, an agreed spatial reconstruction metric with units, and uncertainty
+on the comparison. Record failures as well as representative event displays.
